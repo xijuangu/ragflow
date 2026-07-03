@@ -123,6 +123,52 @@ async def chatbot_completions(dialog_id, tenant_id=None):
 
     return None
 
+@manager.route("/chatbots/<dialog_id>/sessions/<session_id>", methods=["GET"])  # noqa: F821
+@login_required(auth_types=AUTH_BETA)
+@add_tenant_id_to_kwargs
+async def get_chatbot_session(dialog_id, session_id, tenant_id=None):
+    """读取 iframe 会话历史消息与引用片段(Slice 2 扩展端点)。
+
+    复用现有 ``API4ConversationService.get_by_id``,无新业务逻辑;仅加路由层与
+    网关鉴权(AUTH_BETA)。返回结构:
+      ``{session_id, dialog_id, name, messages, reference}``
+    其中 ``messages`` 为会话消息数组,``reference`` 为引用数组(每轮一项,含
+    ``chunks`` 与 ``doc_aggs``,字段对齐原型 H3 验证结论)。
+
+    校验链:
+      1. ``tenant_id`` 来自 beta Token(网关持有),与现有 ``chatbot_completions``
+         一致。
+      2. ``dialog_id`` 必须属于该 tenant 且状态有效。
+      3. 会话 ``session_id`` 必须存在,且 ``conv.dialog_id == dialog_id``。
+    """
+    exists, dialog = DialogService.get_by_id(dialog_id)
+    if (not exists
+            or getattr(dialog, "tenant_id", None) != tenant_id
+            or str(getattr(dialog, "status", "")) != StatusEnum.VALID.value):
+        logger.warning(
+            "Denied chatbot session read: reason=%s tenant_id=%s dialog_id=%s session_id=%s",
+            "no access to this chatbot",
+            tenant_id,
+            dialog_id,
+            session_id,
+        )
+        return get_error_data_result(message="Authentication error: no access to this chatbot!")
+
+    exists, conv = API4ConversationService.get_by_id(session_id)
+    if not exists or conv.dialog_id != dialog_id:
+        return get_error_data_result(message="Session not found")
+
+    return get_result(
+        data={
+            "session_id": conv.id,
+            "dialog_id": conv.dialog_id,
+            "name": conv.name,
+            "messages": conv.message or [],
+            "reference": conv.reference or [],
+        }
+    )
+
+
 @manager.route("/chatbots/<dialog_id>/info", methods=["GET"])  # noqa: F821
 @login_required(auth_types=AUTH_BETA)
 @add_tenant_id_to_kwargs

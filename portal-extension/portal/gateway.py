@@ -1,4 +1,4 @@
-"""嵌入访问网关 — 令牌签发、iframe URL 构造、SSE 代理。
+"""嵌入访问网关 — 令牌签发、iframe URL 构造、SSE 代理、session 预创建与恢复。
 
 核心机制(原型 H1 验证结论):
   - 网关持有真实 beta Token(api_token.beta 列),绝不返回浏览器。
@@ -8,8 +8,16 @@
     优先读 URL ?auth=,回退才读 localStorage,因此真实 beta Token 全程不离开网关)。
   - iframe 内 SSE 请求经网关代理:校验 T_short → 用 beta Token 调 RAGFlow bot_api
     → 流式响应回传 iframe。
+
+Slice 2 扩展(原型 H2/H3/H4 验证结论):
+  - 预创建 session:用户打开分享页时,网关调 RAGFlow 创建空 API4Conversation,
+    从 SSE 首帧解析 session_id,立即绑定到 chat_session_owner(解决 RAGFlow 双步行为)。
+  - iframe URL 注入 session_id 参数(首问直接带 session_id,RAGFlow 正常处理 question)。
+  - SSE 代理完成后更新 chat_session_owner.last_active_at。
+  - 重新打开:网关调 RAGFlow GET /sessions/<session_id> 取回消息 + 引用。
 """
 
+import json
 import secrets
 import time
 from dataclasses import dataclass
@@ -69,14 +77,19 @@ class TokenStore:
         return True
 
 
-def build_iframe_url(ragflow_host: str, dialog_id: str, t_short: str) -> str:
+def build_iframe_url(ragflow_host: str, dialog_id: str, t_short: str, session_id: str = "") -> str:
     """构造 iframe URL:auth 参数放 T_short,shared_id 放 dialog_id。
 
     URL 格式(对应 RAGFlow 前端原生注入点):
-      {RAGFLOW_HOST}/chat/share?shared_id={dialog_id}&auth={T_short}&from=chat
+      {RAGFLOW_HOST}/chat/share?shared_id={dialog_id}&auth={T_short}&from=chat[&session_id=...]
+
+    Slice 2:可选 session_id 参数注入 iframe URL(解决 RAGFlow 双步行为,
+    首问直接带 session_id,RAGFlow 正常处理 question)。
     """
-    params = urlencode({"shared_id": dialog_id, "auth": t_short, "from": "chat"})
-    return f"{ragflow_host.rstrip('/')}/chat/share?{params}"
+    params = {"shared_id": dialog_id, "auth": t_short, "from": "chat"}
+    if session_id:
+        params["session_id"] = session_id
+    return f"{ragflow_host.rstrip('/')}/chat/share?{urlencode(params)}"
 
 
 def extract_t_short(request: Request):
@@ -90,10 +103,96 @@ def extract_t_short(request: Request):
     return auth_header[len("Bearer ") :].strip() or None
 
 
+def _parse_session_id_from_body(body: bytes) -> str:
+    """从 SSE 请求体中解析 session_id(用于更新 last_active_at)。
+
+    iframe 内 RAGFlow 前端在首次提问后会在请求体中携带 session_id。
+    无 session_id 或解析失败返回空字符串。
+    """
+    if not body:
+        return ""
+    try:
+        data = json.loads(body)
+        sid = data.get("session_id") or ""
+        return str(sid) if sid else ""
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return ""
+
+
+async def precreate_session_via_ragflow(settings, dialog_id: str) -> str:
+    """调 RAGFlow 创建空 API4Conversation,返回 session_id(预创建方案)。
+
+    调 POST /api/v1/chatbots/<dialog_id>/completions(question="", stream=true),
+    RAGFlow 创建空 session 并在首帧返回 session_id(NOTES.md H4 验证的双步行为)。
+
+    解决方案 B(推荐):门户预创建 session,首问直接带 session_id,
+    RAGFlow 正常处理 question 与流式响应(无双步 prologue)。
+    """
+    upstream_url = f"{settings.ragflow_host.rstrip('/')}/api/v1/chatbots/{dialog_id}/completions"
+    upstream_headers = {
+        "Authorization": f"Bearer {settings.ragflow_beta_token}",
+        "Content-Type": "application/json",
+    }
+    # 空 question 触发 RAGFlow 创建 session 返回 prologue(NOTES.md H4 验证)
+    body = json.dumps({"question": "", "stream": True, "quote": True}).encode("utf-8")
+    timeout = httpx.Timeout(timeout=30.0, connect=10.0)
+    # trust_env=False:网关连内部 RAGFlow 不走系统代理环境变量
+    async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
+        async with client.stream("POST", upstream_url, content=body, headers=upstream_headers) as resp:
+            if resp.status_code != 200:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"RAGFlow 预创建 session 失败: HTTP {resp.status_code}",
+                )
+            async for line in resp.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                payload = line[len("data:") :].strip()
+                if not payload:
+                    continue
+                try:
+                    data = json.loads(payload)
+                except json.JSONDecodeError:
+                    continue
+                # RAGFlow 首帧结构:{"code":0,"data":{"session_id":"..."}}
+                session_id = (
+                    (data.get("data") or {}).get("session_id")
+                    if isinstance(data.get("data"), dict)
+                    else data.get("session_id")
+                )
+                if session_id:
+                    return str(session_id)
+    raise HTTPException(status_code=502, detail="RAGFlow 预创建 session 未返回 session_id")
+
+
+async def fetch_session_history_via_ragflow(settings, dialog_id: str, session_id: str) -> dict:
+    """调 RAGFlow GET 端点取回会话消息与引用(对应验收点 5:重新打开恢复)。
+
+    调 GET /api/v1/chatbots/<dialog_id>/sessions/<session_id>(Slice 2 新增端点,
+    复用 API4ConversationService.get_by_id,无新业务逻辑)。
+    返回结构:{session_id, dialog_id, name, messages, reference}。
+    """
+    upstream_url = f"{settings.ragflow_host.rstrip('/')}/api/v1/chatbots/{dialog_id}/sessions/{session_id}"
+    upstream_headers = {"Authorization": f"Bearer {settings.ragflow_beta_token}"}
+    timeout = httpx.Timeout(timeout=30.0, connect=10.0)
+    async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
+        resp = await client.get(upstream_url, headers=upstream_headers)
+        if resp.status_code != 200:
+            raise HTTPException(
+                status_code=502,
+                detail=f"RAGFlow 取回会话失败: HTTP {resp.status_code}",
+            )
+        body = resp.json()
+        # RAGFlow get_result 包裹结构:{"code":0,"data":{...}}
+        data = body.get("data", body) if isinstance(body, dict) else body
+        return data
+
+
 async def proxy_sse_to_ragflow(request: Request, dialog_id: str):
     """SSE 代理:校验 T_short → 用 beta Token 调 RAGFlow bot_api → 流式回传。
 
     对应验收点 4(无效/过期 T_short → 401)与验收点 6(beta Token 调 RAGFlow SSE)。
+    Slice 2:代理完成后更新 chat_session_owner.last_active_at(若请求体含 session_id)。
     """
     settings = request.app.state.settings
     token_store = request.app.state.token_store
@@ -111,12 +210,15 @@ async def proxy_sse_to_ragflow(request: Request, dialog_id: str):
         raise HTTPException(status_code=401, detail="令牌与目标资源不匹配")
     # 读取请求体(原样转发给 RAGFlow)
     body = await request.body()
+    # Slice 2:从请求体解析 session_id(用于代理完成后更新 last_active_at)
+    request_session_id = _parse_session_id_from_body(body)
     # 用 beta Token 调 RAGFlow bot_api,流式转发(beta Token 只在此处使用,不返回浏览器)
     upstream_url = f"{settings.ragflow_host.rstrip('/')}/api/v1/chatbots/{dialog_id}/completions"
     upstream_headers = {
         "Authorization": f"Bearer {settings.ragflow_beta_token}",
         "Content-Type": "application/json",
     }
+    session_store = getattr(request.app.state, "session_store", None)
 
     async def stream_generator():
         # 流式期间不设读超时(SSE 可长时间),但连接阶段设 10s 超时
@@ -130,5 +232,9 @@ async def proxy_sse_to_ragflow(request: Request, dialog_id: str):
         except httpx.RequestError:
             # 连接失败:返回 SSE 错误事件(不含任何敏感信息)
             yield 'data: {"error": "上游服务不可用"}\n\n'.encode("utf-8")
+        finally:
+            # Slice 2:对话后更新 chat_session_owner.last_active_at(若请求体含 session_id)
+            if request_session_id and session_store is not None:
+                session_store.update_last_active(request_session_id)
 
     return StreamingResponse(stream_generator(), media_type="text/event-stream")

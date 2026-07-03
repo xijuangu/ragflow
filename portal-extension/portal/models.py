@@ -1,15 +1,19 @@
-"""硬编码数据模型 — Slice 1 最小子集。
+"""硬编码数据模型 — Slice 1 + Slice 2。
 
-数据模型(对应 ISSUES.md Issue 1):
+数据模型(对应 ISSUES.md Issue 1 + Issue 2):
   portal_user(id, username, password_hash, is_admin=true, enabled=true)
   share_page(id, name, ragflow_type='chat', ragflow_resource_id=<dialog_id>,
              embed_type='fullscreen', enabled=true)
   share_page_grant(share_page_id, subject_type='user', subject_id, permission='use')
+  chat_session_owner(session_id, share_page_id, portal_user_id NOT NULL,
+                     ragflow_resource_id, title, created_at, last_active_at)
 
 Slice 4 才做 CRUD,本 slice 用内存硬编码数据。
+Slice 4 才上 DB,Slice 2 的 chat_session_owner 用内存 SessionStore。
 """
 
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from typing import Literal
 
 from portal.config import Settings
@@ -47,6 +51,81 @@ class SharePageGrant:
     subject_type: SubjectType = "user"
     subject_id: str = ""
     permission: Permission = "use"
+
+
+@dataclass
+class ChatSessionOwner:
+    """会话归属记录(对应 ISSUES.md Issue 2 的 chat_session_owner 表)。
+
+    session_id 为主键(对应 RAGFlow API4Conversation.id);
+    portal_user_id NOT NULL(预创建时即绑定到当前用户)。
+    """
+
+    session_id: str
+    share_page_id: str
+    portal_user_id: str  # NOT NULL — 归属绑定到具体门户用户
+    ragflow_resource_id: str  # 对应 share_page.ragflow_resource_id(dialog_id)
+    title: str = ""
+    created_at: float = field(default_factory=time.time)
+    last_active_at: float = field(default_factory=time.time)
+
+
+class SessionStore:
+    """内存会话归属表 — Slice 2 不持久化,Slice 4 可换 DB。
+
+    类似 Slice 1 的 TokenStore,但记录的是「session_id → 门户用户」的归属关系。
+    """
+
+    def __init__(self):
+        self._sessions: dict = {}  # session_id -> ChatSessionOwner
+
+    def bind(
+        self,
+        session_id: str,
+        share_page_id: str,
+        portal_user_id: str,
+        ragflow_resource_id: str,
+        title: str = "",
+    ) -> ChatSessionOwner:
+        """预创建 session 后绑定到当前用户(对应验收点 1:归属绑定)。"""
+        now = time.time()
+        owner = ChatSessionOwner(
+            session_id=session_id,
+            share_page_id=share_page_id,
+            portal_user_id=portal_user_id,
+            ragflow_resource_id=ragflow_resource_id,
+            title=title or "新会话",
+            created_at=now,
+            last_active_at=now,
+        )
+        self._sessions[session_id] = owner
+        return owner
+
+    def get(self, session_id: str):
+        """按 session_id 取回归属记录;不存在返回 None。"""
+        return self._sessions.get(session_id)
+
+    def list_for_user(self, portal_user_id: str, share_page_id: str) -> list:
+        """按用户 + 分享页查询会话列表(对应验收点 4:我的会话)。
+
+        基础隔离:只返回 portal_user_id 匹配的记录(用户看不到他人的 session)。
+        """
+        return [
+            s
+            for s in self._sessions.values()
+            if s.portal_user_id == portal_user_id and s.share_page_id == share_page_id
+        ]
+
+    def update_last_active(self, session_id: str) -> bool:
+        """更新会话最后活跃时间(对应验收点 3:对话后 last_active_at 更新)。
+
+        返回 True 表示 session 存在并已更新;False 表示 session 不存在。
+        """
+        owner = self._sessions.get(session_id)
+        if owner is None:
+            return False
+        owner.last_active_at = time.time()
+        return True
 
 
 @dataclass
