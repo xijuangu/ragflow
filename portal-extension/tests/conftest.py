@@ -159,20 +159,3 @@ def mock_delete_session(monkeypatch):
         monkeypatch.setattr("portal.gateway.delete_session_via_ragflow", mock)
 
     return _setup
-
-
-@pytest.fixture
-def mock_rename_session(monkeypatch):
-    """工厂:mock portal.routes.rename_session_via_ragflow。
-
-    传 side_effect 模拟失败;不传则模拟成功。
-    """
-
-    def _setup(side_effect=None):
-        if side_effect is not None:
-            mock = AsyncMock(side_effect=side_effect)
-        else:
-            mock = AsyncMock(return_value=None)
-        monkeypatch.setattr("portal.routes.rename_session_via_ragflow", mock)
-
-    return _setup
