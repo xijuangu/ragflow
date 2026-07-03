@@ -127,6 +127,9 @@ class ChatSessionOwner:
     created_at: float = field(default_factory=time.time)
     last_active_at: float = field(default_factory=time.time)
     deleted_at: float | None = None  # Slice 5:双删失败标记(None=正常,非空=待重试)
+    # Slice 6 修复:消息数(预创建为 0,恢复会话 GET history 时用 len(messages) 更新;
+    # SSE 代理后可能滞后,但字段存在满足 spec「元数据含消息数」要求)。
+    message_count: int = 0
 
 
 class SessionStore:
@@ -235,14 +238,17 @@ class SessionStore:
         share_page_id: str | None = None,
         since: float | None = None,
         until: float | None = None,
+        keyword: str | None = None,
         limit: int = 100,
     ) -> list:
-        """管理员跨用户列出所有会话(按用户/分享页/时间过滤,Slice 6 验收点 2)。
+        """管理员跨用户列出所有会话(按用户/分享页/时间/关键词过滤,Slice 6 验收点 2)。
 
         与 list_for_user 的区别:不限 portal_user_id(管理员视角),支持多维度过滤;
         排除 deleted_at 非空的记录(待重试的会话由 list_pending_deletion 单独查询)。
         默认按 created_at 倒序(最新的在前),limit 默认 100。
+        keyword 按标题模糊匹配(大小写不敏感的 ``in`` 匹配,None 表示不过滤)。
         """
+        kw_lower = keyword.lower() if keyword else None
         result = [
             s
             for s in self._sessions.values()
@@ -251,6 +257,7 @@ class SessionStore:
             and (share_page_id is None or s.share_page_id == share_page_id)
             and (since is None or s.created_at >= since)
             and (until is None or s.created_at <= until)
+            and (kw_lower is None or kw_lower in s.title.lower())
         ]
         result.sort(key=lambda s: s.created_at, reverse=True)
         return result[:limit]

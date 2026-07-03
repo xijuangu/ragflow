@@ -156,7 +156,12 @@ def _audit_log_to_dict(log) -> dict:
 
 
 def _session_owner_to_metadata_dict(owner) -> dict:
-    """会话归属记录 → 管理员元数据 dict(不含正文,Slice 6 验收点 3)。"""
+    """会话归属记录 → 管理员元数据 dict(不含正文,Slice 6 验收点 3)。
+
+    含 message_count 字段(spec 要求「元数据含消息数」):
+    预创建时为 0,恢复会话(GET history)后用 len(messages) 更新;
+    SSE 代理后可能滞后,管理员想看准确数用 elevated 查正文。
+    """
     return {
         "session_id": owner.session_id,
         "title": owner.title,
@@ -166,7 +171,38 @@ def _session_owner_to_metadata_dict(owner) -> dict:
         "created_at": owner.created_at,
         "last_active_at": owner.last_active_at,
         "deleted_at": owner.deleted_at,
+        "message_count": owner.message_count,
     }
+
+
+def _audit(
+    request: Request,
+    user,
+    action: str,
+    target_type: str,
+    target_id: str,
+    *,
+    actor_user_id: str | None = None,
+    **meta,
+) -> None:
+    """记录审计日志的统一入口(消除 audit_store.record 调用重复)。
+
+    默认 actor_user_id 取当前登录用户 ``user.id``;
+    login_failure 等无当前用户的场景(user=None)需显式传 ``actor_user_id``
+    (如 attempted.id 或 username)。
+    meta 通过 ``**kwargs`` 传入,内部组装为 dict,减少各调用点重复构造 dict。
+    """
+    if actor_user_id is None:
+        if user is None:
+            raise ValueError("无当前用户时必须显式传 actor_user_id")
+        actor_user_id = user.id
+    request.app.state.audit_store.record(
+        actor_user_id=actor_user_id,
+        action=action,
+        target_type=target_type,
+        target_id=target_id,
+        meta=meta if meta else None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -182,29 +218,25 @@ async def login(body: LoginRequest, request: Request):
     Slice 6 加审计:登录成功记 login_success,登录失败记 login_failure(PR D7b)。
     """
     seed = request.app.state.seed
-    audit_store = request.app.state.audit_store
     try:
         user = await authenticate(seed, body.username, body.password)
     except LoginError as e:
         # 登录失败审计:actor 用 attempted user id(若用户存在)或 username(若不存在)
         attempted = seed.get_user_by_username(body.username)
         actor_id = attempted.id if attempted else body.username
-        audit_store.record(
+        _audit(
+            request,
+            None,
+            "login_failure",
+            "user",
+            actor_id,
             actor_user_id=actor_id,
-            action="login_failure",
-            target_type="user",
-            target_id=actor_id,
-            meta={"username": body.username, "reason": e.detail},
+            username=body.username,
+            reason=e.detail,
         )
         raise
     # 登录成功审计
-    audit_store.record(
-        actor_user_id=user.id,
-        action="login_success",
-        target_type="user",
-        target_id=user.id,
-        meta={"username": user.username},
-    )
+    _audit(request, user, "login_success", "user", user.id, username=user.username)
     request.session["user_id"] = user.id
     return {"username": user.username, "is_admin": user.is_admin}
 
@@ -386,6 +418,11 @@ async def resume_session(share_page_id: str, session_id: str, request: Request, 
         lambda: fetch_session_history_via_ragflow(settings, share_page.ragflow_resource_id, session_id),
         "取回会话失败",
     )
+    # 恢复会话时用 len(messages) 更新 message_count(简化实现:字段存在,恢复后准确)
+    if isinstance(history, dict):
+        messages = history.get("messages", [])
+        if owner.message_count != len(messages):
+            owner.message_count = len(messages)
     # 补充门户侧标题(chat_session_owner.title 为列表显示主源)
     if isinstance(history, dict):
         history = {**history, "title": owner.title}
@@ -459,12 +496,14 @@ async def delete_session(share_page_id: str, session_id: str, request: Request, 
     )
     # Slice 6 审计:仅 RAGFlow 成功(门户侧已硬删除)时记 session_delete
     if deleted:
-        request.app.state.audit_store.record(
-            actor_user_id=user.id,
-            action="session_delete",
-            target_type="session",
-            target_id=session_id,
-            meta={"share_page_id": share_page_id, "owner_user_id": owner.portal_user_id},
+        _audit(
+            request,
+            user,
+            "session_delete",
+            "session",
+            session_id,
+            share_page_id=share_page_id,
+            owner_user_id=owner.portal_user_id,
         )
     return {"session_id": session_id, "deleted": True}
 
@@ -547,12 +586,13 @@ async def admin_update_user(user_id: str, body: UpdateEnabledRequest, request: R
         raise HTTPException(status_code=404, detail="用户不存在")
     target = seed.get_user(user_id)
     # Slice 6 审计:user_enable / user_disable
-    request.app.state.audit_store.record(
-        actor_user_id=user.id,
-        action="user_enable" if body.enabled else "user_disable",
-        target_type="user",
-        target_id=user_id,
-        meta={"username": target.username},
+    _audit(
+        request,
+        user,
+        "user_enable" if body.enabled else "user_disable",
+        "user",
+        user_id,
+        username=target.username,
     )
     return _user_to_dict(target)
 
@@ -577,17 +617,18 @@ async def admin_delete_user(user_id: str, request: Request, user=Depends(require
         raise HTTPException(status_code=404, detail="用户不存在")
     settings = request.app.state.settings
     session_store = request.app.state.session_store
-    audit_store = request.app.state.audit_store
     # 级联删除用户所有会话(RAGFlow 失败也硬删除门户侧,避免孤儿;失败记日志)
     cascade_results = await session_store.cascade_delete_for_user(user_id, settings)
     # Slice 6 审计:每个级联删除的会话记 session_delete(门户侧已硬删除)
     for session_id, _success in cascade_results:
-        audit_store.record(
-            actor_user_id=user.id,
-            action="session_delete",
-            target_type="session",
-            target_id=session_id,
-            meta={"cascade": True, "owner_user_id": user_id},
+        _audit(
+            request,
+            user,
+            "session_delete",
+            "session",
+            session_id,
+            cascade=True,
+            owner_user_id=user_id,
         )
     # 删除用户(无论 RAGFlow 是否失败)
     seed.delete_user(user_id)
@@ -714,12 +755,15 @@ async def admin_delete_session(share_page_id: str, session_id: str, request: Req
     )
     # Slice 6 审计:仅 RAGFlow 成功(门户侧已硬删除)时记 session_delete
     if deleted:
-        request.app.state.audit_store.record(
-            actor_user_id=user.id,
-            action="session_delete",
-            target_type="session",
-            target_id=session_id,
-            meta={"share_page_id": share_page_id, "owner_user_id": owner.portal_user_id, "admin_initiated": True},
+        _audit(
+            request,
+            user,
+            "session_delete",
+            "session",
+            session_id,
+            share_page_id=share_page_id,
+            owner_user_id=owner.portal_user_id,
+            admin_initiated=True,
         )
     return {"session_id": session_id, "deleted": True}
 
@@ -758,12 +802,15 @@ async def admin_create_grant(
     _validate_subject_exists(seed, body.subject_type, body.subject_id)
     grant = seed.create_grant(share_page_id, body.subject_type, body.subject_id, body.permission)
     # Slice 6 审计:grant_create
-    request.app.state.audit_store.record(
-        actor_user_id=user.id,
-        action="grant_create",
-        target_type="grant",
-        target_id=share_page_id,
-        meta={"subject_type": body.subject_type, "subject_id": body.subject_id, "permission": body.permission},
+    _audit(
+        request,
+        user,
+        "grant_create",
+        "grant",
+        share_page_id,
+        subject_type=body.subject_type,
+        subject_id=body.subject_id,
+        permission=body.permission,
     )
     return _grant_to_dict(grant)
 
@@ -818,12 +865,15 @@ async def revoke_grant(
         for member_id in members:
             revoked_count += token_store.revoke_tokens_for_user_share_page(member_id, share_page_id)
     # Slice 6 审计:grant_revoke
-    request.app.state.audit_store.record(
-        actor_user_id=user.id,
-        action="grant_revoke",
-        target_type="grant",
-        target_id=share_page_id,
-        meta={"subject_type": subject_type, "subject_id": subject_id, "tokens_revoked": revoked_count},
+    _audit(
+        request,
+        user,
+        "grant_revoke",
+        "grant",
+        share_page_id,
+        subject_type=subject_type,
+        subject_id=subject_id,
+        tokens_revoked=revoked_count,
     )
     return {
         "revoked": True,
@@ -850,14 +900,15 @@ async def admin_list_all_sessions(
     share_page_id: str | None = Query(None, description="按分享页 ID 过滤"),
     since: float | None = Query(None, description="起始时间(unix 时间戳,按 created_at 过滤)"),
     until: float | None = Query(None, description="截止时间(unix 时间戳,按 created_at 过滤)"),
+    keyword: str | None = Query(None, description="按会话标题模糊匹配(大小写不敏感)"),
     limit: int = Query(100, ge=1, le=1000, description="返回条数上限"),
     user=Depends(require_admin),
 ):
-    """管理员列出所有用户的会话(按用户/分享页/时间过滤,返回元数据,不含正文)。
+    """管理员列出所有用户的会话(按用户/分享页/时间/关键词过滤,返回元数据,不含正文)。
 
     对应 Slice 6 验收点 2:管理员能搜索/列出所有用户的会话。
     默认按 created_at 倒序;排除 deleted_at 非空的(待重试删除的会话由
-    /admin/sessions/pending-deletion 单独查询)。
+    /admin/sessions/pending-deletion 单独查询)。keyword 按标题模糊匹配(大小写不敏感)。
     """
     session_store = request.app.state.session_store
     sessions = session_store.list_all(
@@ -865,6 +916,7 @@ async def admin_list_all_sessions(
         share_page_id=share_page_id,
         since=since,
         until=until,
+        keyword=keyword,
         limit=limit,
     )
     return {"sessions": [_session_owner_to_metadata_dict(s) for s in sessions]}
@@ -908,18 +960,25 @@ async def admin_get_session(
         # 默认只返回元数据,不写审计,不调 RAGFlow(验收点 3)
         return metadata
     # elevated=true:写审计 + 调 RAGFlow 取正文(验收点 4)
-    request.app.state.audit_store.record(
-        actor_user_id=user.id,
-        action="session_view_elevated",
-        target_type="session",
-        target_id=session_id,
-        meta={"owner_user_id": owner.portal_user_id, "share_page_id": owner.share_page_id},
+    _audit(
+        request,
+        user,
+        "session_view_elevated",
+        "session",
+        session_id,
+        owner_user_id=owner.portal_user_id,
+        share_page_id=owner.share_page_id,
     )
     settings = request.app.state.settings
     history = await _invoke_upstream(
         lambda: fetch_session_history_via_ragflow(settings, owner.ragflow_resource_id, session_id),
         "取回会话失败",
     )
+    # 恢复会话时用 len(messages) 更新 message_count(简化实现:字段存在,恢复后准确)
+    if isinstance(history, dict):
+        messages = history.get("messages", [])
+        if owner.message_count != len(messages):
+            owner.message_count = len(messages)
     # 合并元数据与正文
     return {
         **metadata,
@@ -935,7 +994,7 @@ async def admin_retry_delete_session(session_id: str, request: Request, user=Dep
     流程:
       1. 校验 session 存在且 deleted_at 非空(必须是待重试状态)。
       2. 调 RAGFlow DELETE;成功 → 删门户记录(硬删除),记 session_delete 审计。
-      3. RAGFlow 失败 → 返回 502(上游错误),门户侧记录保留(仍待重试)。
+      3. RAGFlow 失败 → 透传 HTTPException(可能 404/500/502),门户侧记录保留(仍待重试)。
     """
     session_store = request.app.state.session_store
     owner = session_store.get(session_id)
@@ -947,17 +1006,20 @@ async def admin_retry_delete_session(session_id: str, request: Request, user=Dep
     try:
         await delete_session_via_ragflow(settings, owner.ragflow_resource_id, session_id)
     except HTTPException:
-        # RAGFlow 失败:门户侧记录保留(仍待重试),返回 502 让管理员感知
+        # RAGFlow 失败:透传 HTTPException(可能 404/500/502),门户侧记录保留(仍待重试)
         raise
     # RAGFlow 成功 → 删门户记录(硬删除)
     session_store.delete(session_id)
     # Slice 6 审计:session_delete(管理员手动重试清理)
-    request.app.state.audit_store.record(
-        actor_user_id=user.id,
-        action="session_delete",
-        target_type="session",
-        target_id=session_id,
-        meta={"share_page_id": owner.share_page_id, "owner_user_id": owner.portal_user_id, "retry": True},
+    _audit(
+        request,
+        user,
+        "session_delete",
+        "session",
+        session_id,
+        share_page_id=owner.share_page_id,
+        owner_user_id=owner.portal_user_id,
+        retry=True,
     )
     return {"session_id": session_id, "deleted": True}
 

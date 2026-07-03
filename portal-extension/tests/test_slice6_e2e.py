@@ -350,6 +350,75 @@ async def test_admin_list_sessions_filter_by_time(client, app, monkeypatch):
     assert "slice6-filter-t-001" not in ids
 
 
+async def test_admin_list_sessions_by_keyword(client, app, monkeypatch):
+    """管理员按关键词搜索会话(按 title 模糊匹配,大小写不敏感)。"""
+    await _login(client)
+    # 预创建两个会话,分别重命名为含「合同」和「侵权」的标题
+    _mock_precreate(monkeypatch, "slice6-kw-001")
+    await client.post("/share-pages/sp_default/sessions")
+    _mock_precreate(monkeypatch, "slice6-kw-002")
+    await client.post("/share-pages/sp_default/sessions")
+    # 重命名(mock RAGFlow PATCH 成功)
+    monkeypatch.setattr("portal.routes.rename_session_via_ragflow", AsyncMock(return_value=None))
+    await client.patch(
+        "/share-pages/sp_default/sessions/slice6-kw-001",
+        json={"title": "合同纠纷咨询"},
+    )
+    await client.patch(
+        "/share-pages/sp_default/sessions/slice6-kw-002",
+        json={"title": "侵权责任分析"},
+    )
+    # keyword=合同 只返回标题含「合同」的会话
+    resp = await client.get("/admin/sessions?keyword=合同")
+    assert resp.status_code == 200, f"关键词搜索失败: {resp.text}"
+    ids = [s["session_id"] for s in resp.json()["sessions"]]
+    assert "slice6-kw-001" in ids, "关键词「合同」应匹配标题含「合同」的会话"
+    assert "slice6-kw-002" not in ids, "关键词「合同」不应匹配标题含「侵权」的会话"
+    # keyword=侵权 只返回标题含「侵权」的会话
+    resp = await client.get("/admin/sessions?keyword=侵权")
+    assert resp.status_code == 200
+    ids = [s["session_id"] for s in resp.json()["sessions"]]
+    assert "slice6-kw-002" in ids
+    assert "slice6-kw-001" not in ids
+    # 大小写不敏感:keyword=合同 与 合同 等价(中文无大小写,验证英文场景)
+    await client.patch(
+        "/share-pages/sp_default/sessions/slice6-kw-001",
+        json={"title": "Contract 合同"},
+    )
+    resp = await client.get("/admin/sessions?keyword=contract")
+    assert resp.status_code == 200
+    ids = [s["session_id"] for s in resp.json()["sessions"]]
+    assert "slice6-kw-001" in ids, "关键词搜索应大小写不敏感"
+
+
+def test_session_store_list_all_keyword_filter(app):
+    """SessionStore.list_all 支持 keyword 过滤(按 title 模糊匹配,大小写不敏感)。"""
+    store = app.state.session_store
+    store.bind("s-kw-1", "sp1", "u1", "d1", "合同纠纷")
+    store.bind("s-kw-2", "sp1", "u2", "d1", "侵权责任")
+    store.bind("s-kw-3", "sp1", "u3", "d1", "合同法解读")
+
+    # keyword=合同 匹配两个会话
+    result = store.list_all(keyword="合同")
+    ids = {s.session_id for s in result}
+    assert ids == {"s-kw-1", "s-kw-3"}, f"keyword 过滤失败: {ids}"
+
+    # keyword=侵权 只匹配一个
+    result = store.list_all(keyword="侵权")
+    ids = {s.session_id for s in result}
+    assert ids == {"s-kw-2"}
+
+    # keyword=None 不过滤
+    result = store.list_all(keyword=None)
+    assert len(result) == 3
+
+    # 大小写不敏感
+    store.bind("s-kw-4", "sp1", "u4", "d1", "Contract Review")
+    result = store.list_all(keyword="contract")
+    ids = {s.session_id for s in result}
+    assert "s-kw-4" in ids
+
+
 # ---------------------------------------------------------------------------
 # 验收点 3:管理员默认看元数据(不含 messages/reference)。
 # ---------------------------------------------------------------------------
@@ -370,12 +439,84 @@ async def test_admin_get_session_returns_metadata_only(client, app, monkeypatch)
     assert "share_page_id" in body
     assert "created_at" in body
     assert "last_active_at" in body
+    # message_count 字段存在(spec 要求「元数据含消息数」)
+    assert "message_count" in body, "元数据应含 message_count 字段"
+    assert body["message_count"] == 0, "预创建会话的 message_count 应为 0"
     # 不含正文
     assert "messages" not in body, "默认不应返回 messages"
     assert "reference" not in body, "默认不应返回 reference"
     # 不写审计(session_view_elevated 仅 elevated=true 时记)
     actions = _audit_actions(app)
     assert "session_view_elevated" not in actions, "默认查元数据不应记 session_view_elevated 审计"
+
+
+async def test_admin_list_sessions_includes_message_count(client, app, monkeypatch):
+    """管理员列出会话时元数据含 message_count 字段(spec 要求「元数据含消息数」)。"""
+    await _login(client)
+    _mock_precreate(monkeypatch, "slice6-msgcount-001")
+    await client.post("/share-pages/sp_default/sessions")
+    resp = await client.get("/admin/sessions")
+    assert resp.status_code == 200
+    sessions = resp.json()["sessions"]
+    target = [s for s in sessions if s["session_id"] == "slice6-msgcount-001"]
+    assert len(target) == 1
+    assert "message_count" in target[0], "列表元数据应含 message_count 字段"
+    assert target[0]["message_count"] == 0, "预创建会话的 message_count 应为 0"
+
+
+async def test_message_count_updated_on_resume(client, app, monkeypatch):
+    """恢复会话(GET history)后 message_count 用 len(messages) 更新(简化实现)。"""
+    fake_session_id = "slice6-msgcount-resume"
+    await _precreate_session(client, monkeypatch, fake_session_id)
+    # 预创建后 message_count 为 0
+    owner = app.state.session_store.get(fake_session_id)
+    assert owner.message_count == 0
+    # mock RAGFlow GET 返回 3 条消息
+    fake_history = {
+        "messages": [
+            {"role": "user", "content": "问题1"},
+            {"role": "assistant", "content": "回答1"},
+            {"role": "user", "content": "问题2"},
+        ],
+        "reference": {},
+    }
+    monkeypatch.setattr(
+        "portal.routes.fetch_session_history_via_ragflow",
+        AsyncMock(return_value=fake_history),
+    )
+    # 普通用户恢复会话
+    resp = await client.get(f"/share-pages/sp_default/sessions/{fake_session_id}")
+    assert resp.status_code == 200, f"恢复会话失败: {resp.text}"
+    # message_count 已更新为 len(messages)=3
+    owner = app.state.session_store.get(fake_session_id)
+    assert owner.message_count == 3, f"恢复会话后 message_count 应为 3,实际为 {owner.message_count}"
+    # 管理员列表也能看到更新后的 message_count
+    resp = await client.get("/admin/sessions")
+    target = [s for s in resp.json()["sessions"] if s["session_id"] == fake_session_id][0]
+    assert target["message_count"] == 3
+
+
+async def test_message_count_updated_on_elevated_view(client, app, monkeypatch):
+    """管理员 elevated=true 查正文后 message_count 也用 len(messages) 更新。"""
+    fake_session_id = "slice6-msgcount-elevated"
+    await _precreate_session(client, monkeypatch, fake_session_id)
+    # mock RAGFlow GET 返回 2 条消息
+    fake_history = {
+        "messages": [
+            {"role": "user", "content": "你好"},
+            {"role": "assistant", "content": "你好!"},
+        ],
+        "reference": {"chunks": []},
+    }
+    monkeypatch.setattr(
+        "portal.routes.fetch_session_history_via_ragflow",
+        AsyncMock(return_value=fake_history),
+    )
+    resp = await client.get(f"/admin/sessions/{fake_session_id}?elevated=true")
+    assert resp.status_code == 200
+    # message_count 已更新为 2
+    owner = app.state.session_store.get(fake_session_id)
+    assert owner.message_count == 2, f"elevated 查正文后 message_count 应为 2,实际为 {owner.message_count}"
 
 
 async def test_admin_get_session_unknown_returns_404(client):
