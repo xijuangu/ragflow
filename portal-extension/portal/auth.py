@@ -4,7 +4,7 @@
 会话用 Starlette SessionMiddleware(HTTP-only 签名 cookie,同源)。
 
 Slice 4 改进:
-  - 登录失败明确错误(用户名未注册 / 密码错误 / 账号已禁用)。
+  - 登录失败明确错误(用户未注册 / 密码错误 / 账号已禁用)。
   - 禁用用户(enabled=false)无法登录(403 账号已禁用)。
   - 网关请求校验同源 cookie 时,若用户已禁用 → 403(会话保留但拒绝代理)。
 """
@@ -23,13 +23,13 @@ async def authenticate(seed, username: str, password: str) -> PortalUser:
     """登录校验:返回 PortalUser 或抛 LoginError(明确错误)。
 
     错误语义(对应 PRD 用户故事 2):
-      - 用户名不存在 → 401 用户名未注册
+      - 用户不存在 → 401 用户未注册(中性措辞,涵盖 username/email 登录)
       - 密码错误 → 401 密码错误
       - 账号禁用 → 403 账号已禁用
     """
     user = seed.get_user_by_username(username)
     if user is None:
-        raise LoginError(status_code=401, detail="用户名未注册")
+        raise LoginError(status_code=401, detail="用户未注册")
     if not verify_password(password, user.password_hash):
         raise LoginError(status_code=401, detail="密码错误")
     if not user.enabled:

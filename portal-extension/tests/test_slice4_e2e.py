@@ -553,12 +553,12 @@ async def test_disable_user_blocks_login_and_preserves_session(client, app, monk
 
 
 # ---------------------------------------------------------------------------
-# 验收点 9:登录失败明确错误(用户名未注册 / 密码错误 / 账号已禁用)。
+# 验收点 9:登录失败明确错误(用户未注册 / 密码错误 / 账号已禁用)。
 # ---------------------------------------------------------------------------
 
 
 async def test_login_unknown_user_returns_401_with_clear_message(client):
-    """未注册用户登录 → 401 用户名未注册。"""
+    """未注册用户登录 → 401 用户未注册。"""
     resp = await client.post("/login", json={"username": "ghost", "password": "whatever"})
     assert resp.status_code == 401
     assert "未注册" in resp.json()["detail"]
@@ -744,6 +744,48 @@ def test_seed_data_revoke_grant_supports_subject_type(app):
     assert seed.revoke_grant(page.id, "group", group.id) is True
     # 再次撤销 user grant → False(已删)
     assert seed.revoke_grant(page.id, "user", user.id) is False
+
+
+def test_create_grant_idempotent(app):
+    """create_grant 幂等:重复创建相同 (share_page_id, subject_type, subject_id, permission) 只产生一条记录。
+
+    安全场景:管理员误创建两次,撤销一次后 has_use_grant=False(无残留 grant)。
+    """
+    seed = app.state.seed
+    user = seed.create_user(username="user_idem", email="ui@example.com", password_hash="hash")
+    page = seed.create_share_page(name="p_idem", ragflow_resource_id="d_idem")
+
+    # 第一次创建
+    grant1 = seed.create_grant(page.id, "user", user.id, "use")
+    # 第二次创建相同四元组 → 返回现有 grant,不新增
+    grant2 = seed.create_grant(page.id, "user", user.id, "use")
+    assert grant1 is grant2, "幂等创建应返回同一 grant 对象"
+    # grants 列表只有一条该四元组的记录
+    matching = [
+        g
+        for g in seed.grants
+        if g.share_page_id == page.id and g.subject_type == "user" and g.subject_id == user.id and g.permission == "use"
+    ]
+    assert len(matching) == 1, f"幂等创建应只产生一条 grant,实际 {len(matching)} 条"
+
+    # 撤销一次后 has_use_grant=False(无残留重复 grant 使撤销不彻底)
+    assert seed.revoke_grant(page.id, "user", user.id) is True
+    assert seed.has_use_grant(page.id, user.id) is False, "撤销一次后应彻底失效(幂等创建保证无残留)"
+
+
+def test_create_grant_different_permission_not_idempotent(app):
+    """create_grant 对不同 permission 不幂等:use 与 manage 视为不同 grant。"""
+    seed = app.state.seed
+    user = seed.create_user(username="user_perm", email="up@example.com", password_hash="hash")
+    page = seed.create_share_page(name="p_perm", ragflow_resource_id="d_perm")
+
+    grant_use = seed.create_grant(page.id, "user", user.id, "use")
+    grant_manage = seed.create_grant(page.id, "user", user.id, "manage")
+    assert grant_use is not grant_manage, "不同 permission 应为不同 grant"
+    matching = [
+        g for g in seed.grants if g.share_page_id == page.id and g.subject_type == "user" and g.subject_id == user.id
+    ]
+    assert len(matching) == 2
 
 
 def test_seed_data_list_share_pages_for_user(app):

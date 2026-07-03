@@ -3,7 +3,7 @@
 Slice 4 新增:
   - 管理员 CRUD(/admin/users、/admin/groups、/admin/share-pages、grants)。
   - 普通用户 GET /share-pages(只看自己被授权的)。
-  - 登录失败明确错误(用户名未注册 / 密码错误 / 账号已禁用)。
+  - 登录失败明确错误(用户未注册 / 密码错误 / 账号已禁用)。
   - 撤销授权支持 user 与 group 两种 subject_type。
 """
 
@@ -20,7 +20,7 @@ from portal.gateway import (
     precreate_session_via_ragflow,
     proxy_sse_to_ragflow,
 )
-from portal.models import PortalGroup, PortalUser, SharePage, SharePageGrant
+from portal.models import Permission, PortalGroup, PortalUser, SharePage, SharePageGrant, SubjectType
 from portal.password import hash_password
 
 router = APIRouter()
@@ -62,9 +62,9 @@ class UpdateEnabledRequest(BaseModel):
 
 
 class CreateGrantRequest(BaseModel):
-    subject_type: str  # user / group
+    subject_type: SubjectType  # user / group — Literal 触发 Pydantic 422 校验
     subject_id: str
-    permission: str = "use"
+    permission: Permission = "use"
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +125,7 @@ def _grant_to_dict(grant: SharePageGrant) -> dict:
 async def login(body: LoginRequest, request: Request):
     """登录端点:校验凭据,建立同源会话 cookie(对应验收点 1)。
 
-    Slice 4 改进:登录失败明确错误(用户名未注册 / 密码错误 / 账号已禁用)。
+    Slice 4 改进:登录失败明确错误(用户未注册 / 密码错误 / 账号已禁用)。
     """
     seed = request.app.state.seed
     user = await authenticate(seed, body.username, body.password)
@@ -488,13 +488,15 @@ def _validate_subject_exists(seed, subject_type: str, subject_id: str) -> None:
 async def admin_create_grant(
     share_page_id: str, body: CreateGrantRequest, request: Request, user=Depends(require_admin)
 ):
-    """管理员把分享页授权给用户或用户组(对应 PRD 用户故事 16-17)。"""
+    """管理员把分享页授权给用户或用户组(对应 PRD 用户故事 16-17)。
+
+    subject_type/permission 由 CreateGrantRequest 的 Literal 类型在入口处
+    做 Pydantic 422 校验,无需 handler 内手写 if 校验。
+    """
     seed = request.app.state.seed
     if seed.get_share_page(share_page_id) is None:
         raise HTTPException(status_code=404, detail="分享页不存在")
     _validate_subject_exists(seed, body.subject_type, body.subject_id)
-    if body.permission not in ("use", "manage"):
-        raise HTTPException(status_code=400, detail="permission 必须为 use 或 manage")
     grant = seed.create_grant(share_page_id, body.subject_type, body.subject_id, body.permission)
     return _grant_to_dict(grant)
 
@@ -543,7 +545,8 @@ async def revoke_grant(
         revoked_count = token_store.revoke_tokens_for_user_share_page(subject_id, share_page_id)
     else:
         # 组授权撤销:吊销该组所有成员对该分享页的 T_short
-        members = seed.group_members.get(subject_id, set())
+        # 通过 seed.list_group_members 封装访问(消除 Feature Envy,不直接读 seed.group_members)
+        members = seed.list_group_members(subject_id)
         revoked_count = 0
         for member_id in members:
             revoked_count += token_store.revoke_tokens_for_user_share_page(member_id, share_page_id)

@@ -289,6 +289,14 @@ class SeedData:
         """返回用户所属的所有 group_id(用于 ACL 解析)。"""
         return [gid for gid, members in self.group_members.items() if user_id in members]
 
+    def list_group_members(self, group_id: str) -> set:
+        """返回用户组的成员 user_id 集合(封装 group_members 访问,消除 Feature Envy)。
+
+        组不存在时返回空集合(调用方按需先 get_group 校验存在性)。
+        返回集合的拷贝,避免外部修改内部状态。
+        """
+        return set(self.group_members.get(group_id, set()))
+
     # -----------------------------------------------------------------
     # 分享页 CRUD
     # -----------------------------------------------------------------
@@ -332,8 +340,18 @@ class SeedData:
         """创建授权(管理员调用)。
 
         调用方需校验 share_page_id 与 subject_id 存在(本方法只追加,不校验)。
-        重复 grant 视为创建多条(Slice 4 一期不强制唯一约束,撤销按三元组匹配删除首条)。
+        幂等:若已存在 (share_page_id, subject_type, subject_id, permission) 完全相同的 grant,
+        返回现有 grant 不重复创建(避免误创建两次导致撤销一次后残留 grant 仍使 has_use_grant=True
+        的安全漏洞;撤销一次即彻底)。
         """
+        for g in self.grants:
+            if (
+                g.share_page_id == share_page_id
+                and g.subject_type == subject_type
+                and g.subject_id == subject_id
+                and g.permission == permission
+            ):
+                return g
         grant = SharePageGrant(
             share_page_id=share_page_id,
             subject_type=subject_type,
@@ -364,34 +382,17 @@ class SeedData:
     # ACL 解析(网关校验链步骤 2)
     # -----------------------------------------------------------------
 
-    def has_use_grant(self, share_page_id: str, portal_user_id: str) -> bool:
-        """校验用户对分享页是否有 use 权限(校验链步骤 2,Slice 4 升级)。
+    def list_user_granted_share_page_ids(self, portal_user_id: str) -> set:
+        """返回用户被授权(use 权限)的分享页 id 集合(直接授权 + 组继承)。
 
-        支持两种 subject_type(任一存在即 True):
+        统一 ACL 解析入口,消除 has_use_grant 与 list_share_pages_for_user 重复的
+        user/group grant 过滤逻辑。subject_type 分支在此处唯一实现:
           - subject_type='user' and subject_id == portal_user_id(直接授权)
           - subject_type='group' and subject_id in 用户所属组列表(组继承)
-
-        撤销授权后此方法返回 False(网关每次请求都调用,实现「撤销立即失效」)。
+        用户不存在 → 空集合。
         """
         if portal_user_id not in self.users_by_id:
-            return False
-        user_group_ids = self.list_user_groups(portal_user_id)
-        for g in self.grants:
-            if g.share_page_id != share_page_id or g.permission != "use":
-                continue
-            if g.subject_type == "user" and g.subject_id == portal_user_id:
-                return True
-            if g.subject_type == "group" and g.subject_id in user_group_ids:
-                return True
-        return False
-
-    def list_share_pages_for_user(self, portal_user_id: str) -> list:
-        """列出用户被授权的分享页(直接 + 组继承,且 enabled=True)。
-
-        普通用户 GET /share-pages 用此方法过滤。
-        """
-        if portal_user_id not in self.users_by_id:
-            return []
+            return set()
         user_group_ids = self.list_user_groups(portal_user_id)
         authorized_page_ids: set = set()
         for g in self.grants:
@@ -401,6 +402,24 @@ class SeedData:
                 authorized_page_ids.add(g.share_page_id)
             elif g.subject_type == "group" and g.subject_id in user_group_ids:
                 authorized_page_ids.add(g.share_page_id)
+        return authorized_page_ids
+
+    def has_use_grant(self, share_page_id: str, portal_user_id: str) -> bool:
+        """校验用户对分享页是否有 use 权限(校验链步骤 2,Slice 4 升级)。
+
+        委托 list_user_granted_share_page_ids 统一解析 user 直接授权 + 组继承。
+        撤销授权后此方法返回 False(网关每次请求都调用,实现「撤销立即失效」);
+        create_grant 幂等保证撤销一次即彻底(无残留重复 grant)。
+        """
+        return share_page_id in self.list_user_granted_share_page_ids(portal_user_id)
+
+    def list_share_pages_for_user(self, portal_user_id: str) -> list:
+        """列出用户被授权的分享页(直接 + 组继承,且 enabled=True)。
+
+        普通用户 GET /share-pages 用此方法过滤。委托
+        list_user_granted_share_page_ids 统一 ACL 解析(消除重复的 grant 过滤逻辑)。
+        """
+        authorized_page_ids = self.list_user_granted_share_page_ids(portal_user_id)
         return [
             self.share_pages_by_id[pid]
             for pid in authorized_page_ids
