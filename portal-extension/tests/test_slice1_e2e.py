@@ -9,15 +9,22 @@
   6. 网关用 beta Token 调 RAGFlow bot_api 成功,SSE 流式响应正常回传。 [integration]
   7. 真实 beta Token 全程不出现在任何浏览器可访问位置(URL、localStorage、响应体)。
 """
-import os
 
-import httpx
+import os
+from urllib.parse import parse_qs, urlparse
+
 import pytest
+
+
+def _extract_iframe_params(url: str) -> dict:
+    """从 iframe URL 提取 query 参数(消除 urlparse + parse_qs 重复调用)。"""
+    return parse_qs(urlparse(url).query)
 
 
 # ---------------------------------------------------------------------------
 # 验收点 1:用户能用硬编码 admin 账号登录门户,获得同源会话。
 # ---------------------------------------------------------------------------
+
 
 async def test_login_success(client):
     """admin 用正确凭据登录,返回 200 并建立同源会话 cookie。"""
@@ -44,8 +51,26 @@ async def test_login_unknown_user(client):
 
 
 # ---------------------------------------------------------------------------
+# PRD D10:同源嵌入 — 所有响应附 X-Frame-Options: SAMEORIGIN。
+# ---------------------------------------------------------------------------
+
+
+async def test_responses_have_x_frame_options_sameorigin(client):
+    """所有响应附 X-Frame-Options: SAMEORIGIN(阻止外部站点 iframe 规避登录态)。"""
+    # 200 响应(登录成功)
+    resp = await client.post("/login", json={"username": "admin", "password": "testpass123"})
+    assert resp.status_code == 200
+    assert resp.headers.get("X-Frame-Options") == "SAMEORIGIN"
+    # 401 响应(错误密码)也带该 header(中间件对所有响应生效)
+    resp = await client.post("/login", json={"username": "admin", "password": "wrong"})
+    assert resp.status_code == 401
+    assert resp.headers.get("X-Frame-Options") == "SAMEORIGIN"
+
+
+# ---------------------------------------------------------------------------
 # 验收点 5:未登录用户请求分享页 → 403。
 # ---------------------------------------------------------------------------
+
 
 async def test_embed_url_requires_login(client):
     """未登录用户请求 embed-url → 403(不签发 T_short)。"""
@@ -56,6 +81,7 @@ async def test_embed_url_requires_login(client):
 # ---------------------------------------------------------------------------
 # 验收点 2 + 7:登录后 embed-url 含 auth=T_short,不含真实 beta Token。
 # ---------------------------------------------------------------------------
+
 
 async def test_embed_url_contains_short_token_not_beta(client):
     """登录后请求 embed-url,iframe URL 含 auth=T_short 参数,不含真实 beta Token。"""
@@ -70,8 +96,7 @@ async def test_embed_url_contains_short_token_not_beta(client):
     # iframe URL 必须含 auth 参数(即 T_short)
     assert "auth=" in iframe_url
     # 提取 T_short 并断言非空
-    from urllib.parse import urlparse, parse_qs
-    qs = parse_qs(urlparse(iframe_url).query)
+    qs = _extract_iframe_params(iframe_url)
     t_short = qs.get("auth", [None])[0]
     assert t_short, "auth 参数(T_short)不能为空"
     # iframe URL 必须含 shared_id(dialog_id)与 from=chat
@@ -88,8 +113,7 @@ async def _login_and_get_t_short(client):
     await client.post("/login", json={"username": "admin", "password": "testpass123"})
     resp = await client.get("/share-pages/sp_default/embed-url")
     assert resp.status_code == 200
-    from urllib.parse import urlparse, parse_qs
-    qs = parse_qs(urlparse(resp.json()["iframe_url"]).query)
+    qs = _extract_iframe_params(resp.json()["iframe_url"])
     return qs["auth"][0], qs["shared_id"][0]
 
 
@@ -97,10 +121,11 @@ async def _login_and_get_t_short(client):
 # 验收点 4:无效/过期的 T_short 调网关 → 401。
 # ---------------------------------------------------------------------------
 
+
 async def test_proxy_rejects_missing_token(client):
     """无 Authorization header 调网关 → 401。"""
     resp = await client.post(
-        "/proxy/chatbots/test-dialog-id-12345/completions",
+        "/api/v1/chatbots/test-dialog-id-12345/completions",
         json={"question": "测试", "stream": True},
     )
     assert resp.status_code == 401
@@ -109,7 +134,7 @@ async def test_proxy_rejects_missing_token(client):
 async def test_proxy_rejects_invalid_token(client):
     """错误的 T_short 调网关 → 401。"""
     resp = await client.post(
-        "/proxy/chatbots/test-dialog-id-12345/completions",
+        "/api/v1/chatbots/test-dialog-id-12345/completions",
         json={"question": "测试", "stream": True},
         headers={"Authorization": "Bearer not-a-real-token"},
     )
@@ -123,7 +148,7 @@ async def test_proxy_rejects_expired_token(client, app):
     rec = app.state.token_store._tokens[t_short]
     rec.expires_at = 0.0
     resp = await client.post(
-        f"/proxy/chatbots/{dialog_id}/completions",
+        f"/api/v1/chatbots/{dialog_id}/completions",
         json={"question": "测试", "stream": True},
         headers={"Authorization": f"Bearer {t_short}"},
     )
@@ -135,7 +160,7 @@ async def test_proxy_rejects_revoked_token(client, app):
     t_short, dialog_id = await _login_and_get_t_short(client)
     app.state.token_store.revoke(t_short)
     resp = await client.post(
-        f"/proxy/chatbots/{dialog_id}/completions",
+        f"/api/v1/chatbots/{dialog_id}/completions",
         json={"question": "测试", "stream": True},
         headers={"Authorization": f"Bearer {t_short}"},
     )
@@ -146,7 +171,7 @@ async def test_proxy_rejects_token_dialog_mismatch(client):
     """T_short 绑定的 dialog_id 与请求的 dialog_id 不一致 → 401。"""
     t_short, _dialog_id = await _login_and_get_t_short(client)
     resp = await client.post(
-        "/proxy/chatbots/a-different-dialog-id/completions",
+        "/api/v1/chatbots/a-different-dialog-id/completions",
         json={"question": "测试", "stream": True},
         headers={"Authorization": f"Bearer {t_short}"},
     )
@@ -156,6 +181,7 @@ async def test_proxy_rejects_token_dialog_mismatch(client):
 # ---------------------------------------------------------------------------
 # 验收点 7:真实 beta Token 全程不出现在任何浏览器可访问位置(URL、响应体)。
 # ---------------------------------------------------------------------------
+
 
 async def test_beta_token_never_leaked(client):
     """beta Token 不出现在任何响应(embed-url、proxy 401、proxy 流式错误)。"""
@@ -167,13 +193,11 @@ async def test_beta_token_never_leaked(client):
     resp = await client.get("/share-pages/sp_default/embed-url")
     assert beta_token not in resp.text
     # 3. proxy 缺令牌 401 响应不含 beta Token
-    resp = await client.post(
-        "/proxy/chatbots/test-dialog-id-12345/completions", json={"question": "x"}
-    )
+    resp = await client.post("/api/v1/chatbots/test-dialog-id-12345/completions", json={"question": "x"})
     assert beta_token not in resp.text
     # 4. proxy 错误令牌 401 响应不含 beta Token
     resp = await client.post(
-        "/proxy/chatbots/test-dialog-id-12345/completions",
+        "/api/v1/chatbots/test-dialog-id-12345/completions",
         json={"question": "x"},
         headers={"Authorization": "Bearer bad-token"},
     )
@@ -181,7 +205,7 @@ async def test_beta_token_never_leaked(client):
     # 5. proxy 有效令牌但上游不可达 → 流式错误事件不含 beta Token
     t_short, dialog_id = await _login_and_get_t_short(client)
     resp = await client.post(
-        f"/proxy/chatbots/{dialog_id}/completions",
+        f"/api/v1/chatbots/{dialog_id}/completions",
         json={"question": "测试", "stream": True},
         headers={"Authorization": f"Bearer {t_short}"},
     )
@@ -193,6 +217,7 @@ async def test_beta_token_never_leaked(client):
 # 验收点 6:integration — 网关用 beta Token 调 RAGFlow bot_api,SSE 流式回传。
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.integration
 async def test_proxy_sse_streams_from_ragflow(client, real_ragflow):
     """[integration] 用真实 RAGFlow 验证 SSE 代理:登录→T_short→proxy→流式响应。"""
@@ -201,14 +226,13 @@ async def test_proxy_sse_streams_from_ragflow(client, real_ragflow):
     assert resp.status_code == 200
     resp = await client.get("/share-pages/sp_default/embed-url")
     assert resp.status_code == 200
-    from urllib.parse import urlparse, parse_qs
-    qs = parse_qs(urlparse(resp.json()["iframe_url"]).query)
+    qs = _extract_iframe_params(resp.json()["iframe_url"])
     t_short = qs["auth"][0]
     dialog_id = qs["shared_id"][0]
     # 调代理 SSE(首次调用:RAGFlow 创建 session 并返回 prologue)
     async with client.stream(
         "POST",
-        f"/proxy/chatbots/{dialog_id}/completions",
+        f"/api/v1/chatbots/{dialog_id}/completions",
         json={"question": "你好", "stream": True, "quote": True},
         headers={"Authorization": f"Bearer {t_short}"},
     ) as resp:
@@ -230,6 +254,7 @@ async def test_proxy_sse_streams_from_ragflow(client, real_ragflow):
 # 验收点 3:integration — iframe 加载后能正常发起对话,引用片段可见。
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.integration
 async def test_iframe_conversation_with_references(client, real_ragflow):
     """[integration] 完整对话流:首调拿 session_id → 二调提问 → 引用片段可见。"""
@@ -237,8 +262,7 @@ async def test_iframe_conversation_with_references(client, real_ragflow):
     assert resp.status_code == 200
     resp = await client.get("/share-pages/sp_default/embed-url")
     assert resp.status_code == 200
-    from urllib.parse import urlparse, parse_qs
-    qs = parse_qs(urlparse(resp.json()["iframe_url"]).query)
+    qs = _extract_iframe_params(resp.json()["iframe_url"])
     t_short = qs["auth"][0]
     dialog_id = qs["shared_id"][0]
     headers = {"Authorization": f"Bearer {t_short}"}
@@ -246,7 +270,7 @@ async def test_iframe_conversation_with_references(client, real_ragflow):
     session_id = None
     async with client.stream(
         "POST",
-        f"/proxy/chatbots/{dialog_id}/completions",
+        f"/api/v1/chatbots/{dialog_id}/completions",
         json={"question": "测试", "stream": True, "quote": True},
         headers=headers,
     ) as resp:
@@ -254,6 +278,7 @@ async def test_iframe_conversation_with_references(client, real_ragflow):
         async for line in resp.aiter_lines():
             if line.startswith("data:") and "session_id" in line:
                 import json
+
                 try:
                     data = json.loads(line[5:].strip())
                     sid = data.get("data", {}).get("session_id") or data.get("session_id")
@@ -266,7 +291,7 @@ async def test_iframe_conversation_with_references(client, real_ragflow):
     # 第 2 轮:带 session_id 提问,期望流式回答 + 引用
     async with client.stream(
         "POST",
-        f"/proxy/chatbots/{dialog_id}/completions",
+        f"/api/v1/chatbots/{dialog_id}/completions",
         json={"question": "增值税税率是多少", "stream": True, "quote": True, "session_id": session_id},
         headers=headers,
     ) as resp:

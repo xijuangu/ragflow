@@ -21,6 +21,7 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "anyio>=4.3",
+    "ruff>=0.6",
 ]
 
 [tool.setuptools.packages.find]
@@ -31,3 +32,11 @@ asyncio_mode = "auto"
 markers = [
     "integration: 需要真实 RAGFlow 实例的集成测试(默认跳过,需 RAGFLOW_BETA_TOKEN 环境变量)",
 ]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]

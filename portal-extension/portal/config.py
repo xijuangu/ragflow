@@ -9,6 +9,7 @@
   RAGFLOW_DIALOG_ID       硬编码分享页关联的 RAGFlow Chat dialog_id
   T_SHORT_TTL_SECONDS     短期嵌入令牌有效期(默认 300 = 5 分钟)
 """
+
 import os
 from dataclasses import dataclass
 
@@ -16,6 +17,7 @@ from dataclasses import dataclass
 @dataclass
 class Settings:
     """运行时配置(由 load_settings() 从环境变量构造)。"""
+
     admin_username: str
     admin_password: str
     session_secret: str

@@ -3,6 +3,7 @@
 所有敏感值(真实 beta Token、密码、IP)只通过环境变量传入,不写入任何文件。
 单元测试用占位值;集成测试由外部导出真实环境变量(setdefault 不覆盖真实值)。
 """
+
 import os
 import sys
 from pathlib import Path
@@ -23,10 +24,10 @@ os.environ.setdefault("RAGFLOW_DIALOG_ID", "test-dialog-id-12345")
 os.environ.setdefault("RAGFLOW_BETA_TOKEN", FAKE_BETA_TOKEN)
 os.environ.setdefault("T_SHORT_TTL_SECONDS", "300")
 
-import httpx
-import pytest
+import httpx  # noqa: E402 — 环境变量须先于 portal.main 导入设置
+import pytest  # noqa: E402
 
-from portal.main import create_app
+from portal.main import create_app  # noqa: E402
 
 
 @pytest.fixture

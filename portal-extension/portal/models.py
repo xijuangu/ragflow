@@ -8,10 +8,18 @@
 
 Slice 4 才做 CRUD,本 slice 用内存硬编码数据。
 """
+
 from dataclasses import dataclass
+from typing import Literal
 
 from portal.config import Settings
 from portal.password import hash_password
+
+# 类型别名约束字面量取值(消除 Primitive Obsession,Slice 4 CRUD 会扩展可选值)
+Permission = Literal["use", "manage"]
+RagflowType = Literal["chat", "agent"]
+EmbedType = Literal["fullscreen", "widget"]
+SubjectType = Literal["user", "group"]
 
 
 @dataclass
@@ -27,23 +35,24 @@ class PortalUser:
 class SharePage:
     id: str
     name: str
-    ragflow_type: str = "chat"
+    ragflow_type: RagflowType = "chat"
     ragflow_resource_id: str = ""
-    embed_type: str = "fullscreen"
+    embed_type: EmbedType = "fullscreen"
     enabled: bool = True
 
 
 @dataclass
 class SharePageGrant:
     share_page_id: str
-    subject_type: str = "user"
+    subject_type: SubjectType = "user"
     subject_id: str = ""
-    permission: str = "use"
+    permission: Permission = "use"
 
 
 @dataclass
 class SeedData:
     """启动时构建的硬编码数据(Slice 1 无 DB)。"""
+
     users_by_username: dict
     users_by_id: dict
     share_pages_by_id: dict

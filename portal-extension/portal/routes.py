@@ -1,4 +1,5 @@
 """API 路由 — 登录、分享页 embed-url、SSE 代理。"""
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
@@ -37,10 +38,7 @@ async def get_embed_url(share_page_id: str, request: Request, user=Depends(get_c
         raise HTTPException(status_code=404, detail="分享页不存在或已禁用")
     # Slice 1:校验 admin 对默认分享页有 use 权限(硬编码 grant)
     has_grant = any(
-        g.share_page_id == share_page.id
-        and g.subject_id == user.id
-        and g.permission == "use"
-        for g in seed.grants
+        g.share_page_id == share_page.id and g.subject_id == user.id and g.permission == "use" for g in seed.grants
     )
     if not has_grant:
         raise HTTPException(status_code=403, detail="无权访问该分享页")
@@ -48,9 +46,7 @@ async def get_embed_url(share_page_id: str, request: Request, user=Depends(get_c
     settings = request.app.state.settings
     token_store = request.app.state.token_store
     t_short = token_store.issue(user.id, share_page.id, settings.t_short_ttl_seconds)
-    iframe_url = build_iframe_url(
-        settings.ragflow_host, share_page.ragflow_resource_id, t_short
-    )
+    iframe_url = build_iframe_url(settings.ragflow_host, share_page.ragflow_resource_id, t_short)
     return {
         "iframe_url": iframe_url,
         "share_page_id": share_page.id,
@@ -58,10 +54,12 @@ async def get_embed_url(share_page_id: str, request: Request, user=Depends(get_c
     }
 
 
-@router.post("/proxy/chatbots/{dialog_id}/completions")
+@router.post("/api/v1/chatbots/{dialog_id}/completions")
 async def proxy_chatbot_completions(dialog_id: str, request: Request):
     """SSE 代理:校验 T_short → 用 beta Token 调 RAGFlow bot_api → 流式回传。
 
+    路径与 RAGFlow 前端原生 SSE 调用路径一致(同源部署下 iframe 内前端发起的
+    `/api/v1/chatbots/<dialog_id>/completions` 天然走网关,无需额外反向代理配置)。
     对应验收点 4(无效/过期 T_short → 401)与验收点 6(beta Token 调 RAGFlow SSE)。
     真实 beta Token 只在网关→RAGFlow 这一跳出现,绝不返回浏览器。
     """

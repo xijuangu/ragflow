@@ -3,6 +3,7 @@
 密码哈希用 bcrypt(直接调用,避免 passlib 与新版 bcrypt 的兼容问题)。
 会话用 Starlette SessionMiddleware(HTTP-only 签名 cookie,同源)。
 """
+
 from fastapi import HTTPException, Request
 
 from portal.models import PortalUser

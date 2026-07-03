@@ -5,6 +5,9 @@ RAGFlow 原生 bot_api 对话」端到端链路。**RAGFlow 侧无任何修改**
 全程不离开网关服务端。
 
 > 对应 `docs/ISSUES.md` 的 Issue 1 / Slice 1。
+>
+> 说明:portal-extension 用 FastAPI 作为独立网关服务,与主项目 Quart 分离
+> (FastAPI 适合 SSE 异步代理,与主项目互不依赖)。
 
 ## 架构
 
@@ -17,6 +20,8 @@ iframe ──SSE──> 网关代理:校验 T_short → 用 beta Token 调 RAGFl
 
 - iframe URL 的 `auth` 参数是 RAGFlow 前端 `getAuthorization()` 原生注入点(优先读 URL `?auth=`,
   回退才读 localStorage),真实 beta Token 全程不进浏览器。
+- 网关 SSE 代理路径与 RAGFlow 前端原生调用路径一致(`/api/v1/chatbots/<id>/completions`),
+  同源部署下 iframe 内前端发起的 SSE 天然走网关,无需反向代理配置。
 - T_short 绑定用户 + 分享页,过期/撤销/dialog 不匹配均返回 401。
 
 ## 目录结构
@@ -24,16 +29,16 @@ iframe ──SSE──> 网关代理:校验 T_short → 用 beta Token 调 RAGFl
 ```
 portal-extension/
 ├── portal/
-│   ├── main.py        # FastAPI app 入口(create_app)
+│   ├── main.py        # FastAPI app 入口(create_app + X-Frame-Options 中间件)
 │   ├── config.py      # 配置(全部从环境变量读)
 │   ├── auth.py        # 会话校验依赖(get_current_user)
 │   ├── password.py    # bcrypt 密码哈希(独立模块避免循环导入)
-│   ├── models.py      # 硬编码数据(portal_user / share_page / grant)
+│   ├── models.py      # 硬编码数据(portal_user / share_page / grant,字段用 Literal 约束)
 │   ├── gateway.py     # T_short 签发/校验/撤销 + iframe URL 构造 + SSE 代理
-│   └── routes.py      # /login、/share-pages/{id}/embed-url、/proxy/chatbots/{id}/completions
+│   └── routes.py      # /login、/share-pages/{id}/embed-url、/api/v1/chatbots/{id}/completions
 ├── tests/
 │   ├── conftest.py    # pytest fixtures(测试客户端 + integration 跳过逻辑)
-│   └── test_slice1_e2e.py  # 端到端测试(13 个:11 单元 + 2 integration)
+│   └── test_slice1_e2e.py  # 端到端测试(14 个:12 单元 + 2 integration)
 ├── docs/              # PRD / ISSUES / NOTES
 ├── pyproject.toml
 └── README.md
@@ -55,9 +60,12 @@ portal-extension/
 
 ## 一条命令运行
 
+依赖管理用 [uv](https://docs.astral.sh/uv/)(与主项目一致,见 `AGENTS.md` / `CLAUDE.md`)。
+若系统无 uv,先安装:`curl -LsSf https://astral.sh/uv/install.sh | sh`。
+
 ```bash
-# 安装
-python3 -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"
+# 安装依赖(创建 .venv 并锁定)
+uv sync --python 3.13 --extra dev
 
 # 配置环境变量(示例,真实值请自行设置)
 export PORTAL_ADMIN_PASSWORD=your-password
@@ -67,7 +75,7 @@ export RAGFLOW_BETA_TOKEN=your-beta-token
 export RAGFLOW_DIALOG_ID=your-dialog-id
 
 # 启动
-uvicorn portal.main:app --port 8000 --reload
+uv run uvicorn portal.main:app --port 8000 --reload
 ```
 
 ## API
@@ -76,19 +84,25 @@ uvicorn portal.main:app --port 8000 --reload
 |---|---|---|
 | POST | `/login` | 登录,建立同源会话 cookie |
 | GET | `/share-pages/{id}/embed-url` | 返回 iframe URL(含 `auth=T_short`,需登录) |
-| POST | `/proxy/chatbots/{dialog_id}/completions` | SSE 代理(校验 T_short,用 beta Token 调 RAGFlow) |
+| POST | `/api/v1/chatbots/{dialog_id}/completions` | SSE 代理(与 RAGFlow 前端原生路径一致;校验 T_short,用 beta Token 调 RAGFlow) |
+
+所有响应附带 `X-Frame-Options: SAMEORIGIN`(PRD D10 同源嵌入,阻止外部站点 iframe)。
 
 ## 测试
 
 ```bash
-# 单元测试(无需 RAGFlow,11 个,默认占位值)
-pytest tests/test_slice1_e2e.py -v
+# 单元测试(无需 RAGFlow,12 个,默认占位值)
+uv run pytest tests/test_slice1_e2e.py -v
 
 # 集成测试(需真实 RAGFlow,导出 RAGFLOW_BETA_TOKEN 与 RAGFLOW_HOST 后运行)
-pytest tests/test_slice1_e2e.py -v -m integration
+uv run pytest tests/test_slice1_e2e.py -v -m integration
 
 # 全套(含 integration,需真实 RAGFlow 环境变量)
-pytest tests/test_slice1_e2e.py -v
+uv run pytest tests/test_slice1_e2e.py -v
+
+# 静态检查与格式化
+uv run ruff check portal/ tests/
+uv run ruff format portal/ tests/
 ```
 
 覆盖 7 个验收点:

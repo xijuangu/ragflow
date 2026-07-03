@@ -9,6 +9,7 @@
   - iframe 内 SSE 请求经网关代理:校验 T_short → 用 beta Token 调 RAGFlow bot_api
     → 流式响应回传 iframe。
 """
+
 import secrets
 import time
 from dataclasses import dataclass
@@ -22,6 +23,7 @@ from fastapi.responses import StreamingResponse
 @dataclass
 class TokenRecord:
     """短期嵌入令牌记录(内存存储,对应 ISSUES.md 的 T_short 表)。"""
+
     token: str
     portal_user_id: str
     share_page_id: str
@@ -49,21 +51,21 @@ class TokenStore:
 
     def validate(self, token: str):
         """校验 T_short 有效性:存在 / 未过期 / 未撤销。无效返回 None。"""
-        rec = self._tokens.get(token)
-        if rec is None:
+        record = self._tokens.get(token)
+        if record is None:
             return None
-        if rec.revoked:
+        if record.revoked:
             return None
-        if time.time() > rec.expires_at:
+        if time.time() > record.expires_at:
             return None
-        return rec
+        return record
 
     def revoke(self, token: str) -> bool:
         """撤销 T_short(撤销后同令牌请求 → 401)。"""
-        rec = self._tokens.get(token)
-        if rec is None:
+        record = self._tokens.get(token)
+        if record is None:
             return False
-        rec.revoked = True
+        record.revoked = True
         return True
 
 
@@ -85,7 +87,7 @@ def extract_t_short(request: Request):
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
         return None
-    return auth_header[len("Bearer "):].strip() or None
+    return auth_header[len("Bearer ") :].strip() or None
 
 
 async def proxy_sse_to_ragflow(request: Request, dialog_id: str):
@@ -99,12 +101,12 @@ async def proxy_sse_to_ragflow(request: Request, dialog_id: str):
     t_short = extract_t_short(request)
     if not t_short:
         raise HTTPException(status_code=401, detail="缺少 Authorization 令牌")
-    rec = token_store.validate(t_short)
-    if rec is None:
+    record = token_store.validate(t_short)
+    if record is None:
         raise HTTPException(status_code=401, detail="令牌无效或已过期")
     # 校验 T_short 绑定的分享页对应的 dialog_id 与请求的 dialog_id 一致
     seed = request.app.state.seed
-    share_page = seed.share_pages_by_id.get(rec.share_page_id)
+    share_page = seed.share_pages_by_id.get(record.share_page_id)
     if not share_page or share_page.ragflow_resource_id != dialog_id:
         raise HTTPException(status_code=401, detail="令牌与目标资源不匹配")
     # 读取请求体(原样转发给 RAGFlow)
@@ -122,9 +124,7 @@ async def proxy_sse_to_ragflow(request: Request, dialog_id: str):
         try:
             # trust_env=False:网关连内部 RAGFlow 不走系统代理环境变量
             async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
-                async with client.stream(
-                    "POST", upstream_url, content=body, headers=upstream_headers
-                ) as upstream:
+                async with client.stream("POST", upstream_url, content=body, headers=upstream_headers) as upstream:
                     async for chunk in upstream.aiter_bytes():
                         yield chunk
         except httpx.RequestError:
