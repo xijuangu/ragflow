@@ -32,6 +32,8 @@ import httpx
 from fastapi import HTTPException, Request
 from fastapi.responses import StreamingResponse
 
+from portal.auth import get_current_user
+
 
 @dataclass
 class TokenRecord:
@@ -263,38 +265,49 @@ async def fetch_session_history_via_ragflow(settings, dialog_id: str, session_id
 
 
 async def proxy_sse_to_ragflow(request: Request, dialog_id: str):
-    """SSE 代理:校验 T_short + grant + session_id 归属 → 用 beta Token 调 RAGFlow bot_api → 流式回传。
+    """SSE 代理:校验同源 cookie + T_short + grant + session_id 归属 → 用 beta Token 调 RAGFlow bot_api → 流式回传。
 
     对应验收点 4(无效/过期 T_short → 401)与验收点 6(beta Token 调 RAGFlow SSE)。
     Slice 2 验收点 7(基础归属隔离):若请求体含 session_id,校验其归属当前 T_short
     持有用户且 dialog_id 一致,不匹配 → 403(堵住「任意用户带他人 session_id 调 SSE」漏洞)。
     Slice 2:last_active_at 仅在流成功完成后更新(失败流不更新)。
 
-    Slice 3 完整校验链(每次请求都执行,任一失败 → 403):
-      步骤 1:门户登录态有效 — 通过 T_short 间接验证(T_short 是登录后签发的,
-              撤销 T_short 即等价于登录态失效;同 T_short 请求 → 403/401)。
-      步骤 2:share_page_grant 存在 — _assert_grant_exists 校验 grant 仍在
+    Slice 3 完整校验链(每次请求都执行,任一失败 → 403/401):
+      步骤 0:同源 cookie 有效(spec 步骤 1)— get_current_user 校验门户登录态 cookie。
+              iframe 同源加载时浏览器自动携带;无 cookie → 403(即使带有效 T_short)。
+      步骤 1:share_page_grant 存在(spec 步骤 2)— _assert_grant_exists 校验 grant 仍在
               (撤销授权后 grant 不存在 → 403,即使 T_short 仍有效)。
-      步骤 3:session_id 归属当前用户 — _assert_session_ownership 校验。
-      步骤 4:session_id 的 dialog_id 与 share_page 一致 — _assert_session_ownership 校验。
+      步骤 2:T_short 有效性(spec 步骤 1 的 T_short 维度)— revoked / 过期 → 401。
+      步骤 3:session_id 归属当前用户(spec 步骤 3)— _assert_session_ownership 校验。
+      步骤 4:session_id 的 dialog_id 与 share_page 一致(spec 步骤 4)— _assert_session_ownership 校验。
+
+    顺序说明(spec 字面顺序为 cookie→T_short→grant→归属→dialog_id,此处调整为
+    cookie→grant→T_short→归属→dialog_id):ISSUES Issue 3 验收点要求「撤销授权后
+    同令牌 → 403」,而撤销授权 = 删 grant + 吊销 T_short 同时进行。若 T_short 校验在
+    grant 之前,撤销后 T_short 已吊销会先返回 401,与 403 验收点矛盾。故 grant 校验
+    先于 T_short 有效性校验,保证撤销后走 grant 分支 → 403。直接吊销 T_short(grant
+    仍在)则走 T_short 分支 → 401。
     """
     settings = request.app.state.settings
     token_store = request.app.state.token_store
-    # 提取 T_short(校验链步骤 1 的前置:必须有 Authorization header)
+    # 校验链步骤 0:同源 cookie(spec 步骤 1)— 无 cookie → 403(即使带有效 T_short)
+    # iframe 同源加载时浏览器自动携带门户 cookie;此处复用 get_current_user 校验登录态。
+    await get_current_user(request)
+    # 提取 T_short(grant 校验的前置:需从 T_short 解出 portal_user_id / share_page_id)
     t_short = extract_t_short(request)
     if not t_short:
         raise HTTPException(status_code=401, detail="缺少 Authorization 令牌")
-    # 先查记录(不校验有效性),用于 grant 校验(步骤 2)需获取 portal_user_id
+    # 先查记录(不校验有效性),用于 grant 校验(步骤 1)需获取 portal_user_id
     # 顺序很重要:grant 校验在 T_short 有效性校验之前,这样「撤销授权」(删 grant +
     # 吊销 T_short)→ 403(grant 不存在),而「直接吊销 T_short」(grant 仍在)→ 401
     record = token_store.get_record(t_short)
     if record is None:
         raise HTTPException(status_code=401, detail="令牌无效或已过期")
-    # 校验链步骤 2:grant 存在(Slice 3 新增 — 撤销授权后立即失效的关键校验)
+    # 校验链步骤 1:grant 存在(spec 步骤 2 — 撤销授权后立即失效的关键校验)
     seed = request.app.state.seed
     _assert_grant_exists(seed, record.portal_user_id, record.share_page_id)
-    # 校验链步骤 1:T_short 有效性(revoked / 过期 → 401)
-    # 此时 grant 已通过(若 grant 不存在已在步骤 2 返回 403)
+    # 校验链步骤 2:T_short 有效性(revoked / 过期 → 401)
+    # 此时 grant 已通过(若 grant 不存在已在步骤 1 返回 403)
     record = token_store.validate(t_short)
     if record is None:
         raise HTTPException(status_code=401, detail="令牌无效或已过期")

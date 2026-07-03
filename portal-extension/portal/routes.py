@@ -197,8 +197,8 @@ async def proxy_chatbot_completions(dialog_id: str, request: Request):
     Slice 2 验收点 7(基础归属隔离):若请求体含 session_id,校验其归属当前 T_short
     持有用户,不匹配 → 403。last_active_at 仅在流成功完成后更新。
 
-    Slice 3 完整校验链(每次请求都执行):登录态(T_short)+ grant 存在 +
-    session 归属 + dialog_id 一致,任一失败 → 403。详见 proxy_sse_to_ragflow 文档。
+    Slice 3 完整校验链(每次请求都执行):同源 cookie + grant 存在 + T_short 有效 +
+    session 归属 + dialog_id 一致,任一失败 → 403/401。详见 proxy_sse_to_ragflow 文档。
     """
     return await proxy_sse_to_ragflow(request, dialog_id)
 

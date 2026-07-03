@@ -144,9 +144,15 @@ class SeedData:
 
         Slice 3 只支持 subject_type='user';Slice 4 才启用 group subject_type。
         撤销授权后此方法返回 False(网关每次请求都调用,实现「撤销立即失效」)。
+
+        显式过滤 subject_type='user' — 避免 Slice 4 启用 group 后,
+        若某 group 的 subject_id 撞上 user_id 导致误判(只查 user 维度的 grant)。
         """
         return any(
-            g.share_page_id == share_page_id and g.subject_id == subject_id and g.permission == "use"
+            g.share_page_id == share_page_id
+            and g.subject_type == "user"
+            and g.subject_id == subject_id
+            and g.permission == "use"
             for g in self.grants
         )
 

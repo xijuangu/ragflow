@@ -123,7 +123,9 @@ async def _login_and_get_t_short(client):
 
 
 async def test_proxy_rejects_missing_token(client):
-    """无 Authorization header 调网关 → 401。"""
+    """无 Authorization header 调网关 → 401(需先登录通过 cookie 校验,再测 T_short 缺失)。"""
+    # 先登录建立同源 cookie(Slice 3 起 SSE 代理先校验 cookie 再校验 T_short)
+    await client.post("/login", json={"username": "admin", "password": "testpass123"})
     resp = await client.post(
         "/api/v1/chatbots/test-dialog-id-12345/completions",
         json={"question": "测试", "stream": True},
@@ -132,7 +134,9 @@ async def test_proxy_rejects_missing_token(client):
 
 
 async def test_proxy_rejects_invalid_token(client):
-    """错误的 T_short 调网关 → 401。"""
+    """错误的 T_short 调网关 → 401(需先登录通过 cookie 校验,再测 T_short 无效)。"""
+    # 先登录建立同源 cookie
+    await client.post("/login", json={"username": "admin", "password": "testpass123"})
     resp = await client.post(
         "/api/v1/chatbots/test-dialog-id-12345/completions",
         json={"question": "测试", "stream": True},

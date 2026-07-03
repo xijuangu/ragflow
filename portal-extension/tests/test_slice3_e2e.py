@@ -9,11 +9,13 @@
      - iframe 继续提问 → 403(grant 不存在)。
      - 刷新 iframe 加载(embed-url)→ 403(拒绝签发新 T_short)。
   5. 撤销后历史会话保留(chat_session_owner 记录仍在,管理员可查)。
-  6. 校验链四步分别构造失败场景:
-     - 步骤 1 失败:未登录 → 403。
-     - 步骤 2 失败:无 grant → 403(撤销后)。
+  6. 校验链各步分别构造失败场景(对应 gateway.py proxy_sse_to_ragflow docstring):
+     - 步骤 0 失败:无同源 cookie → 403(test_sse_rejects_missing_cookie)。
+     - 步骤 1 失败:无 grant → 403(撤销后)。
+     - 步骤 2 失败:T_short 无效/吊销 → 401(由撤销后同令牌覆盖)。
      - 步骤 3 失败:session 不归属 → 403。
      - 步骤 4 失败:dialog_id 不一致 → 403。
+     另:test_chain_step1_unauthenticated_rejected 覆盖 embed-url / 预创建 路由的未登录 → 403。
 """
 
 from unittest.mock import AsyncMock
@@ -21,8 +23,6 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 import pytest
-
-from portal.models import SharePageGrant
 
 
 def _extract_iframe_params(url: str) -> dict:
@@ -75,29 +75,17 @@ async def _login_and_precreate(client, monkeypatch, session_id: str):
     return qs["auth"][0], qs["shared_id"][0], session_id
 
 
-def _add_second_user_grant(app, user_id="u_user2", username="user2"):
-    """辅助:为隔离测试追加第二个用户的 grant(若 SeedData 未硬编码 user2)。"""
-    from portal.models import PortalUser
-    from portal.password import hash_password
+async def _login_user_b_and_get_t_short(client_b) -> str:
+    """辅助:user2 登录并获取对 sp_default 的 T_short。
 
-    user2 = PortalUser(
-        id=user_id,
-        username=username,
-        password_hash=hash_password("testpass123"),
-        is_admin=False,
-        enabled=True,
-    )
-    app.state.seed.users_by_username[username] = user2
-    app.state.seed.users_by_id[user2.id] = user2
-    app.state.seed.grants.append(
-        SharePageGrant(
-            share_page_id="sp_default",
-            subject_type="user",
-            subject_id=user2.id,
-            permission="use",
-        )
-    )
-    return user2
+    build_seed_data 已硬编码 user2(对 sp_default 有 use grant),无需动态追加。
+    供验收点 2/3 复用,消除登录 + embed-url 取 T_short 的重复代码。
+    """
+    resp = await client_b.post("/login", json={"username": "user2", "password": "testpass123"})
+    assert resp.status_code == 200, f"user2 登录失败: {resp.text}"
+    resp = await client_b.get("/share-pages/sp_default/embed-url")
+    assert resp.status_code == 200, f"user2 获取 embed-url 失败: {resp.text}"
+    return _extract_iframe_params(resp.json()["iframe_url"])["auth"][0]
 
 
 # ---------------------------------------------------------------------------
@@ -136,18 +124,12 @@ async def test_continue_conversation_streams_with_new_message_id(client, monkeyp
 async def test_user_b_cannot_use_admin_session_id(client, app, monkeypatch):
     """用户 B 用 admin 的 session_id 调网关 SSE → 403(归属校验失败)。"""
     fake_session_id = "slice3-session-isolation-002"
-    t_short_admin, dialog_id, _ = await _login_and_precreate(client, monkeypatch, fake_session_id)
+    _t_short_admin, dialog_id, _ = await _login_and_precreate(client, monkeypatch, fake_session_id)
 
-    # user2 登录(若 SeedData 未硬编码则动态追加)
-    if "user2" not in app.state.seed.users_by_username:
-        _add_second_user_grant(app)
+    # user2 已由 build_seed_data 硬编码(对 sp_default 有 use grant),直接登录
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client_b:
-        resp = await client_b.post("/login", json={"username": "user2", "password": "testpass123"})
-        assert resp.status_code == 200
-        resp = await client_b.get("/share-pages/sp_default/embed-url")
-        assert resp.status_code == 200
-        t_short_b = _extract_iframe_params(resp.json()["iframe_url"])["auth"][0]
+        t_short_b = await _login_user_b_and_get_t_short(client_b)
 
         # user2 用自己的 T_short + admin 的 session_id 调 SSE → 403
         resp = await client_b.post(
@@ -170,17 +152,11 @@ async def test_user_b_t_short_rejected_for_admin_session(client, app, monkeypatc
     本测试额外断言:即使 user2 也有 sp_default 的 grant,仍因 session 归属失败 → 403。
     """
     fake_session_id = "slice3-session-isolation-003"
-    t_short_admin, dialog_id, _ = await _login_and_precreate(client, monkeypatch, fake_session_id)
+    _t_short_admin, dialog_id, _ = await _login_and_precreate(client, monkeypatch, fake_session_id)
 
-    if "user2" not in app.state.seed.users_by_username:
-        _add_second_user_grant(app)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client_b:
-        resp = await client_b.post("/login", json={"username": "user2", "password": "testpass123"})
-        assert resp.status_code == 200
-        resp = await client_b.get("/share-pages/sp_default/embed-url")
-        assert resp.status_code == 200
-        t_short_b = _extract_iframe_params(resp.json()["iframe_url"])["auth"][0]
+        t_short_b = await _login_user_b_and_get_t_short(client_b)
 
         resp = await client_b.post(
             f"/api/v1/chatbots/{dialog_id}/completions",
@@ -286,12 +262,33 @@ async def test_revoke_grant_preserves_session_history(client, app, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 验收点 6:校验链四步分别构造失败场景。
+# 验收点 6:校验链各步分别构造失败场景。
 # ---------------------------------------------------------------------------
 
 
+async def test_sse_rejects_missing_cookie(client, app, monkeypatch):
+    """校验链步骤 0 失败:无同源 cookie 调 SSE → 403(即使带有效 T_short)。
+
+    spec(ISSUES.md Issue 3 行 113)要求校验链步骤 1 为「门户登录态有效(同源 cookie)」。
+    iframe 同源加载时浏览器自动携带门户 cookie;若请求无 cookie(如非同源或未登录),
+    即使 Authorization header 带有效 T_short,网关也应在步骤 0 拒绝 → 403。
+    """
+    fake_session_id = "slice3-chain-step0-009"
+    t_short, dialog_id, _ = await _login_and_precreate(client, monkeypatch, fake_session_id)
+
+    # 用新 client(无 cookie)调 SSE,即使带有效 T_short 也应 → 403
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client_no_cookie:
+        resp = await client_no_cookie.post(
+            f"/api/v1/chatbots/{dialog_id}/completions",
+            json={"question": "测试", "stream": True, "session_id": fake_session_id},
+            headers={"Authorization": f"Bearer {t_short}"},
+        )
+        assert resp.status_code == 403, f"无同源 cookie 应拒绝: {resp.text}"
+
+
 async def test_chain_step1_unauthenticated_rejected(client):
-    """校验链步骤 1 失败:未登录 → 403。"""
+    """校验链步骤 1 失败:未登录 → 403(embed-url / 预创建 路由)。"""
     # 未登录调 embed-url → 403
     resp = await client.get("/share-pages/sp_default/embed-url")
     assert resp.status_code == 403
@@ -365,8 +362,6 @@ async def test_chain_step4_dialog_id_mismatch_rejected(client, app, monkeypatch)
 
 async def test_revoke_grant_requires_admin(client, app, monkeypatch):
     """普通用户调撤销授权 API → 403(管理员专用)。"""
-    if "user2" not in app.state.seed.users_by_username:
-        _add_second_user_grant(app)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client_b:
         resp = await client_b.post("/login", json={"username": "user2", "password": "testpass123"})
