@@ -169,6 +169,72 @@ async def get_chatbot_session(dialog_id, session_id, tenant_id=None):
     )
 
 
+@manager.route("/chatbots/<dialog_id>/sessions/<session_id>", methods=["PATCH"])  # noqa: F821
+@login_required(auth_types=AUTH_BETA)
+@add_tenant_id_to_kwargs
+async def rename_chatbot_session(dialog_id, session_id, tenant_id=None):
+    """重命名会话(Slice 5 扩展端点)— 更新 API4Conversation.name 字段。
+
+    复用 API4ConversationService.update_by_id(CommonService 继承),无新业务逻辑。
+    请求体:{"name": "新名称"}。
+    校验链与 get_chatbot_session 一致:dialog 归属 tenant + session 归属 dialog。
+    """
+    exists, dialog = DialogService.get_by_id(dialog_id)
+    if (not exists
+            or getattr(dialog, "tenant_id", None) != tenant_id
+            or str(getattr(dialog, "status", "")) != StatusEnum.VALID.value):
+        logger.warning(
+            "Denied chatbot session rename: reason=%s tenant_id=%s dialog_id=%s session_id=%s",
+            "no access to this chatbot",
+            tenant_id,
+            dialog_id,
+            session_id,
+        )
+        return get_error_data_result(message="Authentication error: no access to this chatbot!")
+
+    exists, conv = API4ConversationService.get_by_id(session_id)
+    if not exists or conv.dialog_id != dialog_id:
+        return get_error_data_result(message="Session not found")
+
+    req = await get_request_json()
+    name = req.get("name")
+    if not name:
+        return get_error_data_result(message="name is required")
+
+    API4ConversationService.update_by_id(session_id, {"name": name})
+    return get_result(data={"session_id": conv.id, "name": name})
+
+
+@manager.route("/chatbots/<dialog_id>/sessions/<session_id>", methods=["DELETE"])  # noqa: F821
+@login_required(auth_types=AUTH_BETA)
+@add_tenant_id_to_kwargs
+async def delete_chatbot_session(dialog_id, session_id, tenant_id=None):
+    """删除会话(Slice 5 扩展端点)— 调 API4ConversationService.delete_by_id。
+
+    复用 CommonService.delete_by_id,无新业务逻辑。
+    校验链与 get_chatbot_session 一致:dialog 归属 tenant + session 归属 dialog。
+    """
+    exists, dialog = DialogService.get_by_id(dialog_id)
+    if (not exists
+            or getattr(dialog, "tenant_id", None) != tenant_id
+            or str(getattr(dialog, "status", "")) != StatusEnum.VALID.value):
+        logger.warning(
+            "Denied chatbot session delete: reason=%s tenant_id=%s dialog_id=%s session_id=%s",
+            "no access to this chatbot",
+            tenant_id,
+            dialog_id,
+            session_id,
+        )
+        return get_error_data_result(message="Authentication error: no access to this chatbot!")
+
+    exists, conv = API4ConversationService.get_by_id(session_id)
+    if not exists or conv.dialog_id != dialog_id:
+        return get_error_data_result(message="Session not found")
+
+    API4ConversationService.delete_by_id(session_id)
+    return get_result(data={"session_id": session_id, "deleted": True})
+
+
 @manager.route("/chatbots/<dialog_id>/info", methods=["GET"])  # noqa: F821
 @login_required(auth_types=AUTH_BETA)
 @add_tenant_id_to_kwargs

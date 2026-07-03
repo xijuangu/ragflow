@@ -20,6 +20,11 @@ Slice 3 扩展(原型 H5/H6 验证结论 — 完整校验链 + 撤销机制):
   - 网关 SSE 代理加完整四步校验链(登录态 + grant + session 归属 + dialog_id 一致)。
   - TokenStore.revoke_tokens_for_user_share_page:批量吊销某用户某分享页的所有 T_short。
   - 撤销授权 = 删 grant + 吊销 T_short;后续同 T_short 请求 → 403/401(立即失效)。
+
+Slice 5 扩展(原型 H7/H8 验证结论 — 会话重命名/删除双删):
+  - rename_session_via_ragflow:调 RAGFlow PATCH 端点更新 API4Conversation.name。
+  - delete_session_via_ragflow:调 RAGFlow DELETE 端点删除 API4Conversation。
+  - 均复用 Slice 2 的 _build_upstream_client / _build_upstream_headers / _ragflow_http_error helper。
 """
 
 import json
@@ -263,6 +268,34 @@ async def fetch_session_history_via_ragflow(settings, dialog_id: str, session_id
         # RAGFlow get_result 包裹结构:{"code":0,"data":{...}}
         data = body.get("data", body) if isinstance(body, dict) else body
         return data
+
+
+async def rename_session_via_ragflow(settings, dialog_id: str, session_id: str, name: str) -> None:
+    """调 RAGFlow PATCH 端点更新 API4Conversation.name(对应 Slice 5 验收点:重命名同步)。
+
+    复用 Slice 2 的 _build_upstream_client / _build_upstream_headers helper。
+    非 200 → 抛 HTTPException(502),由调用方决定是否阻塞门户侧更新(双写策略:重命名不阻塞)。
+    """
+    upstream_url = f"{settings.ragflow_host.rstrip('/')}/api/v1/chatbots/{dialog_id}/sessions/{session_id}"
+    upstream_headers = _build_upstream_headers(settings.ragflow_beta_token, content_type="application/json")
+    async with _build_upstream_client(timeout=30.0) as client:
+        resp = await client.patch(upstream_url, headers=upstream_headers, json={"name": name})
+        if resp.status_code != 200:
+            raise _ragflow_http_error(resp, "RAGFlow 重命名会话失败")
+
+
+async def delete_session_via_ragflow(settings, dialog_id: str, session_id: str) -> None:
+    """调 RAGFlow DELETE 端点删除 API4Conversation(对应 Slice 5 验收点:双删)。
+
+    复用 Slice 2 的 _build_upstream_client / _build_upstream_headers helper。
+    非 200 → 抛 HTTPException(502),由调用方决定标记 deleted_at 或阻塞(双删策略)。
+    """
+    upstream_url = f"{settings.ragflow_host.rstrip('/')}/api/v1/chatbots/{dialog_id}/sessions/{session_id}"
+    upstream_headers = _build_upstream_headers(settings.ragflow_beta_token)
+    async with _build_upstream_client(timeout=30.0) as client:
+        resp = await client.delete(upstream_url, headers=upstream_headers)
+        if resp.status_code != 200:
+            raise _ragflow_http_error(resp, "RAGFlow 删除会话失败")
 
 
 async def proxy_sse_to_ragflow(request: Request, dialog_id: str):

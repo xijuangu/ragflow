@@ -1,6 +1,6 @@
-"""数据模型 — Slice 1 + Slice 2 + Slice 3 + Slice 4。
+"""数据模型 — Slice 1 + Slice 2 + Slice 3 + Slice 4 + Slice 5。
 
-数据模型(对应 ISSUES.md Issue 1 + Issue 2 + Issue 3 + Issue 4):
+数据模型(对应 ISSUES.md Issue 1 + Issue 2 + Issue 3 + Issue 4 + Issue 5):
   portal_user(id, username, password_hash, email, is_admin, enabled, created_at)
   portal_group(id, name, created_at)
   portal_group_member(group_id, user_id, added_at)  — 本 slice 用 set 简化
@@ -8,10 +8,12 @@
              embed_type='fullscreen', enabled)
   share_page_grant(share_page_id, subject_type, subject_id, permission='use')
   chat_session_owner(session_id, share_page_id, portal_user_id NOT NULL,
-                     ragflow_resource_id, title, created_at, last_active_at)
+                     ragflow_resource_id, title, created_at, last_active_at,
+                     deleted_at)  — Slice 5 加 deleted_at(双删失败标记)
 
 Slice 4 把 Slice 1-3 的硬编码 SeedData 改为可变内存存储,新增用户组与完整 CRUD 方法;
 has_use_grant 升级支持 user + group 两种 subject_type(用户组继承)。
+Slice 5 加会话重命名/删除/标记删除方法,用户硬删除(delete_user 级联清理组成员关系)。
 仍用内存存储(线程安全由 GIL + 单进程 FastAPI 保证),DB 化作为独立 slice。
 """
 
@@ -94,6 +96,7 @@ class ChatSessionOwner:
 
     session_id 为主键(对应 RAGFlow API4Conversation.id);
     portal_user_id NOT NULL(预创建时即绑定到当前用户)。
+    Slice 5 加 deleted_at 字段(双删失败标记,None=正常,非空=待重试)。
     """
 
     session_id: str
@@ -103,6 +106,7 @@ class ChatSessionOwner:
     title: str = ""
     created_at: float = field(default_factory=time.time)
     last_active_at: float = field(default_factory=time.time)
+    deleted_at: float | None = None  # Slice 5:双删失败标记(None=正常,非空=待重试)
 
 
 class SessionStore:
@@ -144,11 +148,12 @@ class SessionStore:
         """按用户 + 分享页查询会话列表(对应验收点 4:我的会话)。
 
         基础隔离:只返回 portal_user_id 匹配的记录(用户看不到他人的 session)。
+        Slice 5:排除 deleted_at 非空的记录(标记待重试的不在用户列表显示)。
         """
         return [
             s
             for s in self._sessions.values()
-            if s.portal_user_id == portal_user_id and s.share_page_id == share_page_id
+            if s.portal_user_id == portal_user_id and s.share_page_id == share_page_id and s.deleted_at is None
         ]
 
     def update_last_active(self, session_id: str) -> bool:
@@ -161,6 +166,48 @@ class SessionStore:
             return False
         owner.last_active_at = time.time()
         return True
+
+    def rename(self, session_id: str, title: str) -> bool:
+        """重命名会话标题(对应 Slice 5 验收点:用户重命名自己的会话)。
+
+        返回 True 表示 session 存在并已更新;False 表示 session 不存在。
+        """
+        owner = self._sessions.get(session_id)
+        if owner is None:
+            return False
+        owner.title = title
+        return True
+
+    def delete(self, session_id: str) -> bool:
+        """硬删除会话归属记录(从存储移除,对应 Slice 5 双删成功后清门户侧)。
+
+        返回 True 表示 session 存在并已删除;False 表示 session 不存在。
+        """
+        return self._sessions.pop(session_id, None) is not None
+
+    def mark_deleted(self, session_id: str) -> bool:
+        """标记会话为待删除(双删失败时:RAGFlow 删除失败,门户侧标记 deleted_at 待重试)。
+
+        记录保留(不从存储移除),供后台重试任务查询。
+        返回 True 表示 session 存在并已标记;False 表示 session 不存在。
+        """
+        owner = self._sessions.get(session_id)
+        if owner is None:
+            return False
+        owner.deleted_at = time.time()
+        return True
+
+    def list_all_for_user(self, portal_user_id: str) -> list:
+        """返回用户的所有会话(跨分享页,用于 Slice 5 用户硬删除级联)。
+
+        与 list_for_user 的区别:不限 share_page_id,且包含 deleted_at 标记的记录
+        (级联删除需处理所有会话,包括待重试的)。
+        """
+        return [s for s in self._sessions.values() if s.portal_user_id == portal_user_id]
+
+    def list_pending_deletion(self) -> list:
+        """返回 deleted_at 非空的会话(供后台重试任务查询,Slice 5 提供查询不实现重试)。"""
+        return [s for s in self._sessions.values() if s.deleted_at is not None]
 
 
 def _gen_id(prefix: str) -> str:
@@ -243,6 +290,23 @@ class SeedData:
         if user is None:
             return False
         user.enabled = enabled
+        return True
+
+    def delete_user(self, portal_user_id: str) -> bool:
+        """硬删除用户(Slice 5):从 users_by_id / users_by_username 移除 + 清理组成员关系。
+
+        注意:此方法只删用户记录与组成员关系,不级联删 chat_session_owner
+        (由路由层调 SessionStore.delete + delete_session_via_ragflow 完成级联双删)。
+        返回 True 表示找到并删除;False 表示用户不存在。
+        """
+        user = self.users_by_id.get(portal_user_id)
+        if user is None:
+            return False
+        del self.users_by_id[portal_user_id]
+        del self.users_by_username[user.username]
+        # 清理组成员关系(避免 dangling user_id)
+        for members in self.group_members.values():
+            members.discard(portal_user_id)
         return True
 
     # -----------------------------------------------------------------
