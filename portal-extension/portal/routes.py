@@ -11,15 +11,25 @@ Slice 5 新增:
   - DELETE /share-pages/{id}/sessions/{sid} — 用户删除自己的会话(双删:RAGFlow 失败标记 deleted_at)。
   - DELETE /admin/share-pages/{id}/sessions/{sid} — 管理员删除任意会话(双删,校验 share_page_id 一致性)。
   - DELETE /admin/users/{id} — 管理员硬删除用户(级联硬删所有会话,无孤儿;RAGFlow 失败记日志)。
+
+Slice 6 新增:
+  - 审计日志写入点:8 类敏感操作(login_success/failure、grant_create/revoke、session_delete、
+    session_view_elevated、user_enable/disable)。
+  - GET /admin/sessions — 管理员列出所有会话(按用户/分享页/时间过滤,返回元数据)。
+  - GET /admin/sessions/pending-deletion — 管理员查看待重试删除的会话。
+  - GET /admin/sessions/{session_id} — 管理员查看会话(默认元数据;?elevated=true 写审计+返回正文)。
+  - POST /admin/sessions/{session_id}/retry-delete — 管理员手动触发清理(调 RAGFlow DELETE + 删门户记录)。
+  - GET /admin/audit-logs — 管理员查看审计日志(按 action/actor/时间过滤)。
 """
 
+import json
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
-from portal.auth import authenticate, get_current_user, require_admin
+from portal.auth import LoginError, authenticate, get_current_user, require_admin
 from portal.gateway import (
     build_iframe_url,
     delete_session_via_ragflow,
@@ -128,8 +138,39 @@ def _grant_to_dict(grant: SharePageGrant) -> dict:
     }
 
 
+def _audit_log_to_dict(log) -> dict:
+    """审计日志 → 响应 dict(Slice 6)。meta_json 解析回 dict 便于前端读取。"""
+    try:
+        meta = json.loads(log.meta_json) if log.meta_json else None
+    except (ValueError, TypeError):
+        meta = None
+    return {
+        "id": log.id,
+        "actor_user_id": log.actor_user_id,
+        "action": log.action,
+        "target_type": log.target_type,
+        "target_id": log.target_id,
+        "at": log.at,
+        "meta": meta,
+    }
+
+
+def _session_owner_to_metadata_dict(owner) -> dict:
+    """会话归属记录 → 管理员元数据 dict(不含正文,Slice 6 验收点 3)。"""
+    return {
+        "session_id": owner.session_id,
+        "title": owner.title,
+        "portal_user_id": owner.portal_user_id,
+        "share_page_id": owner.share_page_id,
+        "ragflow_resource_id": owner.ragflow_resource_id,
+        "created_at": owner.created_at,
+        "last_active_at": owner.last_active_at,
+        "deleted_at": owner.deleted_at,
+    }
+
+
 # ---------------------------------------------------------------------------
-# 登录(Slice 1,Slice 4 改进明确错误)
+# 登录(Slice 1,Slice 4 改进明确错误,Slice 6 加审计)
 # ---------------------------------------------------------------------------
 
 
@@ -138,9 +179,32 @@ async def login(body: LoginRequest, request: Request):
     """登录端点:校验凭据,建立同源会话 cookie(对应验收点 1)。
 
     Slice 4 改进:登录失败明确错误(用户未注册 / 密码错误 / 账号已禁用)。
+    Slice 6 加审计:登录成功记 login_success,登录失败记 login_failure(PR D7b)。
     """
     seed = request.app.state.seed
-    user = await authenticate(seed, body.username, body.password)
+    audit_store = request.app.state.audit_store
+    try:
+        user = await authenticate(seed, body.username, body.password)
+    except LoginError as e:
+        # 登录失败审计:actor 用 attempted user id(若用户存在)或 username(若不存在)
+        attempted = seed.get_user_by_username(body.username)
+        actor_id = attempted.id if attempted else body.username
+        audit_store.record(
+            actor_user_id=actor_id,
+            action="login_failure",
+            target_type="user",
+            target_id=actor_id,
+            meta={"username": body.username, "reason": e.detail},
+        )
+        raise
+    # 登录成功审计
+    audit_store.record(
+        actor_user_id=user.id,
+        action="login_success",
+        target_type="user",
+        target_id=user.id,
+        meta={"username": user.username},
+    )
     request.session["user_id"] = user.id
     return {"username": user.username, "is_admin": user.is_admin}
 
@@ -375,6 +439,8 @@ async def delete_session(share_page_id: str, session_id: str, request: Request, 
       - 先调 RAGFlow DELETE;成功 → 门户侧硬删除 chat_session_owner。
       - RAGFlow 失败 → 标记 deleted_at(记录保留待重试),返回 200(不暴露失败)。
     归属校验:session 必须归属当前用户且属于该分享页;不匹配 → 403/404。
+
+    Slice 6 加审计:RAGFlow 删除成功(门户侧已硬删除)后记 session_delete 审计日志。
     """
     seed = request.app.state.seed
     share_page = _check_share_page_access(seed, share_page_id, user)
@@ -388,7 +454,18 @@ async def delete_session(share_page_id: str, session_id: str, request: Request, 
         raise HTTPException(status_code=403, detail="会话不属于该分享页")
     # 双删:RAGFlow DELETE 成功 → 门户硬删除;失败 → 标记 deleted_at(返回 200 不暴露失败)
     settings = request.app.state.settings
-    await _dual_delete_session(settings, request.app.state.session_store, share_page.ragflow_resource_id, session_id)
+    deleted = await _dual_delete_session(
+        settings, request.app.state.session_store, share_page.ragflow_resource_id, session_id
+    )
+    # Slice 6 审计:仅 RAGFlow 成功(门户侧已硬删除)时记 session_delete
+    if deleted:
+        request.app.state.audit_store.record(
+            actor_user_id=user.id,
+            action="session_delete",
+            target_type="session",
+            target_id=session_id,
+            meta={"share_page_id": share_page_id, "owner_user_id": owner.portal_user_id},
+        )
     return {"session_id": session_id, "deleted": True}
 
 
@@ -462,11 +539,21 @@ async def admin_update_user(user_id: str, body: UpdateEnabledRequest, request: R
 
     禁用后:用户无法登录(明确错误),会话保留,网关拒绝其请求。
     禁用不删会话(与硬删除的区别:禁用走 PATCH,会话保留;硬删除走 DELETE,级联删会话)。
+
+    Slice 6 加审计:启用 → user_enable,禁用 → user_disable(PR D7b)。
     """
     seed = request.app.state.seed
     if not seed.set_user_enabled(user_id, body.enabled):
         raise HTTPException(status_code=404, detail="用户不存在")
     target = seed.get_user(user_id)
+    # Slice 6 审计:user_enable / user_disable
+    request.app.state.audit_store.record(
+        actor_user_id=user.id,
+        action="user_enable" if body.enabled else "user_disable",
+        target_type="user",
+        target_id=user_id,
+        meta={"username": target.username},
+    )
     return _user_to_dict(target)
 
 
@@ -482,14 +569,26 @@ async def admin_delete_user(user_id: str, request: Request, user=Depends(require
       - RAGFlow 失败记 ``logger.warning`` 供审计(Slice 6 加端点暴露)。
       - 最后删 portal_user。
     禁用用户不删会话(走 PATCH /admin/users/{id});硬删除才级联删会话。
+
+    Slice 6 加审计:级联删除的每个会话记 session_delete(门户侧已硬删除,无孤儿)。
     """
     seed = request.app.state.seed
     if seed.get_user(user_id) is None:
         raise HTTPException(status_code=404, detail="用户不存在")
     settings = request.app.state.settings
     session_store = request.app.state.session_store
+    audit_store = request.app.state.audit_store
     # 级联删除用户所有会话(RAGFlow 失败也硬删除门户侧,避免孤儿;失败记日志)
-    await session_store.cascade_delete_for_user(user_id, settings)
+    cascade_results = await session_store.cascade_delete_for_user(user_id, settings)
+    # Slice 6 审计:每个级联删除的会话记 session_delete(门户侧已硬删除)
+    for session_id, _success in cascade_results:
+        audit_store.record(
+            actor_user_id=user.id,
+            action="session_delete",
+            target_type="session",
+            target_id=session_id,
+            meta={"cascade": True, "owner_user_id": user_id},
+        )
     # 删除用户(无论 RAGFlow 是否失败)
     seed.delete_user(user_id)
     return {"user_id": user_id, "deleted": True}
@@ -578,7 +677,9 @@ async def admin_list_share_pages(request: Request, user=Depends(require_admin)):
 
 
 @router.patch("/admin/share-pages/{share_page_id}")
-async def admin_update_share_page(share_page_id: str, body: UpdateEnabledRequest, request: Request, user=Depends(require_admin)):
+async def admin_update_share_page(
+    share_page_id: str, body: UpdateEnabledRequest, request: Request, user=Depends(require_admin)
+):
     """管理员启用/禁用分享页(对应 PRD 用户故事 13)。"""
     seed = request.app.state.seed
     if not seed.set_share_page_enabled(share_page_id, body.enabled):
@@ -594,6 +695,8 @@ async def admin_delete_session(share_page_id: str, session_id: str, request: Req
     失败 → 标记 deleted_at。
     校验:share_page_id 存在 + session 属于该分享页(与 rename_session/delete_session
     校验链一致,不匹配 → 403);管理员不校验 portal_user_id 归属(可删任意用户的会话)。
+
+    Slice 6 加审计:RAGFlow 删除成功(门户侧已硬删除)后记 session_delete 审计日志。
     """
     seed = request.app.state.seed
     if seed.get_share_page(share_page_id) is None:
@@ -606,7 +709,18 @@ async def admin_delete_session(share_page_id: str, session_id: str, request: Req
         raise HTTPException(status_code=403, detail="会话不属于该分享页")
     # 双删:RAGFlow DELETE(管理员不校验 portal_user_id 归属,可删任意用户的会话)
     settings = request.app.state.settings
-    await _dual_delete_session(settings, request.app.state.session_store, owner.ragflow_resource_id, session_id)
+    deleted = await _dual_delete_session(
+        settings, request.app.state.session_store, owner.ragflow_resource_id, session_id
+    )
+    # Slice 6 审计:仅 RAGFlow 成功(门户侧已硬删除)时记 session_delete
+    if deleted:
+        request.app.state.audit_store.record(
+            actor_user_id=user.id,
+            action="session_delete",
+            target_type="session",
+            target_id=session_id,
+            meta={"share_page_id": share_page_id, "owner_user_id": owner.portal_user_id, "admin_initiated": True},
+        )
     return {"session_id": session_id, "deleted": True}
 
 
@@ -628,17 +742,29 @@ def _validate_subject_exists(seed, subject_type: str, subject_id: str) -> None:
 
 
 @router.post("/admin/share-pages/{share_page_id}/grants", status_code=201)
-async def admin_create_grant(share_page_id: str, body: CreateGrantRequest, request: Request, user=Depends(require_admin)):
+async def admin_create_grant(
+    share_page_id: str, body: CreateGrantRequest, request: Request, user=Depends(require_admin)
+):
     """管理员把分享页授权给用户或用户组(对应 PRD 用户故事 16-17)。
 
     subject_type/permission 由 CreateGrantRequest 的 Literal 类型在入口处
     做 Pydantic 422 校验,无需 handler 内手写 if 校验。
+
+    Slice 6 加审计:授权创建后记 grant_create(PR D7b)。
     """
     seed = request.app.state.seed
     if seed.get_share_page(share_page_id) is None:
         raise HTTPException(status_code=404, detail="分享页不存在")
     _validate_subject_exists(seed, body.subject_type, body.subject_id)
     grant = seed.create_grant(share_page_id, body.subject_type, body.subject_id, body.permission)
+    # Slice 6 审计:grant_create
+    request.app.state.audit_store.record(
+        actor_user_id=user.id,
+        action="grant_create",
+        target_type="grant",
+        target_id=share_page_id,
+        meta={"subject_type": body.subject_type, "subject_id": body.subject_id, "permission": body.permission},
+    )
     return _grant_to_dict(grant)
 
 
@@ -691,6 +817,14 @@ async def revoke_grant(
         revoked_count = 0
         for member_id in members:
             revoked_count += token_store.revoke_tokens_for_user_share_page(member_id, share_page_id)
+    # Slice 6 审计:grant_revoke
+    request.app.state.audit_store.record(
+        actor_user_id=user.id,
+        action="grant_revoke",
+        target_type="grant",
+        target_id=share_page_id,
+        meta={"subject_type": subject_type, "subject_id": subject_id, "tokens_revoked": revoked_count},
+    )
     return {
         "revoked": True,
         "share_page_id": share_page_id,
@@ -698,3 +832,156 @@ async def revoke_grant(
         "subject_id": subject_id,
         "tokens_revoked": revoked_count,
     }
+
+
+# ===========================================================================
+# Slice 6:管理员后台(会话搜索/分级查看/审计日志/待重试清理)
+# ===========================================================================
+#
+# 全部 require_admin(普通用户调任何 /admin/* → 403,Slice 4 已强制)。
+# 审计日志写入点散落在 login / grant / session_delete / user_enable/disable 等
+# 已有路由;此处只新增查询端点与 elevated 查正文端点。
+
+
+@router.get("/admin/sessions")
+async def admin_list_all_sessions(
+    request: Request,
+    user_id: str | None = Query(None, description="按门户用户 ID 过滤"),
+    share_page_id: str | None = Query(None, description="按分享页 ID 过滤"),
+    since: float | None = Query(None, description="起始时间(unix 时间戳,按 created_at 过滤)"),
+    until: float | None = Query(None, description="截止时间(unix 时间戳,按 created_at 过滤)"),
+    limit: int = Query(100, ge=1, le=1000, description="返回条数上限"),
+    user=Depends(require_admin),
+):
+    """管理员列出所有用户的会话(按用户/分享页/时间过滤,返回元数据,不含正文)。
+
+    对应 Slice 6 验收点 2:管理员能搜索/列出所有用户的会话。
+    默认按 created_at 倒序;排除 deleted_at 非空的(待重试删除的会话由
+    /admin/sessions/pending-deletion 单独查询)。
+    """
+    session_store = request.app.state.session_store
+    sessions = session_store.list_all(
+        portal_user_id=user_id,
+        share_page_id=share_page_id,
+        since=since,
+        until=until,
+        limit=limit,
+    )
+    return {"sessions": [_session_owner_to_metadata_dict(s) for s in sessions]}
+
+
+@router.get("/admin/sessions/pending-deletion")
+async def admin_list_pending_deletion(request: Request, user=Depends(require_admin)):
+    """管理员查看待重试删除的会话(deleted_at 非空的记录,Slice 5 标记 + Slice 6 暴露查询)。
+
+    对应 Slice 6 验收点 6:管理员能查看待重试删除的会话并手动触发清理。
+    """
+    session_store = request.app.state.session_store
+    pending = session_store.list_pending_deletion()
+    return {"sessions": [_session_owner_to_metadata_dict(s) for s in pending]}
+
+
+@router.get("/admin/sessions/{session_id}")
+async def admin_get_session(
+    session_id: str,
+    request: Request,
+    elevated: bool = Query(False, description="true=查正文(写审计);缺省/false=只看元数据"),
+    user=Depends(require_admin),
+):
+    """管理员查看会话详情(分级查看,对应 Slice 6 验收点 3-4)。
+
+    - 默认(elevated 缺省/false):返回元数据(标题、用户、时间等,不含正文)。
+    - elevated=true:
+      1. 写 audit_log(action=session_view_elevated, target_type=session,
+         target_id=session_id, meta={owner_user_id, share_page_id})。
+      2. 调 RAGFlow GET 端点取回正文(messages + reference)。
+      3. 返回 {metadata, messages, reference}。
+
+    对应 PRD D7a:管理员默认只看元数据,查正文需二次确认 + 写审计。
+    """
+    session_store = request.app.state.session_store
+    owner = session_store.get(session_id)
+    if owner is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    metadata = _session_owner_to_metadata_dict(owner)
+    if not elevated:
+        # 默认只返回元数据,不写审计,不调 RAGFlow(验收点 3)
+        return metadata
+    # elevated=true:写审计 + 调 RAGFlow 取正文(验收点 4)
+    request.app.state.audit_store.record(
+        actor_user_id=user.id,
+        action="session_view_elevated",
+        target_type="session",
+        target_id=session_id,
+        meta={"owner_user_id": owner.portal_user_id, "share_page_id": owner.share_page_id},
+    )
+    settings = request.app.state.settings
+    history = await _invoke_upstream(
+        lambda: fetch_session_history_via_ragflow(settings, owner.ragflow_resource_id, session_id),
+        "取回会话失败",
+    )
+    # 合并元数据与正文
+    return {
+        **metadata,
+        "messages": history.get("messages", []) if isinstance(history, dict) else [],
+        "reference": history.get("reference", {}) if isinstance(history, dict) else {},
+    }
+
+
+@router.post("/admin/sessions/{session_id}/retry-delete")
+async def admin_retry_delete_session(session_id: str, request: Request, user=Depends(require_admin)):
+    """管理员手动触发待重试会话的清理(对应 Slice 6 验收点 6)。
+
+    流程:
+      1. 校验 session 存在且 deleted_at 非空(必须是待重试状态)。
+      2. 调 RAGFlow DELETE;成功 → 删门户记录(硬删除),记 session_delete 审计。
+      3. RAGFlow 失败 → 返回 502(上游错误),门户侧记录保留(仍待重试)。
+    """
+    session_store = request.app.state.session_store
+    owner = session_store.get(session_id)
+    if owner is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    if owner.deleted_at is None:
+        raise HTTPException(status_code=400, detail="该会话不在待重试状态(deleted_at 为空)")
+    settings = request.app.state.settings
+    try:
+        await delete_session_via_ragflow(settings, owner.ragflow_resource_id, session_id)
+    except HTTPException:
+        # RAGFlow 失败:门户侧记录保留(仍待重试),返回 502 让管理员感知
+        raise
+    # RAGFlow 成功 → 删门户记录(硬删除)
+    session_store.delete(session_id)
+    # Slice 6 审计:session_delete(管理员手动重试清理)
+    request.app.state.audit_store.record(
+        actor_user_id=user.id,
+        action="session_delete",
+        target_type="session",
+        target_id=session_id,
+        meta={"share_page_id": owner.share_page_id, "owner_user_id": owner.portal_user_id, "retry": True},
+    )
+    return {"session_id": session_id, "deleted": True}
+
+
+@router.get("/admin/audit-logs")
+async def admin_list_audit_logs(
+    request: Request,
+    actor_user_id: str | None = Query(None, description="按操作者用户 ID 过滤"),
+    action: str | None = Query(None, description="按 action 过滤(8 类敏感操作之一)"),
+    since: float | None = Query(None, description="起始时间(unix 时间戳)"),
+    until: float | None = Query(None, description="截止时间(unix 时间戳)"),
+    limit: int = Query(100, ge=1, le=1000, description="返回条数上限"),
+    user=Depends(require_admin),
+):
+    """管理员查看审计日志(按 action/actor/时间过滤,对应 Slice 6 验收点 5)。
+
+    返回最新的 limit 条(按 at 倒序)。审计日志永久保留,无 TTL(PR D8b)。
+    """
+    audit_store = request.app.state.audit_store
+    logs = audit_store.list(
+        actor_user_id=actor_user_id,
+        action=action,
+        since=since,
+        until=until,
+        limit=limit,
+    )
+    return {"audit_logs": [_audit_log_to_dict(log) for log in logs]}

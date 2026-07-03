@@ -241,7 +241,11 @@ async def precreate_session_via_ragflow(settings, dialog_id: str) -> str:
                 except json.JSONDecodeError:
                     continue
                 # RAGFlow 首帧结构:{"code":0,"data":{"session_id":"..."}}
-                session_id = (data.get("data") or {}).get("session_id") if isinstance(data.get("data"), dict) else data.get("session_id")
+                session_id = (
+                    (data.get("data") or {}).get("session_id")
+                    if isinstance(data.get("data"), dict)
+                    else data.get("session_id")
+                )
                 if session_id:
                     return str(session_id)
     raise HTTPException(status_code=502, detail="RAGFlow 预创建 session 未返回 session_id")

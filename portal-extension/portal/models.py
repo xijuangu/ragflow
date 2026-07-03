@@ -1,6 +1,6 @@
-"""数据模型 — Slice 1 + Slice 2 + Slice 3 + Slice 4 + Slice 5。
+"""数据模型 — Slice 1 + Slice 2 + Slice 3 + Slice 4 + Slice 5 + Slice 6。
 
-数据模型(对应 ISSUES.md Issue 1 + Issue 2 + Issue 3 + Issue 4 + Issue 5):
+数据模型(对应 ISSUES.md Issue 1 + Issue 2 + Issue 3 + Issue 4 + Issue 5 + Issue 6):
   portal_user(id, username, password_hash, email, is_admin, enabled, created_at)
   portal_group(id, name, created_at)
   portal_group_member(group_id, user_id, added_at)  — 本 slice 用 set 简化
@@ -10,13 +10,18 @@
   chat_session_owner(session_id, share_page_id, portal_user_id NOT NULL,
                      ragflow_resource_id, title, created_at, last_active_at,
                      deleted_at)  — Slice 5 加 deleted_at(双删失败标记)
+  audit_log(id, actor_user_id, action, target_type, target_id, at, meta_json)
+    — Slice 6 加审计日志(8 类敏感操作,内存存储,永久保留)
 
 Slice 4 把 Slice 1-3 的硬编码 SeedData 改为可变内存存储,新增用户组与完整 CRUD 方法;
 has_use_grant 升级支持 user + group 两种 subject_type(用户组继承)。
 Slice 5 加会话重命名/删除/标记删除方法,用户硬删除(delete_user 级联清理组成员关系)。
+Slice 6 加 AuditLog + AuditStore(8 类敏感操作审计,内存存储,永久保留无 TTL),
+SessionStore.list_all 支持管理员跨用户会话查询(按用户/分享页/时间过滤)。
 仍用内存存储(线程安全由 GIL + 单进程 FastAPI 保证),DB 化作为独立 slice。
 """
 
+import json
 import logging
 import secrets
 import time
@@ -33,6 +38,18 @@ Permission = Literal["use", "manage"]
 RagflowType = Literal["chat", "agent"]
 EmbedType = Literal["fullscreen", "widget"]
 SubjectType = Literal["user", "group"]
+# Slice 6 审计日志枚举(PR D7b:仅覆盖敏感操作,8 类)
+AuditAction = Literal[
+    "login_success",
+    "login_failure",
+    "grant_create",
+    "grant_revoke",
+    "session_delete",
+    "session_view_elevated",
+    "user_enable",
+    "user_disable",
+]
+AuditTargetType = Literal["user", "share_page", "session", "grant"]
 
 
 @dataclass
@@ -153,7 +170,11 @@ class SessionStore:
         基础隔离:只返回 portal_user_id 匹配的记录(用户看不到他人的 session)。
         Slice 5:排除 deleted_at 非空的记录(标记待重试的不在用户列表显示)。
         """
-        return [s for s in self._sessions.values() if s.portal_user_id == portal_user_id and s.share_page_id == share_page_id and s.deleted_at is None]
+        return [
+            s
+            for s in self._sessions.values()
+            if s.portal_user_id == portal_user_id and s.share_page_id == share_page_id and s.deleted_at is None
+        ]
 
     def update_last_active(self, session_id: str) -> bool:
         """更新会话最后活跃时间(对应验收点 3:对话后 last_active_at 更新)。
@@ -208,6 +229,32 @@ class SessionStore:
         """返回 deleted_at 非空的会话(供后台重试任务查询,Slice 5 提供查询不实现重试)。"""
         return [s for s in self._sessions.values() if s.deleted_at is not None]
 
+    def list_all(
+        self,
+        portal_user_id: str | None = None,
+        share_page_id: str | None = None,
+        since: float | None = None,
+        until: float | None = None,
+        limit: int = 100,
+    ) -> list:
+        """管理员跨用户列出所有会话(按用户/分享页/时间过滤,Slice 6 验收点 2)。
+
+        与 list_for_user 的区别:不限 portal_user_id(管理员视角),支持多维度过滤;
+        排除 deleted_at 非空的记录(待重试的会话由 list_pending_deletion 单独查询)。
+        默认按 created_at 倒序(最新的在前),limit 默认 100。
+        """
+        result = [
+            s
+            for s in self._sessions.values()
+            if s.deleted_at is None
+            and (portal_user_id is None or s.portal_user_id == portal_user_id)
+            and (share_page_id is None or s.share_page_id == share_page_id)
+            and (since is None or s.created_at >= since)
+            and (until is None or s.created_at <= until)
+        ]
+        result.sort(key=lambda s: s.created_at, reverse=True)
+        return result[:limit]
+
     async def cascade_delete_for_user(self, portal_user_id: str, settings) -> list:
         """级联删除用户的所有会话(含 deleted_at 非空),用于用户硬删除场景。
 
@@ -252,6 +299,83 @@ class SessionStore:
 def _gen_id(prefix: str) -> str:
     """生成带前缀的随机 ID(降低碰撞,便于调试可读)。"""
     return f"{prefix}_{secrets.token_hex(8)}"
+
+
+@dataclass
+class AuditLog:
+    """审计日志记录(对应 audit_log 表,Slice 6)。
+
+    8 类敏感操作(PR D7b):login_success | login_failure | grant_create |
+    grant_revoke | session_delete | session_view_elevated | user_enable | user_disable。
+    永久保留,无 TTL/自动清理(PR D8b)。
+    """
+
+    id: str
+    actor_user_id: str
+    action: AuditAction
+    target_type: AuditTargetType
+    target_id: str
+    at: float  # unix 时间戳(与 chat_session_owner.created_at 一致)
+    meta_json: str  # JSON string,可选上下文(如 username / subject_type 等)
+
+
+class AuditStore:
+    """内存审计日志存储 — Slice 6(线程安全由 GIL + 单进程 FastAPI 保证)。
+
+    永久保留,不自动清理(PR D8b);普通用户的日常操作不记审计(PR D7b 仅敏感操作)。
+    """
+
+    def __init__(self):
+        self._logs: list = []
+
+    def record(
+        self,
+        actor_user_id: str,
+        action: AuditAction,
+        target_type: AuditTargetType,
+        target_id: str,
+        meta: dict | None = None,
+    ) -> AuditLog:
+        """记录一条审计日志(8 类敏感操作之一)。
+
+        meta 为可选上下文 dict,序列化为 JSON 字符串存入 meta_json。
+        返回新建的 AuditLog(已追加到内存列表)。
+        """
+        log = AuditLog(
+            id=_gen_id("al"),
+            actor_user_id=actor_user_id,
+            action=action,
+            target_type=target_type,
+            target_id=target_id,
+            at=time.time(),
+            meta_json=json.dumps(meta, ensure_ascii=False) if meta else "",
+        )
+        self._logs.append(log)
+        return log
+
+    def list(
+        self,
+        actor_user_id: str | None = None,
+        action: str | None = None,
+        since: float | None = None,
+        until: float | None = None,
+        limit: int = 100,
+    ) -> list:
+        """查询审计日志(按 actor/action/时间过滤,默认按时间倒序)。
+
+        与 SessionStore.list_all 一致的过滤语义:None 表示不过滤该维度。
+        默认 limit=100;返回最新的 limit 条(按 at 倒序)。
+        """
+        result = [
+            log
+            for log in self._logs
+            if (actor_user_id is None or log.actor_user_id == actor_user_id)
+            and (action is None or log.action == action)
+            and (since is None or log.at >= since)
+            and (until is None or log.at <= until)
+        ]
+        result.sort(key=lambda log: log.at, reverse=True)
+        return result[:limit]
 
 
 class SeedData:
@@ -437,7 +561,9 @@ class SeedData:
     # 授权 CRUD
     # -----------------------------------------------------------------
 
-    def create_grant(self, share_page_id: str, subject_type: SubjectType, subject_id: str, permission: Permission = "use") -> SharePageGrant:
+    def create_grant(
+        self, share_page_id: str, subject_type: SubjectType, subject_id: str, permission: Permission = "use"
+    ) -> SharePageGrant:
         """创建授权(管理员调用)。
 
         调用方需校验 share_page_id 与 subject_id 存在(本方法只追加,不校验)。
@@ -446,7 +572,12 @@ class SeedData:
         的安全漏洞;撤销一次即彻底)。
         """
         for g in self.grants:
-            if g.share_page_id == share_page_id and g.subject_type == subject_type and g.subject_id == subject_id and g.permission == permission:
+            if (
+                g.share_page_id == share_page_id
+                and g.subject_type == subject_type
+                and g.subject_id == subject_id
+                and g.permission == permission
+            ):
                 return g
         grant = SharePageGrant(
             share_page_id=share_page_id,
@@ -516,7 +647,11 @@ class SeedData:
         list_user_granted_share_page_ids 统一 ACL 解析(消除重复的 grant 过滤逻辑)。
         """
         authorized_page_ids = self.list_user_granted_share_page_ids(portal_user_id)
-        return [self.share_pages_by_id[pid] for pid in authorized_page_ids if pid in self.share_pages_by_id and self.share_pages_by_id[pid].enabled]
+        return [
+            self.share_pages_by_id[pid]
+            for pid in authorized_page_ids
+            if pid in self.share_pages_by_id and self.share_pages_by_id[pid].enabled
+        ]
 
 
 def build_seed_data(settings: Settings) -> SeedData:

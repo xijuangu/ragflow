@@ -378,7 +378,9 @@ async def test_admin_delete_user_cleans_all_sessions_even_if_ragflow_fails(clien
 
     # 所有会话门户侧记录都硬删除(无孤儿)— 包括 RAGFlow 失败的和 deleted_at 非空的
     assert app.state.session_store.get(fake_session_ok) is None, "RAGFlow 成功的会话应硬删除"
-    assert app.state.session_store.get(fake_session_fail) is None, "RAGFlow 失败的会话也应硬删除(无孤儿,用户已不存在无法重试)"
+    assert app.state.session_store.get(fake_session_fail) is None, (
+        "RAGFlow 失败的会话也应硬删除(无孤儿,用户已不存在无法重试)"
+    )
 
     # 验证无孤儿:session_store 中无任何 portal_user_id 指向 alice 的记录
     alice_sessions = [s for s in app.state.session_store._sessions.values() if s.portal_user_id == alice["id"]]

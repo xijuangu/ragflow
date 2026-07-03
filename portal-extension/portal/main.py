@@ -13,12 +13,12 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from portal.config import load_settings
 from portal.gateway import TokenStore
-from portal.models import SessionStore, build_seed_data
+from portal.models import AuditStore, SessionStore, build_seed_data
 from portal.routes import router
 
 
 def create_app() -> FastAPI:
-    """构造 FastAPI 应用:挂载会话中间件、硬编码数据、令牌表、会话表、路由。"""
+    """构造 FastAPI 应用:挂载会话中间件、硬编码数据、令牌表、会话表、审计表、路由。"""
     settings = load_settings()
     app = FastAPI(title="RAGFlow 权限门户", version="0.2.0")
     # 同源 HTTP-only 签名会话 cookie
@@ -38,6 +38,8 @@ def create_app() -> FastAPI:
     app.state.token_store = TokenStore()
     # Slice 2:chat_session_owner 内存表(Slice 4 才上 DB)
     app.state.session_store = SessionStore()
+    # Slice 6:audit_log 内存表(永久保留,无 TTL/自动清理,PR D8b)
+    app.state.audit_store = AuditStore()
     app.include_router(router)
     return app
 
