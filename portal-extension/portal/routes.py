@@ -1,5 +1,8 @@
 """API 路由 — 登录、分享页 embed-url、SSE 代理、session 预创建/列表/恢复。"""
 
+from collections.abc import Awaitable, Callable
+from typing import TypeVar
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
@@ -10,9 +13,12 @@ from portal.gateway import (
     precreate_session_via_ragflow,
     proxy_sse_to_ragflow,
 )
+from portal.models import SharePage
 from portal.password import verify_password
 
 router = APIRouter()
+
+T = TypeVar("T")
 
 
 class LoginRequest(BaseModel):
@@ -31,7 +37,7 @@ async def login(body: LoginRequest, request: Request):
     return {"username": user.username, "is_admin": user.is_admin}
 
 
-def _check_share_page_access(seed, share_page_id: str, user) -> "object":
+def _check_share_page_access(seed, share_page_id: str, user) -> SharePage:
     """校验分享页存在且当前用户有 use 权限;返回 share_page 对象。
 
     Slice 1:硬编码 grant 校验(admin 对默认分享页有 use 权限)。
@@ -46,6 +52,19 @@ def _check_share_page_access(seed, share_page_id: str, user) -> "object":
     if not has_grant:
         raise HTTPException(status_code=403, detail="无权访问该分享页")
     return share_page
+
+
+async def _invoke_upstream(fn: Callable[[], Awaitable[T]], action: str) -> T:
+    """统一包装上游 RAGFlow 调用的异常处理(HTTPException 透传,其他异常 → 502)。
+
+    消除 precreate_session / resume_session 中重复的 try/except 块。
+    """
+    try:
+        return await fn()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"{action}: {e}")
 
 
 @router.get("/share-pages/{share_page_id}/embed-url")
@@ -90,12 +109,10 @@ async def precreate_session(share_page_id: str, request: Request, user=Depends(g
     share_page = _check_share_page_access(seed, share_page_id, user)
     settings = request.app.state.settings
     # 调 RAGFlow 预创建 session(网关用 beta Token,绝不返回浏览器)
-    try:
-        session_id = await precreate_session_via_ragflow(settings, share_page.ragflow_resource_id)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"预创建 session 失败: {e}")
+    session_id = await _invoke_upstream(
+        lambda: precreate_session_via_ragflow(settings, share_page.ragflow_resource_id),
+        "预创建 session 失败",
+    )
     # 立即绑定到当前用户(chat_session_owner.portal_user_id NOT NULL)
     request.app.state.session_store.bind(
         session_id=session_id,
@@ -160,12 +177,10 @@ async def resume_session(share_page_id: str, session_id: str, request: Request, 
         raise HTTPException(status_code=403, detail="会话不属于该分享页")
     # 调 RAGFlow GET 端点取回消息 + 引用
     settings = request.app.state.settings
-    try:
-        history = await fetch_session_history_via_ragflow(settings, share_page.ragflow_resource_id, session_id)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"取回会话失败: {e}")
+    history = await _invoke_upstream(
+        lambda: fetch_session_history_via_ragflow(settings, share_page.ragflow_resource_id, session_id),
+        "取回会话失败",
+    )
     # 补充门户侧标题(chat_session_owner.title 为列表显示主源)
     if isinstance(history, dict):
         history = {**history, "title": owner.title}
@@ -181,6 +196,7 @@ async def proxy_chatbot_completions(dialog_id: str, request: Request):
     对应验收点 4(无效/过期 T_short → 401)与验收点 6(beta Token 调 RAGFlow SSE)。
     真实 beta Token 只在网关→RAGFlow 这一跳出现,绝不返回浏览器。
 
-    Slice 2:代理完成后更新 chat_session_owner.last_active_at(若请求体含 session_id)。
+    Slice 2 验收点 7(基础归属隔离):若请求体含 session_id,校验其归属当前 T_short
+    持有用户,不匹配 → 403。last_active_at 仅在流成功完成后更新。
     """
     return await proxy_sse_to_ragflow(request, dialog_id)

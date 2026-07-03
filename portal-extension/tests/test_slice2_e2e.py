@@ -41,6 +41,23 @@ def _mock_precreate(monkeypatch, session_id: str):
     )
 
 
+def _mock_ragflow_sse_success(monkeypatch, sse_body: bytes = b'data: {"code":0}\n\n'):
+    """辅助:mock 网关内的 httpx.AsyncClient,让上游 SSE 返回 200 成功流。
+
+    用于 last_active_at 更新测试:stream_generator 完整消费成功流后才更新时间戳
+    (修复项 2:仅在成功流后更新)。不 mock 时上游 ragflow-mock.invalid 不可达(失败流)。
+    """
+
+    class _MockAsyncClient(httpx.AsyncClient):
+        def __init__(self, *args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(
+                lambda req: httpx.Response(200, content=sse_body, headers={"content-type": "text/event-stream"})
+            )
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr("portal.gateway.httpx.AsyncClient", _MockAsyncClient)
+
+
 # ---------------------------------------------------------------------------
 # 验收点 1:用户打开分享页时,门户预创建 session 并在 chat_session_owner 绑定到当前用户。
 # ---------------------------------------------------------------------------
@@ -254,20 +271,73 @@ async def test_user_cannot_access_other_users_session(client, app, monkeypatch):
         assert not any(s["session_id"] == fake_session_id for s in sessions), "用户 B 不应在列表中看到 admin 的 session"
 
 
+async def test_sse_rejects_other_users_session(client, app, monkeypatch):
+    """用户 B 用自己的 T_short + admin 的 session_id 调 SSE → 403(基础归属隔离)。
+
+    对应 Slice 2 验收点 7:网关校验 session_id 归属当前 T_short 持有用户,
+    不匹配 → 403(堵住「任意用户带他人 session_id 调 SSE 即可代理到 RAGFlow」漏洞)。
+    网关在代理前就拒绝,不会调上游 RAGFlow。
+    """
+    # 在 app 中追加第二个用户(用于隔离测试)
+    user_b = PortalUser(
+        id="u_userb",
+        username="userb",
+        password_hash=hash_password("testpass123"),
+        is_admin=False,
+        enabled=True,
+    )
+    app.state.seed.users_by_username["userb"] = user_b
+    app.state.seed.users_by_id[user_b.id] = user_b
+    app.state.seed.grants.append(
+        SharePageGrant(
+            share_page_id="sp_default",
+            subject_type="user",
+            subject_id=user_b.id,
+            permission="use",
+        )
+    )
+
+    # admin 登录并预创建 session(归属 admin)
+    await _login(client)
+    fake_session_id = "fake-ragflow-session-009"
+    _mock_precreate(monkeypatch, fake_session_id)
+    resp = await client.post("/share-pages/sp_default/sessions")
+    assert resp.status_code == 200
+
+    # user B 登录并获取自己的 T_short(独立 client,独立 cookie jar)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client_b:
+        resp = await client_b.post("/login", json={"username": "userb", "password": "testpass123"})
+        assert resp.status_code == 200
+        resp = await client_b.get("/share-pages/sp_default/embed-url")
+        assert resp.status_code == 200
+        t_short_b = _extract_iframe_params(resp.json()["iframe_url"])["auth"][0]
+        dialog_id = os.environ["RAGFLOW_DIALOG_ID"]
+
+        # user B 用自己的 T_short + admin 的 session_id 调 SSE → 403(归属校验失败)
+        resp = await client_b.post(
+            f"/api/v1/chatbots/{dialog_id}/completions",
+            json={"question": "测试", "stream": True, "session_id": fake_session_id},
+            headers={"Authorization": f"Bearer {t_short_b}"},
+        )
+        assert resp.status_code == 403, f"用户 B 不应用 admin 的 session_id 调 SSE: {resp.text}"
+
+
 # ---------------------------------------------------------------------------
 # 验收点 3:对话后 chat_session_owner.last_active_at 被更新。
 # ---------------------------------------------------------------------------
 
 
 async def test_sse_updates_last_active_at(client, app, monkeypatch):
-    """对话后 chat_session_owner.last_active_at 被更新。
+    """对话成功后 chat_session_owner.last_active_at 被更新。
 
-    使用 T_short 调 SSE 代理(带 session_id),代理完成后(即使上游不可达)
-    last_active_at 应被更新。
+    使用 T_short 调 SSE 代理(带 session_id),上游 SSE 流成功完成后,
+    last_active_at 应被更新(修复项 2:仅在成功流后更新)。
     """
     await _login(client)
     fake_session_id = "fake-ragflow-session-006"
     _mock_precreate(monkeypatch, fake_session_id)
+    _mock_ragflow_sse_success(monkeypatch)
     await client.post("/share-pages/sp_default/sessions")
 
     owner_before = app.state.session_store.get(fake_session_id)
@@ -283,7 +353,7 @@ async def test_sse_updates_last_active_at(client, app, monkeypatch):
     # 等待确保时间戳有差异
     time.sleep(0.02)
 
-    # 调 SSE 代理(带 session_id;上游 ragflow-mock.invalid 不可达,代理会完成并更新 last_active_at)
+    # 调 SSE 代理(带 session_id;上游被 mock 为成功 SSE 流,代理完成后更新 last_active_at)
     resp = await client.post(
         f"/api/v1/chatbots/{dialog_id}/completions",
         json={"question": "测试问题", "stream": True, "session_id": fake_session_id},
@@ -291,7 +361,7 @@ async def test_sse_updates_last_active_at(client, app, monkeypatch):
     )
     await resp.aread()  # 消费流式响应体
 
-    # last_active_at 应被更新
+    # last_active_at 应被更新(成功流)
     owner_after = app.state.session_store.get(fake_session_id)
     assert owner_after is not None
     assert owner_after.last_active_at > initial_last_active, (
@@ -304,6 +374,7 @@ async def test_sse_updates_last_active_at_with_known_session(client, app, monkey
     await _login(client)
     fake_session_id = "fake-ragflow-session-007"
     _mock_precreate(monkeypatch, fake_session_id)
+    _mock_ragflow_sse_success(monkeypatch)
     await client.post("/share-pages/sp_default/sessions")
 
     owner_before = app.state.session_store.get(fake_session_id)
@@ -322,8 +393,10 @@ async def test_sse_updates_last_active_at_with_known_session(client, app, monkey
         headers={"Authorization": f"Bearer {t_short}"},
     )
     await resp.aread()
+    owner_after_first = app.state.session_store.get(fake_session_id)
+    assert owner_after_first.last_active_at == initial_last_active, "不带 session_id 的调用不应更新 last_active_at"
 
-    # 带 session_id 的调用才更新
+    # 带 session_id 的成功流调用才更新
     time.sleep(0.02)
     resp = await client.post(
         f"/api/v1/chatbots/{dialog_id}/completions",
@@ -334,6 +407,41 @@ async def test_sse_updates_last_active_at_with_known_session(client, app, monkey
 
     owner_after = app.state.session_store.get(fake_session_id)
     assert owner_after.last_active_at > initial_last_active
+
+
+async def test_sse_failed_stream_does_not_update_last_active_at(client, app, monkeypatch):
+    """上游不可达(失败流)时不更新 last_active_at(修复项 2:仅在成功流后更新)。
+
+    失败流不应误推活跃时间(避免崩溃的对话被记为「刚活跃」)。
+    """
+    await _login(client)
+    fake_session_id = "fake-ragflow-session-008"
+    _mock_precreate(monkeypatch, fake_session_id)
+    # 不 mock 上游:ragflow-mock.invalid 不可达,stream_generator 走 RequestError 分支(失败流)
+    await client.post("/share-pages/sp_default/sessions")
+
+    owner_before = app.state.session_store.get(fake_session_id)
+    initial_last_active = owner_before.last_active_at
+
+    resp = await client.get("/share-pages/sp_default/embed-url")
+    t_short = _extract_iframe_params(resp.json()["iframe_url"])["auth"][0]
+    dialog_id = os.environ["RAGFLOW_DIALOG_ID"]
+
+    time.sleep(0.02)
+
+    # 调 SSE 代理(带 session_id,但上游不可达 → 失败流)
+    resp = await client.post(
+        f"/api/v1/chatbots/{dialog_id}/completions",
+        json={"question": "测试", "stream": True, "session_id": fake_session_id},
+        headers={"Authorization": f"Bearer {t_short}"},
+    )
+    await resp.aread()
+
+    # 失败流: last_active_at 不应被更新
+    owner_after = app.state.session_store.get(fake_session_id)
+    assert owner_after.last_active_at == initial_last_active, (
+        f"失败流不应更新 last_active_at: before={initial_last_active} after={owner_after.last_active_at}"
+    )
 
 
 # ---------------------------------------------------------------------------
