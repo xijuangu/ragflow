@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "portal-extension"
+version = "0.1.0"
+description = "RAGFlow 权限门户与嵌入访问网关 — Slice 1 最小可登录分享页骨架"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "httpx>=0.27",
+    "bcrypt>=4.0",
+    "itsdangerous>=2.1",
+    "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "anyio>=4.3",
+]
+
+[tool.setuptools.packages.find]
+include = ["portal*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "integration: 需要真实 RAGFlow 实例的集成测试(默认跳过,需 RAGFLOW_BETA_TOKEN 环境变量)",
+]
