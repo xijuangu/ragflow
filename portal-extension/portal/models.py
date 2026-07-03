@@ -1,6 +1,6 @@
-"""硬编码数据模型 — Slice 1 + Slice 2。
+"""硬编码数据模型 — Slice 1 + Slice 2 + Slice 3。
 
-数据模型(对应 ISSUES.md Issue 1 + Issue 2):
+数据模型(对应 ISSUES.md Issue 1 + Issue 2 + Issue 3):
   portal_user(id, username, password_hash, is_admin=true, enabled=true)
   share_page(id, name, ragflow_type='chat', ragflow_resource_id=<dialog_id>,
              embed_type='fullscreen', enabled=true)
@@ -8,6 +8,8 @@
   chat_session_owner(session_id, share_page_id, portal_user_id NOT NULL,
                      ragflow_resource_id, title, created_at, last_active_at)
 
+Slice 3 新增:第二个硬编码普通用户 user2(用于隔离测试)、SeedData 的
+has_use_grant / revoke_grant 方法(支持完整校验链步骤 2 与撤销授权)。
 Slice 4 才做 CRUD,本 slice 用内存硬编码数据。
 Slice 4 才上 DB,Slice 2 的 chat_session_owner 用内存 SessionStore。
 """
@@ -137,14 +139,48 @@ class SeedData:
     share_pages_by_id: dict
     grants: list
 
+    def has_use_grant(self, share_page_id: str, subject_id: str) -> bool:
+        """校验指定 subject 对分享页是否有 use 权限(校验链步骤 2)。
+
+        Slice 3 只支持 subject_type='user';Slice 4 才启用 group subject_type。
+        撤销授权后此方法返回 False(网关每次请求都调用,实现「撤销立即失效」)。
+        """
+        return any(
+            g.share_page_id == share_page_id and g.subject_id == subject_id and g.permission == "use"
+            for g in self.grants
+        )
+
+    def revoke_grant(self, share_page_id: str, subject_id: str) -> bool:
+        """撤销授权:删除指定 grant 行(对应 ISSUES.md Issue 3 撤销机制)。
+
+        返回 True 表示找到并删除;False 表示 grant 不存在(调用方 → 404)。
+        注意:不删除 chat_session_owner 记录(历史会话保留,管理员可查)。
+        """
+        for i, g in enumerate(self.grants):
+            if g.share_page_id == share_page_id and g.subject_id == subject_id:
+                self.grants.pop(i)
+                return True
+        return False
+
 
 def build_seed_data(settings: Settings) -> SeedData:
-    """根据配置构造硬编码 admin 用户、分享页与授权。"""
+    """根据配置构造硬编码 admin + user2 用户、分享页与授权。
+
+    Slice 3 新增第二个硬编码普通用户 user2(is_admin=False),
+    用于用户间隔离测试。user2 对默认分享页有 use 权限。
+    """
     admin = PortalUser(
         id="u_admin",
         username=settings.admin_username,
         password_hash=hash_password(settings.admin_password),
         is_admin=True,
+        enabled=True,
+    )
+    user2 = PortalUser(
+        id="u_user2",
+        username=settings.user2_username,
+        password_hash=hash_password(settings.user2_password),
+        is_admin=False,
         enabled=True,
     )
     share_page = SharePage(
@@ -155,15 +191,21 @@ def build_seed_data(settings: Settings) -> SeedData:
         embed_type="fullscreen",
         enabled=True,
     )
-    grant = SharePageGrant(
+    admin_grant = SharePageGrant(
         share_page_id=share_page.id,
         subject_type="user",
         subject_id=admin.id,
         permission="use",
     )
+    user2_grant = SharePageGrant(
+        share_page_id=share_page.id,
+        subject_type="user",
+        subject_id=user2.id,
+        permission="use",
+    )
     return SeedData(
-        users_by_username={admin.username: admin},
-        users_by_id={admin.id: admin},
+        users_by_username={admin.username: admin, user2.username: user2},
+        users_by_id={admin.id: admin, user2.id: user2},
         share_pages_by_id={share_page.id: share_page},
-        grants=[grant],
+        grants=[admin_grant, user2_grant],
     )

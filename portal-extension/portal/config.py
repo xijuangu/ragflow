@@ -3,6 +3,8 @@
 环境变量:
   PORTAL_ADMIN_USERNAME   硬编码 admin 用户名(默认 admin)
   PORTAL_ADMIN_PASSWORD   admin 明文密码(启动时哈希;真实密码只走环境变量,不写入文件)
+  PORTAL_USER2_USERNAME   硬编码第二个普通用户名(Slice 3 隔离测试用,默认 user2)
+  PORTAL_USER2_PASSWORD   user2 明文密码(启动时哈希)
   PORTAL_SESSION_SECRET   会话 cookie 签名密钥
   RAGFLOW_HOST            RAGFlow web 地址(如 http://172.16.10.180)
   RAGFLOW_BETA_TOKEN      RAGFlow api_token.beta 列的值(网关持有,绝不返回浏览器)
@@ -20,6 +22,8 @@ class Settings:
 
     admin_username: str
     admin_password: str
+    user2_username: str
+    user2_password: str
     session_secret: str
     ragflow_host: str
     ragflow_beta_token: str
@@ -32,6 +36,8 @@ def load_settings() -> Settings:
     return Settings(
         admin_username=os.environ.get("PORTAL_ADMIN_USERNAME", "admin"),
         admin_password=os.environ.get("PORTAL_ADMIN_PASSWORD", ""),
+        user2_username=os.environ.get("PORTAL_USER2_USERNAME", "user2"),
+        user2_password=os.environ.get("PORTAL_USER2_PASSWORD", ""),
         session_secret=os.environ.get("PORTAL_SESSION_SECRET", "dev-insecure-secret-change-me"),
         ragflow_host=os.environ.get("RAGFLOW_HOST", "http://localhost:9380"),
         ragflow_beta_token=os.environ.get("RAGFLOW_BETA_TOKEN", ""),

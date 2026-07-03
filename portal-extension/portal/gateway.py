@@ -15,6 +15,11 @@ Slice 2 扩展(原型 H2/H3/H4 验证结论):
   - iframe URL 注入 session_id 参数(首问直接带 session_id,RAGFlow 正常处理 question)。
   - SSE 代理完成后更新 chat_session_owner.last_active_at。
   - 重新打开:网关调 RAGFlow GET /sessions/<session_id> 取回消息 + 引用。
+
+Slice 3 扩展(原型 H5/H6 验证结论 — 完整校验链 + 撤销机制):
+  - 网关 SSE 代理加完整四步校验链(登录态 + grant + session 归属 + dialog_id 一致)。
+  - TokenStore.revoke_tokens_for_user_share_page:批量吊销某用户某分享页的所有 T_short。
+  - 撤销授权 = 删 grant + 吊销 T_short;后续同 T_short 请求 → 403/401(立即失效)。
 """
 
 import json
@@ -68,6 +73,16 @@ class TokenStore:
             return None
         return record
 
+    def get_record(self, token: str):
+        """查找令牌记录(不论是否有效,用于获取 portal_user_id 与 share_page_id)。
+
+        与 validate() 的区别:不校验 revoked / expires_at,仅返回记录或 None。
+        用于网关校验链中「先查 grant、再查 T_short 有效性」的顺序 —
+        撤销授权后 grant 不存在 → 403(即使 T_short 也被吊销),
+        直接吊销 T_short(grant 仍在)→ 401。
+        """
+        return self._tokens.get(token)
+
     def revoke(self, token: str) -> bool:
         """撤销 T_short(撤销后同令牌请求 → 401)。"""
         record = self._tokens.get(token)
@@ -75,6 +90,20 @@ class TokenStore:
             return False
         record.revoked = True
         return True
+
+    def revoke_tokens_for_user_share_page(self, portal_user_id: str, share_page_id: str) -> int:
+        """批量吊销某用户对某分享页的所有 T_short(对应 ISSUES.md Issue 3 撤销机制)。
+
+        管理员撤销授权时调用:删 grant + 吊销所有已签发 T_short,
+        后续同 T_short 请求 → 401(令牌已 revoked)。
+        返回被吊销的令牌数量。
+        """
+        count = 0
+        for record in self._tokens.values():
+            if record.portal_user_id == portal_user_id and record.share_page_id == share_page_id and not record.revoked:
+                record.revoked = True
+                count += 1
+        return count
 
 
 def build_iframe_url(ragflow_host: str, dialog_id: str, t_short: str, session_id: str = "") -> str:
@@ -151,7 +180,7 @@ def _assert_session_ownership(session_store, session_id: str, portal_user_id: st
       2. owner.portal_user_id == 当前 T_short 持有用户;
       3. owner.ragflow_resource_id == 请求 dialog_id(session 与 dialog 一致)。
 
-    这是 Slice 3 完整校验链的归属隔离部分,提前在 Slice 2 落地以堵住
+    这是 Slice 3 完整校验链的归属隔离部分(步骤 3+4),提前在 Slice 2 落地以堵住
     「任意用户带他人 session_id 调 SSE 即可代理到 RAGFlow」的安全漏洞。
     """
     owner = session_store.get(session_id)
@@ -161,6 +190,19 @@ def _assert_session_ownership(session_store, session_id: str, portal_user_id: st
         raise HTTPException(status_code=403, detail="无权访问该会话")
     if owner.ragflow_resource_id != dialog_id:
         raise HTTPException(status_code=403, detail="会话与目标资源不匹配")
+
+
+def _assert_grant_exists(seed, portal_user_id: str, share_page_id: str) -> None:
+    """校验 grant 存在(校验链步骤 2 — Slice 3 新增)。
+
+    网关每次请求都校验 share_page_grant 存在性(用户或其所属组对该分享页有 use 权限)。
+    撤销授权后 grant 不存在 → 403(实现「撤销立即失效」:即使 T_short 仍有效,
+    grant 校验失败也拒绝代理)。这是「iframe 继续提问 → 403」的关键校验。
+
+    Slice 3 只支持 subject_type='user';Slice 4 才启用 group subject_type。
+    """
+    if not seed.has_use_grant(share_page_id, portal_user_id):
+        raise HTTPException(status_code=403, detail="无权访问该分享页")
 
 
 async def precreate_session_via_ragflow(settings, dialog_id: str) -> str:
@@ -221,24 +263,42 @@ async def fetch_session_history_via_ragflow(settings, dialog_id: str, session_id
 
 
 async def proxy_sse_to_ragflow(request: Request, dialog_id: str):
-    """SSE 代理:校验 T_short + session_id 归属 → 用 beta Token 调 RAGFlow bot_api → 流式回传。
+    """SSE 代理:校验 T_short + grant + session_id 归属 → 用 beta Token 调 RAGFlow bot_api → 流式回传。
 
     对应验收点 4(无效/过期 T_short → 401)与验收点 6(beta Token 调 RAGFlow SSE)。
     Slice 2 验收点 7(基础归属隔离):若请求体含 session_id,校验其归属当前 T_short
     持有用户且 dialog_id 一致,不匹配 → 403(堵住「任意用户带他人 session_id 调 SSE」漏洞)。
     Slice 2:last_active_at 仅在流成功完成后更新(失败流不更新)。
+
+    Slice 3 完整校验链(每次请求都执行,任一失败 → 403):
+      步骤 1:门户登录态有效 — 通过 T_short 间接验证(T_short 是登录后签发的,
+              撤销 T_short 即等价于登录态失效;同 T_short 请求 → 403/401)。
+      步骤 2:share_page_grant 存在 — _assert_grant_exists 校验 grant 仍在
+              (撤销授权后 grant 不存在 → 403,即使 T_short 仍有效)。
+      步骤 3:session_id 归属当前用户 — _assert_session_ownership 校验。
+      步骤 4:session_id 的 dialog_id 与 share_page 一致 — _assert_session_ownership 校验。
     """
     settings = request.app.state.settings
     token_store = request.app.state.token_store
-    # 校验 T_short(校验链步骤 1)
+    # 提取 T_short(校验链步骤 1 的前置:必须有 Authorization header)
     t_short = extract_t_short(request)
     if not t_short:
         raise HTTPException(status_code=401, detail="缺少 Authorization 令牌")
+    # 先查记录(不校验有效性),用于 grant 校验(步骤 2)需获取 portal_user_id
+    # 顺序很重要:grant 校验在 T_short 有效性校验之前,这样「撤销授权」(删 grant +
+    # 吊销 T_short)→ 403(grant 不存在),而「直接吊销 T_short」(grant 仍在)→ 401
+    record = token_store.get_record(t_short)
+    if record is None:
+        raise HTTPException(status_code=401, detail="令牌无效或已过期")
+    # 校验链步骤 2:grant 存在(Slice 3 新增 — 撤销授权后立即失效的关键校验)
+    seed = request.app.state.seed
+    _assert_grant_exists(seed, record.portal_user_id, record.share_page_id)
+    # 校验链步骤 1:T_short 有效性(revoked / 过期 → 401)
+    # 此时 grant 已通过(若 grant 不存在已在步骤 2 返回 403)
     record = token_store.validate(t_short)
     if record is None:
         raise HTTPException(status_code=401, detail="令牌无效或已过期")
     # 校验 T_short 绑定的分享页对应的 dialog_id 与请求的 dialog_id 一致
-    seed = request.app.state.seed
     share_page = seed.share_pages_by_id.get(record.share_page_id)
     if not share_page or share_page.ragflow_resource_id != dialog_id:
         raise HTTPException(status_code=401, detail="令牌与目标资源不匹配")
@@ -247,7 +307,7 @@ async def proxy_sse_to_ragflow(request: Request, dialog_id: str):
     # Slice 2:从请求体解析 session_id(用于归属校验与更新 last_active_at)
     request_session_id = _parse_session_id_from_body(body)
     session_store = getattr(request.app.state, "session_store", None)
-    # 归属隔离:若请求体含 session_id,校验其归属当前 T_short 持有用户(校验链步骤 2/3)
+    # 归属隔离:若请求体含 session_id,校验其归属当前 T_short 持有用户(校验链步骤 3+4)
     # 不带 session_id(首次对话)时不校验;带 session_id 必须归属当前用户,否则 403。
     if request_session_id and session_store is not None:
         _assert_session_ownership(session_store, request_session_id, record.portal_user_id, dialog_id)

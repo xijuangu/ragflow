@@ -18,6 +18,8 @@ FAKE_RAGFLOW_HOST = "http://ragflow-mock.invalid"
 
 os.environ.setdefault("PORTAL_ADMIN_USERNAME", "admin")
 os.environ.setdefault("PORTAL_ADMIN_PASSWORD", "testpass123")
+os.environ.setdefault("PORTAL_USER2_USERNAME", "user2")
+os.environ.setdefault("PORTAL_USER2_PASSWORD", "testpass123")
 os.environ.setdefault("PORTAL_SESSION_SECRET", "test-session-secret-key-for-testing-only")
 os.environ.setdefault("RAGFLOW_HOST", FAKE_RAGFLOW_HOST)
 os.environ.setdefault("RAGFLOW_DIALOG_ID", "test-dialog-id-12345")

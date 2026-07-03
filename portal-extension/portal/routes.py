@@ -40,16 +40,14 @@ async def login(body: LoginRequest, request: Request):
 def _check_share_page_access(seed, share_page_id: str, user) -> SharePage:
     """校验分享页存在且当前用户有 use 权限;返回 share_page 对象。
 
-    Slice 1:硬编码 grant 校验(admin 对默认分享页有 use 权限)。
-    Slice 3 加完整校验链;Slice 4 启用 group subject_type。
+    校验链步骤 1(get_current_user 已做)+ 步骤 2(grant 存在性,Slice 3 提取到 SeedData.has_use_grant)。
+    撤销授权后此校验失败 → 403(刷新 iframe 加载时拒绝签发新 T_short)。
+    Slice 4 启用 group subject_type。
     """
     share_page = seed.share_pages_by_id.get(share_page_id)
     if not share_page or not share_page.enabled:
         raise HTTPException(status_code=404, detail="分享页不存在或已禁用")
-    has_grant = any(
-        g.share_page_id == share_page.id and g.subject_id == user.id and g.permission == "use" for g in seed.grants
-    )
-    if not has_grant:
+    if not seed.has_use_grant(share_page.id, user.id):
         raise HTTPException(status_code=403, detail="无权访问该分享页")
     return share_page
 
@@ -198,5 +196,59 @@ async def proxy_chatbot_completions(dialog_id: str, request: Request):
 
     Slice 2 验收点 7(基础归属隔离):若请求体含 session_id,校验其归属当前 T_short
     持有用户,不匹配 → 403。last_active_at 仅在流成功完成后更新。
+
+    Slice 3 完整校验链(每次请求都执行):登录态(T_short)+ grant 存在 +
+    session 归属 + dialog_id 一致,任一失败 → 403。详见 proxy_sse_to_ragflow 文档。
     """
     return await proxy_sse_to_ragflow(request, dialog_id)
+
+
+# ---------------------------------------------------------------------------
+# Slice 3:撤销授权(对应 ISSUES.md Issue 3 撤销机制)
+# ---------------------------------------------------------------------------
+
+
+def _require_admin(user) -> None:
+    """校验当前用户是管理员(撤销授权 API 管理员专用)。"""
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="仅管理员可执行此操作")
+
+
+@router.delete("/share-pages/{share_page_id}/grants/{subject_type}/{subject_id}")
+async def revoke_grant(
+    share_page_id: str,
+    subject_type: str,
+    subject_id: str,
+    request: Request,
+    user=Depends(get_current_user),
+):
+    """撤销授权:删除 grant + 批量吊销已签发的 T_short(管理员专用)。
+
+    对应 ISSUES.md Issue 3 撤销机制:
+      - 删除 share_page_grant 行(后续网关校验 grant 不存在 → 403)。
+      - 吊销已签发给该用户该分享页的所有 T_short(内存令牌表标记 revoked=true)。
+      - 后续同 T_short 请求 → 403/401(立即失效)。
+      - 历史会话(chat_session_owner)保留,不删除(管理员仍可查)。
+
+    RAGFlow 侧 beta Token 是租户级的无法按分享页撤销,撤销完全由网关实现。
+    Slice 3 只支持 subject_type='user';Slice 4 才启用 group。
+    """
+    _require_admin(user)
+    if subject_type != "user":
+        raise HTTPException(status_code=400, detail="一期仅支持 subject_type=user")
+    seed = request.app.state.seed
+    # 分享页必须存在
+    if share_page_id not in seed.share_pages_by_id:
+        raise HTTPException(status_code=404, detail="分享页不存在")
+    # 删除 grant(不存在 → 404)
+    if not seed.revoke_grant(share_page_id, subject_id):
+        raise HTTPException(status_code=404, detail="授权记录不存在")
+    # 批量吊销已签发的 T_short(同用户 + 同分享页)
+    revoked_count = request.app.state.token_store.revoke_tokens_for_user_share_page(subject_id, share_page_id)
+    return {
+        "revoked": True,
+        "share_page_id": share_page_id,
+        "subject_type": subject_type,
+        "subject_id": subject_id,
+        "tokens_revoked": revoked_count,
+    }
