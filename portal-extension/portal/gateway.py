@@ -195,13 +195,14 @@ def _assert_session_ownership(session_store, session_id: str, portal_user_id: st
 
 
 def _assert_grant_exists(seed, portal_user_id: str, share_page_id: str) -> None:
-    """校验 grant 存在(校验链步骤 2 — Slice 3 新增)。
+    """校验 grant 存在(校验链步骤 2 — Slice 3 新增,Slice 4 升级支持 group)。
 
     网关每次请求都校验 share_page_grant 存在性(用户或其所属组对该分享页有 use 权限)。
     撤销授权后 grant 不存在 → 403(实现「撤销立即失效」:即使 T_short 仍有效,
     grant 校验失败也拒绝代理)。这是「iframe 继续提问 → 403」的关键校验。
 
-    Slice 3 只支持 subject_type='user';Slice 4 才启用 group subject_type。
+    Slice 3 只支持 subject_type='user';Slice 4 启用 group subject_type
+    (has_use_grant 升级:user 直接授权 + 组成员继承,任一存在即通过)。
     """
     if not seed.has_use_grant(share_page_id, portal_user_id):
         raise HTTPException(status_code=403, detail="无权访问该分享页")

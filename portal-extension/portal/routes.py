@@ -1,4 +1,11 @@
-"""API 路由 — 登录、分享页 embed-url、SSE 代理、session 预创建/列表/恢复。"""
+"""API 路由 — 登录、分享页 embed-url、SSE 代理、session 预创建/列表/恢复、CRUD。
+
+Slice 4 新增:
+  - 管理员 CRUD(/admin/users、/admin/groups、/admin/share-pages、grants)。
+  - 普通用户 GET /share-pages(只看自己被授权的)。
+  - 登录失败明确错误(用户名未注册 / 密码错误 / 账号已禁用)。
+  - 撤销授权支持 user 与 group 两种 subject_type。
+"""
 
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
@@ -6,19 +13,24 @@ from typing import TypeVar
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from portal.auth import get_current_user
+from portal.auth import authenticate, get_current_user, require_admin
 from portal.gateway import (
     build_iframe_url,
     fetch_session_history_via_ragflow,
     precreate_session_via_ragflow,
     proxy_sse_to_ragflow,
 )
-from portal.models import SharePage
-from portal.password import verify_password
+from portal.models import PortalGroup, PortalUser, SharePage, SharePageGrant
+from portal.password import hash_password
 
 router = APIRouter()
 
 T = TypeVar("T")
+
+
+# ---------------------------------------------------------------------------
+# 请求体模型
+# ---------------------------------------------------------------------------
 
 
 class LoginRequest(BaseModel):
@@ -26,23 +38,111 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class CreateUserRequest(BaseModel):
+    username: str
+    email: str
+    password: str
+
+
+class CreateGroupRequest(BaseModel):
+    name: str
+
+
+class AddGroupMemberRequest(BaseModel):
+    user_id: str
+
+
+class CreateSharePageRequest(BaseModel):
+    name: str
+    ragflow_resource_id: str
+
+
+class UpdateEnabledRequest(BaseModel):
+    enabled: bool
+
+
+class CreateGrantRequest(BaseModel):
+    subject_type: str  # user / group
+    subject_id: str
+    permission: str = "use"
+
+
+# ---------------------------------------------------------------------------
+# 序列化辅助(避免 password_hash 进入响应)
+# ---------------------------------------------------------------------------
+
+
+def _user_to_dict(user: PortalUser) -> dict:
+    """用户 → 响应 dict(剔除 password_hash,避免泄露)。"""
+    return {
+        "id": user.id,
+        "username": user.username,
+        "email": user.email,
+        "is_admin": user.is_admin,
+        "enabled": user.enabled,
+        "created_at": user.created_at,
+    }
+
+
+def _group_to_dict(group: PortalGroup) -> dict:
+    """用户组 → 响应 dict。"""
+    return {
+        "id": group.id,
+        "name": group.name,
+        "created_at": group.created_at,
+    }
+
+
+def _share_page_to_dict(page: SharePage) -> dict:
+    """分享页 → 响应 dict。"""
+    return {
+        "id": page.id,
+        "name": page.name,
+        "ragflow_type": page.ragflow_type,
+        "ragflow_resource_id": page.ragflow_resource_id,
+        "embed_type": page.embed_type,
+        "enabled": page.enabled,
+        "created_at": page.created_at,
+    }
+
+
+def _grant_to_dict(grant: SharePageGrant) -> dict:
+    """授权 → 响应 dict。"""
+    return {
+        "share_page_id": grant.share_page_id,
+        "subject_type": grant.subject_type,
+        "subject_id": grant.subject_id,
+        "permission": grant.permission,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 登录(Slice 1,Slice 4 改进明确错误)
+# ---------------------------------------------------------------------------
+
+
 @router.post("/login")
 async def login(body: LoginRequest, request: Request):
-    """登录端点:校验凭据,建立同源会话 cookie(对应验收点 1)。"""
+    """登录端点:校验凭据,建立同源会话 cookie(对应验收点 1)。
+
+    Slice 4 改进:登录失败明确错误(用户名未注册 / 密码错误 / 账号已禁用)。
+    """
     seed = request.app.state.seed
-    user = seed.users_by_username.get(body.username)
-    if not user or not user.enabled or not verify_password(body.password, user.password_hash):
-        raise HTTPException(status_code=401, detail="用户名或密码错误")
+    user = await authenticate(seed, body.username, body.password)
     request.session["user_id"] = user.id
     return {"username": user.username, "is_admin": user.is_admin}
+
+
+# ---------------------------------------------------------------------------
+# 分享页访问(普通用户)
+# ---------------------------------------------------------------------------
 
 
 def _check_share_page_access(seed, share_page_id: str, user) -> SharePage:
     """校验分享页存在且当前用户有 use 权限;返回 share_page 对象。
 
-    校验链步骤 1(get_current_user 已做)+ 步骤 2(grant 存在性,Slice 3 提取到 SeedData.has_use_grant)。
-    撤销授权后此校验失败 → 403(刷新 iframe 加载时拒绝签发新 T_short)。
-    Slice 4 启用 group subject_type。
+    校验链步骤 1(get_current_user 已做)+ 步骤 2(grant 存在性,Slice 4 升级
+    has_use_grant 支持 user + group)。撤销授权后此校验失败 → 403。
     """
     share_page = seed.share_pages_by_id.get(share_page_id)
     if not share_page or not share_page.enabled:
@@ -63,6 +163,17 @@ async def _invoke_upstream(fn: Callable[[], Awaitable[T]], action: str) -> T:
         raise
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"{action}: {e}")
+
+
+@router.get("/share-pages")
+async def list_my_share_pages(request: Request, user=Depends(get_current_user)):
+    """普通用户:列出自己被授权的分享页(直接授权或所属组授权,验收点 5)。
+
+    管理员可调用此端点(返回其被授权的分享页);列出全部分享页用 GET /admin/share-pages。
+    """
+    seed = request.app.state.seed
+    pages = seed.list_share_pages_for_user(user.id)
+    return {"share_pages": [_share_page_to_dict(p) for p in pages]}
 
 
 @router.get("/share-pages/{share_page_id}/embed-url")
@@ -199,19 +310,202 @@ async def proxy_chatbot_completions(dialog_id: str, request: Request):
 
     Slice 3 完整校验链(每次请求都执行):同源 cookie + grant 存在 + T_short 有效 +
     session 归属 + dialog_id 一致,任一失败 → 403/401。详见 proxy_sse_to_ragflow 文档。
+
+    Slice 4:网关 ACL 解析支持 user 与 group 两种 subject_type(has_use_grant 升级)。
     """
     return await proxy_sse_to_ragflow(request, dialog_id)
 
 
+# ===========================================================================
+# Slice 4:管理员 CRUD(均要求 is_admin=true)
+# ===========================================================================
+
+
 # ---------------------------------------------------------------------------
-# Slice 3:撤销授权(对应 ISSUES.md Issue 3 撤销机制)
+# 用户 CRUD
 # ---------------------------------------------------------------------------
 
 
-def _require_admin(user) -> None:
-    """校验当前用户是管理员(撤销授权 API 管理员专用)。"""
-    if not user.is_admin:
-        raise HTTPException(status_code=403, detail="仅管理员可执行此操作")
+@router.post("/admin/users", status_code=201)
+async def admin_create_user(body: CreateUserRequest, request: Request, user=Depends(require_admin)):
+    """管理员创建用户(用户名 + 邮箱 + 初始密码)。
+
+    重复用户名 → 400。响应不含 password_hash。
+    """
+    seed = request.app.state.seed
+    if seed.get_user_by_username(body.username) is not None:
+        raise HTTPException(status_code=400, detail="用户名已存在")
+    new_user = seed.create_user(
+        username=body.username,
+        email=body.email,
+        password_hash=hash_password(body.password),
+    )
+    return _user_to_dict(new_user)
+
+
+@router.get("/admin/users")
+async def admin_list_users(request: Request, user=Depends(require_admin)):
+    """管理员列出所有用户。"""
+    seed = request.app.state.seed
+    return {"users": [_user_to_dict(u) for u in seed.list_users()]}
+
+
+@router.get("/admin/users/{user_id}")
+async def admin_get_user(user_id: str, request: Request, user=Depends(require_admin)):
+    """管理员查用户详情。"""
+    seed = request.app.state.seed
+    target = seed.get_user(user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    return _user_to_dict(target)
+
+
+@router.patch("/admin/users/{user_id}")
+async def admin_update_user(user_id: str, body: UpdateEnabledRequest, request: Request, user=Depends(require_admin)):
+    """管理员启用/禁用用户(对应 PRD 用户故事 4-5)。
+
+    禁用后:用户无法登录(明确错误),会话保留,网关拒绝其请求。
+    硬删除延后到 Slice 5。
+    """
+    seed = request.app.state.seed
+    if not seed.set_user_enabled(user_id, body.enabled):
+        raise HTTPException(status_code=404, detail="用户不存在")
+    target = seed.get_user(user_id)
+    return _user_to_dict(target)
+
+
+# ---------------------------------------------------------------------------
+# 用户组 CRUD
+# ---------------------------------------------------------------------------
+
+
+@router.post("/admin/groups", status_code=201)
+async def admin_create_group(body: CreateGroupRequest, request: Request, user=Depends(require_admin)):
+    """管理员创建用户组(对应 PRD 用户故事 8)。"""
+    seed = request.app.state.seed
+    group = seed.create_group(name=body.name)
+    return _group_to_dict(group)
+
+
+@router.get("/admin/groups")
+async def admin_list_groups(request: Request, user=Depends(require_admin)):
+    """管理员列出所有用户组(对应 PRD 用户故事 10)。"""
+    seed = request.app.state.seed
+    groups = []
+    for g in seed.list_groups():
+        d = _group_to_dict(g)
+        d["member_count"] = len(seed.group_members.get(g.id, set()))
+        d["members"] = list(seed.group_members.get(g.id, set()))
+        groups.append(d)
+    return {"groups": groups}
+
+
+@router.post("/admin/groups/{group_id}/members")
+async def admin_add_group_member(
+    group_id: str,
+    body: AddGroupMemberRequest,
+    request: Request,
+    user=Depends(require_admin),
+):
+    """管理员添加用户到用户组(对应 PRD 用户故事 8)。"""
+    seed = request.app.state.seed
+    if seed.get_group(group_id) is None:
+        raise HTTPException(status_code=404, detail="用户组不存在")
+    if seed.get_user(body.user_id) is None:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    seed.add_group_member(group_id, body.user_id)
+    return {"group_id": group_id, "user_id": body.user_id, "added": True}
+
+
+@router.delete("/admin/groups/{group_id}/members/{user_id}")
+async def admin_remove_group_member(
+    group_id: str,
+    user_id: str,
+    request: Request,
+    user=Depends(require_admin),
+):
+    """管理员从用户组移除用户(对应 PRD 用户故事 9)。"""
+    seed = request.app.state.seed
+    if seed.get_group(group_id) is None:
+        raise HTTPException(status_code=404, detail="用户组不存在")
+    if not seed.remove_group_member(group_id, user_id):
+        raise HTTPException(status_code=404, detail="成员不在该用户组")
+    return {"group_id": group_id, "user_id": user_id, "removed": True}
+
+
+# ---------------------------------------------------------------------------
+# 分享页 CRUD
+# ---------------------------------------------------------------------------
+
+
+@router.post("/admin/share-pages", status_code=201)
+async def admin_create_share_page(body: CreateSharePageRequest, request: Request, user=Depends(require_admin)):
+    """管理员创建分享页(对应 PRD 用户故事 12)。
+
+    embed_type/ragflow_type 一期固定值(D9),不开放选择器。
+    """
+    seed = request.app.state.seed
+    page = seed.create_share_page(name=body.name, ragflow_resource_id=body.ragflow_resource_id)
+    return _share_page_to_dict(page)
+
+
+@router.get("/admin/share-pages")
+async def admin_list_share_pages(request: Request, user=Depends(require_admin)):
+    """管理员列出所有分享页(对应 PRD 用户故事 14)。"""
+    seed = request.app.state.seed
+    return {"share_pages": [_share_page_to_dict(p) for p in seed.list_share_pages()]}
+
+
+@router.patch("/admin/share-pages/{share_page_id}")
+async def admin_update_share_page(
+    share_page_id: str, body: UpdateEnabledRequest, request: Request, user=Depends(require_admin)
+):
+    """管理员启用/禁用分享页(对应 PRD 用户故事 13)。"""
+    seed = request.app.state.seed
+    if not seed.set_share_page_enabled(share_page_id, body.enabled):
+        raise HTTPException(status_code=404, detail="分享页不存在")
+    return _share_page_to_dict(seed.get_share_page(share_page_id))
+
+
+# ---------------------------------------------------------------------------
+# 授权 CRUD
+# ---------------------------------------------------------------------------
+
+
+def _validate_subject_exists(seed, subject_type: str, subject_id: str) -> None:
+    """校验 subject 存在;不存在 → 404。"""
+    if subject_type == "user":
+        if seed.get_user(subject_id) is None:
+            raise HTTPException(status_code=404, detail="用户不存在")
+    elif subject_type == "group":
+        if seed.get_group(subject_id) is None:
+            raise HTTPException(status_code=404, detail="用户组不存在")
+    else:
+        raise HTTPException(status_code=400, detail="subject_type 必须为 user 或 group")
+
+
+@router.post("/admin/share-pages/{share_page_id}/grants", status_code=201)
+async def admin_create_grant(
+    share_page_id: str, body: CreateGrantRequest, request: Request, user=Depends(require_admin)
+):
+    """管理员把分享页授权给用户或用户组(对应 PRD 用户故事 16-17)。"""
+    seed = request.app.state.seed
+    if seed.get_share_page(share_page_id) is None:
+        raise HTTPException(status_code=404, detail="分享页不存在")
+    _validate_subject_exists(seed, body.subject_type, body.subject_id)
+    if body.permission not in ("use", "manage"):
+        raise HTTPException(status_code=400, detail="permission 必须为 use 或 manage")
+    grant = seed.create_grant(share_page_id, body.subject_type, body.subject_id, body.permission)
+    return _grant_to_dict(grant)
+
+
+@router.get("/admin/share-pages/{share_page_id}/grants")
+async def admin_list_grants(share_page_id: str, request: Request, user=Depends(require_admin)):
+    """管理员列出某分享页的所有授权。"""
+    seed = request.app.state.seed
+    if seed.get_share_page(share_page_id) is None:
+        raise HTTPException(status_code=404, detail="分享页不存在")
+    return {"grants": [_grant_to_dict(g) for g in seed.list_grants(share_page_id)]}
 
 
 @router.delete("/share-pages/{share_page_id}/grants/{subject_type}/{subject_id}")
@@ -220,31 +514,39 @@ async def revoke_grant(
     subject_type: str,
     subject_id: str,
     request: Request,
-    user=Depends(get_current_user),
+    user=Depends(require_admin),
 ):
     """撤销授权:删除 grant + 批量吊销已签发的 T_short(管理员专用)。
 
-    对应 ISSUES.md Issue 3 撤销机制:
+    对应 ISSUES.md Issue 3 撤销机制 + Slice 4 启用 group subject_type:
       - 删除 share_page_grant 行(后续网关校验 grant 不存在 → 403)。
-      - 吊销已签发给该用户该分享页的所有 T_short(内存令牌表标记 revoked=true)。
-      - 后续同 T_short 请求 → 403/401(立即失效)。
+      - 吊销已签发给该 subject 的所有 T_short(内存令牌表标记 revoked=true)。
+      - subject_type='user':吊销该用户该分享页的 T_short。
+      - subject_type='group':吊销该组所有成员该分享页的 T_short(组成员失权)。
       - 历史会话(chat_session_owner)保留,不删除(管理员仍可查)。
 
-    RAGFlow 侧 beta Token 是租户级的无法按分享页撤销,撤销完全由网关实现。
-    Slice 3 只支持 subject_type='user';Slice 4 才启用 group。
+    路径保留 Slice 3 的 /share-pages/... 前缀以保证向后兼容(Slice 3 测试无回归);
+    管理员校验由 Depends(require_admin) 强制(Slice 4 升级)。
     """
-    _require_admin(user)
-    if subject_type != "user":
-        raise HTTPException(status_code=400, detail="一期仅支持 subject_type=user")
+    if subject_type not in ("user", "group"):
+        raise HTTPException(status_code=400, detail="subject_type 必须为 user 或 group")
     seed = request.app.state.seed
     # 分享页必须存在
     if share_page_id not in seed.share_pages_by_id:
         raise HTTPException(status_code=404, detail="分享页不存在")
     # 删除 grant(不存在 → 404)
-    if not seed.revoke_grant(share_page_id, subject_id):
+    if not seed.revoke_grant(share_page_id, subject_type, subject_id):
         raise HTTPException(status_code=404, detail="授权记录不存在")
-    # 批量吊销已签发的 T_short(同用户 + 同分享页)
-    revoked_count = request.app.state.token_store.revoke_tokens_for_user_share_page(subject_id, share_page_id)
+    # 批量吊销已签发的 T_short
+    token_store = request.app.state.token_store
+    if subject_type == "user":
+        revoked_count = token_store.revoke_tokens_for_user_share_page(subject_id, share_page_id)
+    else:
+        # 组授权撤销:吊销该组所有成员对该分享页的 T_short
+        members = seed.group_members.get(subject_id, set())
+        revoked_count = 0
+        for member_id in members:
+            revoked_count += token_store.revoke_tokens_for_user_share_page(member_id, share_page_id)
     return {
         "revoked": True,
         "share_page_id": share_page_id,
