@@ -241,11 +241,7 @@ async def precreate_session_via_ragflow(settings, dialog_id: str) -> str:
                 except json.JSONDecodeError:
                     continue
                 # RAGFlow 首帧结构:{"code":0,"data":{"session_id":"..."}}
-                session_id = (
-                    (data.get("data") or {}).get("session_id")
-                    if isinstance(data.get("data"), dict)
-                    else data.get("session_id")
-                )
+                session_id = (data.get("data") or {}).get("session_id") if isinstance(data.get("data"), dict) else data.get("session_id")
                 if session_id:
                     return str(session_id)
     raise HTTPException(status_code=502, detail="RAGFlow 预创建 session 未返回 session_id")
@@ -274,7 +270,8 @@ async def rename_session_via_ragflow(settings, dialog_id: str, session_id: str, 
     """调 RAGFlow PATCH 端点更新 API4Conversation.name(对应 Slice 5 验收点:重命名同步)。
 
     复用 Slice 2 的 _build_upstream_client / _build_upstream_headers helper。
-    非 200 → 抛 HTTPException(502),由调用方决定是否阻塞门户侧更新(双写策略:重命名不阻塞)。
+    非 200 → 抛 HTTPException(502),由调用方透传给客户端(同步策略:RAGFlow 失败则
+    门户 title 不更新,保证两侧 name/title 同步,不出现一侧更新一侧未更新的不一致)。
     """
     upstream_url = f"{settings.ragflow_host.rstrip('/')}/api/v1/chatbots/{dialog_id}/sessions/{session_id}"
     upstream_headers = _build_upstream_headers(settings.ragflow_beta_token, content_type="application/json")

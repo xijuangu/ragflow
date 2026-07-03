@@ -17,6 +17,7 @@ Slice 5 加会话重命名/删除/标记删除方法,用户硬删除(delete_user
 仍用内存存储(线程安全由 GIL + 单进程 FastAPI 保证),DB 化作为独立 slice。
 """
 
+import logging
 import secrets
 import time
 from dataclasses import dataclass, field
@@ -24,6 +25,8 @@ from typing import Literal
 
 from portal.config import Settings
 from portal.password import hash_password
+
+logger = logging.getLogger(__name__)
 
 # 类型别名约束字面量取值(消除 Primitive Obsession)
 Permission = Literal["use", "manage"]
@@ -150,11 +153,7 @@ class SessionStore:
         基础隔离:只返回 portal_user_id 匹配的记录(用户看不到他人的 session)。
         Slice 5:排除 deleted_at 非空的记录(标记待重试的不在用户列表显示)。
         """
-        return [
-            s
-            for s in self._sessions.values()
-            if s.portal_user_id == portal_user_id and s.share_page_id == share_page_id and s.deleted_at is None
-        ]
+        return [s for s in self._sessions.values() if s.portal_user_id == portal_user_id and s.share_page_id == share_page_id and s.deleted_at is None]
 
     def update_last_active(self, session_id: str) -> bool:
         """更新会话最后活跃时间(对应验收点 3:对话后 last_active_at 更新)。
@@ -208,6 +207,46 @@ class SessionStore:
     def list_pending_deletion(self) -> list:
         """返回 deleted_at 非空的会话(供后台重试任务查询,Slice 5 提供查询不实现重试)。"""
         return [s for s in self._sessions.values() if s.deleted_at is not None]
+
+    async def cascade_delete_for_user(self, portal_user_id: str, settings) -> list:
+        """级联删除用户的所有会话(含 deleted_at 非空),用于用户硬删除场景。
+
+        与单会话双删策略(``dual_delete_session``)的关键区别:
+          用户硬删除后无法后续重试(无用户上下文),所以 RAGFlow 失败的会话也
+          **硬删除**门户侧记录(避免 portal_user_id 指向不存在用户的孤儿记录);
+          RAGFlow 侧的 API4Conversation 残留由管理员后续手动清理(脚本/管理界面)。
+          失败记 ``logger.warning`` 供审计(Slice 6 加审计日志端点暴露)。
+
+        实现:
+          - 遍历用户所有会话(``list_all_for_user``,含 deleted_at 非空,跨分享页)。
+          - 对每个会话调 gateway ``delete_session_via_ragflow``(忽略失败,失败时 logger.warning)。
+          - 全部硬删除门户侧记录(包括 deleted_at 非空的)。
+
+        返回 ``[(session_id, success), ...]`` 供路由层记录审计/日志
+        (success=True 表示 RAGFlow 删除成功,False 表示失败但门户侧仍硬删除)。
+        """
+        # 延迟导入避免循环依赖(gateway 不导入 models,但保持懒加载以防未来变更)
+        from portal.gateway import delete_session_via_ragflow
+
+        results: list = []
+        for owner in self.list_all_for_user(portal_user_id):
+            success = True
+            try:
+                await delete_session_via_ragflow(settings, owner.ragflow_resource_id, owner.session_id)
+            except Exception as e:
+                # RAGFlow 失败不阻塞级联删除(用户已不存在,无法后续重试,避免孤儿)
+                # 记 warning 供审计;RAGFlow 侧残留由管理员后续手动清理
+                logger.warning(
+                    "用户硬删除级联:RAGFlow 删除会话失败(门户侧仍硬删除以避免孤儿),session_id=%s dialog_id=%s error=%s",
+                    owner.session_id,
+                    owner.ragflow_resource_id,
+                    e,
+                )
+                success = False
+            # 无论 RAGFlow 是否成功,都硬删除门户侧记录(避免孤儿)
+            self.delete(owner.session_id)
+            results.append((owner.session_id, success))
+        return results
 
 
 def _gen_id(prefix: str) -> str:
@@ -398,9 +437,7 @@ class SeedData:
     # 授权 CRUD
     # -----------------------------------------------------------------
 
-    def create_grant(
-        self, share_page_id: str, subject_type: SubjectType, subject_id: str, permission: Permission = "use"
-    ) -> SharePageGrant:
+    def create_grant(self, share_page_id: str, subject_type: SubjectType, subject_id: str, permission: Permission = "use") -> SharePageGrant:
         """创建授权(管理员调用)。
 
         调用方需校验 share_page_id 与 subject_id 存在(本方法只追加,不校验)。
@@ -409,12 +446,7 @@ class SeedData:
         的安全漏洞;撤销一次即彻底)。
         """
         for g in self.grants:
-            if (
-                g.share_page_id == share_page_id
-                and g.subject_type == subject_type
-                and g.subject_id == subject_id
-                and g.permission == permission
-            ):
+            if g.share_page_id == share_page_id and g.subject_type == subject_type and g.subject_id == subject_id and g.permission == permission:
                 return g
         grant = SharePageGrant(
             share_page_id=share_page_id,
@@ -484,11 +516,7 @@ class SeedData:
         list_user_granted_share_page_ids 统一 ACL 解析(消除重复的 grant 过滤逻辑)。
         """
         authorized_page_ids = self.list_user_granted_share_page_ids(portal_user_id)
-        return [
-            self.share_pages_by_id[pid]
-            for pid in authorized_page_ids
-            if pid in self.share_pages_by_id and self.share_pages_by_id[pid].enabled
-        ]
+        return [self.share_pages_by_id[pid] for pid in authorized_page_ids if pid in self.share_pages_by_id and self.share_pages_by_id[pid].enabled]
 
 
 def build_seed_data(settings: Settings) -> SeedData:

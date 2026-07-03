@@ -37,8 +37,7 @@ from api.db.services.search_service import SearchService
 from api.db.services.user_service import UserTenantService
 from api.db.joint_services.tenant_model_service import get_tenant_default_model_by_type, get_model_config_from_provider_instance
 from common.misc_utils import thread_pool_exec
-from api.utils.api_utils import get_error_data_result, get_json_result, \
-    add_tenant_id_to_kwargs, get_result, get_request_json, server_error_response, validate_request
+from api.utils.api_utils import get_error_data_result, get_json_result, add_tenant_id_to_kwargs, get_result, get_request_json, server_error_response, validate_request
 from rag.app.tag import label_question
 from rag.prompts.template import load_prompt
 from rag.prompts.generator import cross_languages, keyword_extraction
@@ -59,9 +58,7 @@ async def chatbot_completions(dialog_id, tenant_id=None):
     req = await get_request_json()
 
     exists, dialog = DialogService.get_by_id(dialog_id)
-    if (not exists
-            or getattr(dialog, "tenant_id", None) != tenant_id
-            or str(getattr(dialog, "status", "")) != StatusEnum.VALID.value):
+    if not exists or getattr(dialog, "tenant_id", None) != tenant_id or str(getattr(dialog, "status", "")) != StatusEnum.VALID.value:
         logger.warning(
             "Denied chatbot access: reason=%s tenant_id=%s dialog_id=%s user_id=%s session_id=%s",
             "no access to this chatbot",
@@ -123,6 +120,36 @@ async def chatbot_completions(dialog_id, tenant_id=None):
 
     return None
 
+
+def _assert_dialog_access(dialog_id, tenant_id, session_id=None, *, action="access"):
+    """校验 dialog 归属 tenant 且状态有效;若提供 session_id,校验 session 归属 dialog。
+
+    三处复用(get_chatbot_session / rename_chatbot_session / delete_chatbot_session),
+    消除重复的 dialog 归属校验块。沿用 RAGFlow 源码风格(返回 error response 而非抛异常)。
+
+    成功返回 ``(None, conv_or_None)``;失败返回 ``(error_response, None)``。
+    ``action`` 用于日志区分(read/rename/delete),便于审计定位。
+    """
+    exists, dialog = DialogService.get_by_id(dialog_id)
+    if not exists or getattr(dialog, "tenant_id", None) != tenant_id or str(getattr(dialog, "status", "")) != StatusEnum.VALID.value:
+        logger.warning(
+            "Denied chatbot session %s: reason=%s tenant_id=%s dialog_id=%s session_id=%s",
+            action,
+            "no access to this chatbot",
+            tenant_id,
+            dialog_id,
+            session_id,
+        )
+        return get_error_data_result(message="Authentication error: no access to this chatbot!"), None
+
+    conv = None
+    if session_id:
+        exists, conv = API4ConversationService.get_by_id(session_id)
+        if not exists or conv.dialog_id != dialog_id:
+            return get_error_data_result(message="Session not found"), None
+    return None, conv
+
+
 @manager.route("/chatbots/<dialog_id>/sessions/<session_id>", methods=["GET"])  # noqa: F821
 @login_required(auth_types=AUTH_BETA)
 @add_tenant_id_to_kwargs
@@ -141,22 +168,9 @@ async def get_chatbot_session(dialog_id, session_id, tenant_id=None):
       2. ``dialog_id`` 必须属于该 tenant 且状态有效。
       3. 会话 ``session_id`` 必须存在,且 ``conv.dialog_id == dialog_id``。
     """
-    exists, dialog = DialogService.get_by_id(dialog_id)
-    if (not exists
-            or getattr(dialog, "tenant_id", None) != tenant_id
-            or str(getattr(dialog, "status", "")) != StatusEnum.VALID.value):
-        logger.warning(
-            "Denied chatbot session read: reason=%s tenant_id=%s dialog_id=%s session_id=%s",
-            "no access to this chatbot",
-            tenant_id,
-            dialog_id,
-            session_id,
-        )
-        return get_error_data_result(message="Authentication error: no access to this chatbot!")
-
-    exists, conv = API4ConversationService.get_by_id(session_id)
-    if not exists or conv.dialog_id != dialog_id:
-        return get_error_data_result(message="Session not found")
+    err, conv = _assert_dialog_access(dialog_id, tenant_id, session_id, action="read")
+    if err:
+        return err
 
     return get_result(
         data={
@@ -179,22 +193,9 @@ async def rename_chatbot_session(dialog_id, session_id, tenant_id=None):
     请求体:{"name": "新名称"}。
     校验链与 get_chatbot_session 一致:dialog 归属 tenant + session 归属 dialog。
     """
-    exists, dialog = DialogService.get_by_id(dialog_id)
-    if (not exists
-            or getattr(dialog, "tenant_id", None) != tenant_id
-            or str(getattr(dialog, "status", "")) != StatusEnum.VALID.value):
-        logger.warning(
-            "Denied chatbot session rename: reason=%s tenant_id=%s dialog_id=%s session_id=%s",
-            "no access to this chatbot",
-            tenant_id,
-            dialog_id,
-            session_id,
-        )
-        return get_error_data_result(message="Authentication error: no access to this chatbot!")
-
-    exists, conv = API4ConversationService.get_by_id(session_id)
-    if not exists or conv.dialog_id != dialog_id:
-        return get_error_data_result(message="Session not found")
+    err, conv = _assert_dialog_access(dialog_id, tenant_id, session_id, action="rename")
+    if err:
+        return err
 
     req = await get_request_json()
     name = req.get("name")
@@ -214,22 +215,9 @@ async def delete_chatbot_session(dialog_id, session_id, tenant_id=None):
     复用 CommonService.delete_by_id,无新业务逻辑。
     校验链与 get_chatbot_session 一致:dialog 归属 tenant + session 归属 dialog。
     """
-    exists, dialog = DialogService.get_by_id(dialog_id)
-    if (not exists
-            or getattr(dialog, "tenant_id", None) != tenant_id
-            or str(getattr(dialog, "status", "")) != StatusEnum.VALID.value):
-        logger.warning(
-            "Denied chatbot session delete: reason=%s tenant_id=%s dialog_id=%s session_id=%s",
-            "no access to this chatbot",
-            tenant_id,
-            dialog_id,
-            session_id,
-        )
-        return get_error_data_result(message="Authentication error: no access to this chatbot!")
-
-    exists, conv = API4ConversationService.get_by_id(session_id)
-    if not exists or conv.dialog_id != dialog_id:
-        return get_error_data_result(message="Session not found")
+    err, conv = _assert_dialog_access(dialog_id, tenant_id, session_id, action="delete")
+    if err:
+        return err
 
     API4ConversationService.delete_by_id(session_id)
     return get_result(data={"session_id": session_id, "deleted": True})
@@ -240,9 +228,7 @@ async def delete_chatbot_session(dialog_id, session_id, tenant_id=None):
 @add_tenant_id_to_kwargs
 async def chatbots_inputs(dialog_id, tenant_id=None):
     exists, dialog = await thread_pool_exec(DialogService.get_by_id, dialog_id)
-    if (not exists
-            or getattr(dialog, "tenant_id", None) != tenant_id
-            or str(getattr(dialog, "status", "")) != StatusEnum.VALID.value):
+    if not exists or getattr(dialog, "tenant_id", None) != tenant_id or str(getattr(dialog, "status", "")) != StatusEnum.VALID.value:
         request_args = getattr(request, "args", {}) or {}
         request_user_id = request_args.get("user_id") if hasattr(request_args, "get") else None
         request_session_id = request_args.get("session_id") if hasattr(request_args, "get") else None
@@ -273,6 +259,7 @@ async def agent_bot_completions(agent_id, tenant_id=None):
     req = await get_request_json()
 
     if req.get("stream", True):
+
         async def stream():
             try:
                 async for answer in agent_completion(tenant_id, agent_id, **req):
@@ -280,14 +267,18 @@ async def agent_bot_completions(agent_id, tenant_id=None):
             except Exception as e:
                 logging.exception(e)
                 error_result = get_error_data_result(message=str(e) or "Unknown error")
-                yield "data:" + json.dumps(
-                    {
-                        "event": "message",
-                        "data": {"content": f"Error {error_result['code']}: {error_result['message']}\n\n"},
-                        **error_result,
-                    },
-                    ensure_ascii=False,
-                ) + "\n\n"
+                yield (
+                    "data:"
+                    + json.dumps(
+                        {
+                            "event": "message",
+                            "data": {"content": f"Error {error_result['code']}: {error_result['message']}\n\n"},
+                            **error_result,
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n\n"
+                )
 
         resp = Response(stream(), mimetype="text/event-stream")
         resp.headers.add_header("Cache-control", "no-cache")
@@ -312,7 +303,7 @@ async def agent_bot_completions(agent_id, tenant_id=None):
                 line = line.strip()
                 if not line.startswith("data:"):
                     continue
-                payload = line[len("data:"):].strip()
+                payload = line[len("data:") :].strip()
                 if not payload:
                     continue
                 try:
@@ -357,9 +348,7 @@ async def begin_inputs(agent_id, tenant_id=None):
         return get_error_data_result(f"Can't find agent by ID: {agent_id}")
 
     canvas = Canvas(json.dumps(cvs.dsl), tenant_id, canvas_id=cvs.id)
-    return get_result(
-        data={"title": cvs.title, "avatar": cvs.avatar, "inputs": canvas.get_component_input_form("begin"),
-              "prologue": canvas.get_prologue(), "mode": canvas.get_mode()})
+    return get_result(data={"title": cvs.title, "avatar": cvs.avatar, "inputs": canvas.get_component_input_form("begin"), "prologue": canvas.get_prologue(), "mode": canvas.get_mode()})
 
 
 @manager.route("/searchbots/ask", methods=["POST"])  # noqa: F821
@@ -387,9 +376,7 @@ async def ask_about_embedded(tenant_id=None):
             async for ans in async_ask(req["question"], req["kb_ids"], uid, chat_llm_name=chat_llm_name, search_config=search_config):
                 yield "data:" + json.dumps({"code": 0, "message": "", "data": ans}, ensure_ascii=False) + "\n\n"
         except Exception as e:
-            yield "data:" + json.dumps(
-                {"code": 500, "message": str(e), "data": {"answer": "**ERROR**: " + str(e), "reference": []}},
-                ensure_ascii=False) + "\n\n"
+            yield "data:" + json.dumps({"code": 500, "message": str(e), "data": {"answer": "**ERROR**: " + str(e), "reference": []}}, ensure_ascii=False) + "\n\n"
         yield "data:" + json.dumps({"code": 0, "message": "", "data": True}, ensure_ascii=False) + "\n\n"
 
     resp = Response(stream(), mimetype="text/event-stream")
@@ -413,8 +400,7 @@ async def retrieval_test_embedded(tenant_id=None):
     if isinstance(kb_ids, str):
         kb_ids = [kb_ids]
     if not kb_ids:
-        return get_json_result(data=False, message='Please specify dataset firstly.',
-                               code=RetCode.DATA_ERROR)
+        return get_json_result(data=False, message="Please specify dataset firstly.", code=RetCode.DATA_ERROR)
     doc_ids = req.get("doc_ids", [])
     similarity_threshold = float(req.get("similarity_threshold", 0.0))
     vector_similarity_weight = float(req.get("vector_similarity_weight", 0.3))
@@ -482,8 +468,7 @@ async def retrieval_test_embedded(tenant_id=None):
                     tenant_ids.append(tenant.tenant_id)
                     break
             else:
-                return get_json_result(data=False, message="Only owner of dataset authorized for this operation.",
-                                       code=RetCode.OPERATING_ERROR)
+                return get_json_result(data=False, message="Only owner of dataset authorized for this operation.", code=RetCode.OPERATING_ERROR)
 
         e, kb = await thread_pool_exec(KnowledgebaseService.get_by_id, kb_ids[0])
         if not e:
@@ -506,13 +491,23 @@ async def retrieval_test_embedded(tenant_id=None):
 
         labels = label_question(_question, [kb])
         ranks = await settings.retriever.retrieval(
-            _question, embd_mdl, tenant_ids, kb_ids, page, size, similarity_threshold, vector_similarity_weight, top,
-            local_doc_ids, rerank_mdl=rerank_mdl, highlight=req.get("highlight"), rank_feature=labels
+            _question,
+            embd_mdl,
+            tenant_ids,
+            kb_ids,
+            page,
+            size,
+            similarity_threshold,
+            vector_similarity_weight,
+            top,
+            local_doc_ids,
+            rerank_mdl=rerank_mdl,
+            highlight=req.get("highlight"),
+            rank_feature=labels,
         )
         if use_kg:
             default_chat_model = await thread_pool_exec(get_tenant_default_model_by_type, kb.tenant_id, LLMType.CHAT)
-            ck = await settings.kg_retriever.retrieval(_question, tenant_ids, kb_ids, embd_mdl,
-                                                 LLMBundle(kb.tenant_id, default_chat_model))
+            ck = await settings.kg_retriever.retrieval(_question, tenant_ids, kb_ids, embd_mdl, LLMBundle(kb.tenant_id, default_chat_model))
             if ck["content_with_weight"]:
                 ranks["chunks"].insert(0, ck)
 
@@ -531,8 +526,7 @@ async def retrieval_test_embedded(tenant_id=None):
         return await _retrieval()
     except Exception as e:
         if "not_found" in str(e):
-            return get_json_result(data=False, message="No chunk found! Check the chunk status please!",
-                                   code=RetCode.DATA_ERROR)
+            return get_json_result(data=False, message="No chunk found! Check the chunk status please!", code=RetCode.DATA_ERROR)
         return server_error_response(e)
 
 
@@ -591,8 +585,7 @@ async def detail_share_embedded(tenant_id=None):
             if await thread_pool_exec(SearchService.query, tenant_id=tenant.tenant_id, id=search_id):
                 break
         else:
-            return get_json_result(data=False, message="Has no permission for this operation.",
-                                   code=RetCode.OPERATING_ERROR)
+            return get_json_result(data=False, message="Has no permission for this operation.", code=RetCode.OPERATING_ERROR)
 
         search = await thread_pool_exec(SearchService.get_detail, search_id)
         if not search:
@@ -612,7 +605,7 @@ async def mindmap(tenant_id=None):
     search_id = req.get("search_id", "")
     search_app = await thread_pool_exec(SearchService.get_detail, search_id) if search_id else {}
 
-    mind_map =await gen_mindmap(req["question"], req["kb_ids"], tenant_id, search_app.get("search_config", {}))
+    mind_map = await gen_mindmap(req["question"], req["kb_ids"], tenant_id, search_app.get("search_config", {}))
     if "error" in mind_map:
         return server_error_response(Exception(mind_map["error"]))
     return get_json_result(data=mind_map)

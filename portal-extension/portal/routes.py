@@ -7,10 +7,10 @@ Slice 4 新增:
   - 撤销授权支持 user 与 group 两种 subject_type。
 
 Slice 5 新增:
-  - PATCH /share-pages/{id}/sessions/{sid} — 用户重命名自己的会话(双写:RAGFlow 失败不阻塞)。
+  - PATCH /share-pages/{id}/sessions/{sid} — 用户重命名自己的会话(同步:RAGFlow 失败则 502,不更新门户 title)。
   - DELETE /share-pages/{id}/sessions/{sid} — 用户删除自己的会话(双删:RAGFlow 失败标记 deleted_at)。
-  - DELETE /admin/share-pages/{id}/sessions/{sid} — 管理员删除任意会话(双删,不校验归属)。
-  - DELETE /admin/users/{id} — 管理员硬删除用户(级联双删 chat_session_owner + RAGFlow)。
+  - DELETE /admin/share-pages/{id}/sessions/{sid} — 管理员删除任意会话(双删,校验 share_page_id 一致性)。
+  - DELETE /admin/users/{id} — 管理员硬删除用户(级联硬删所有会话,无孤儿;RAGFlow 失败记日志)。
 """
 
 from collections.abc import Awaitable, Callable
@@ -177,6 +177,26 @@ async def _invoke_upstream(fn: Callable[[], Awaitable[T]], action: str) -> T:
         raise HTTPException(status_code=502, detail=f"{action}: {e}")
 
 
+async def _dual_delete_session(settings, store, dialog_id: str, session_id: str) -> bool:
+    """单会话双删协调:RAGFlow DELETE 成功 → 门户硬删除;失败 → 标记 deleted_at 待重试。
+
+    用于 delete_session / admin_delete_session 的双删策略(单会话场景)。
+    与 ``SessionStore.cascade_delete_for_user`` 的区别:级联删除用户时 RAGFlow 失败
+    也硬删除门户侧(用户已不存在无法重试,避免孤儿);此处单会话删除失败时保留
+    门户侧记录标记 deleted_at,供后台重试任务后续清理。
+
+    返回 True 表示 RAGFlow 删除成功(门户侧已硬删除);
+    返回 False 表示 RAGFlow 失败(门户侧已标记 deleted_at,记录保留待重试)。
+    """
+    try:
+        await delete_session_via_ragflow(settings, dialog_id, session_id)
+        store.delete(session_id)
+        return True
+    except HTTPException:
+        store.mark_deleted(session_id)
+        return False
+
+
 @router.get("/share-pages")
 async def list_my_share_pages(request: Request, user=Depends(get_current_user)):
     """普通用户:列出自己被授权的分享页(直接授权或所属组授权,验收点 5)。
@@ -323,7 +343,9 @@ async def rename_session(
 ):
     """重命名会话(对应 Slice 5 验收点 1:用户重命名自己的会话)。
 
-    双写策略:RAGFlow PATCH 失败不阻塞门户 title 更新(失败不暴露给用户)。
+    同步策略(与删除的双删策略不同):RAGFlow PATCH 成功才更新门户 title;
+    失败则抛 502(不吞异常,让用户感知失败),门户 title 不更新
+    (保证 RAGFlow 侧 name 与门户 title 同步,不出现一侧更新一侧未更新的不一致)。
     归属校验:session 必须归属当前用户且属于该分享页;不匹配 → 403/404。
     """
     seed = request.app.state.seed
@@ -336,14 +358,11 @@ async def rename_session(
         raise HTTPException(status_code=403, detail="无权访问该会话")
     if owner.share_page_id != share_page_id:
         raise HTTPException(status_code=403, detail="会话不属于该分享页")
-    # 双写:RAGFlow PATCH(best effort,失败不阻塞门户 title 更新)
+    # 同步策略:RAGFlow PATCH 成功才更新门户 title;失败抛 502(不吞异常,不更新门户 title)
+    # rename_session_via_ragflow 在非 200 时已抛 HTTPException(502),此处直接透传
     settings = request.app.state.settings
-    try:
-        await rename_session_via_ragflow(settings, share_page.ragflow_resource_id, session_id, body.title)
-    except HTTPException:
-        # RAGFlow 失败不阻塞门户 title 更新(双写策略:重命名不阻塞)
-        pass
-    # 更新门户 title(无论 RAGFlow 是否成功)
+    await rename_session_via_ragflow(settings, share_page.ragflow_resource_id, session_id, body.title)
+    # RAGFlow 成功 → 更新门户 title(两侧同步)
     request.app.state.session_store.rename(session_id, body.title)
     return {"session_id": session_id, "title": body.title}
 
@@ -352,7 +371,7 @@ async def rename_session(
 async def delete_session(share_page_id: str, session_id: str, request: Request, user=Depends(get_current_user)):
     """删除会话(对应 Slice 5 验收点 3-4:用户删除自己的会话,双删协调)。
 
-    双删事务策略:
+    双删事务策略(``_dual_delete_session``):
       - 先调 RAGFlow DELETE;成功 → 门户侧硬删除 chat_session_owner。
       - RAGFlow 失败 → 标记 deleted_at(记录保留待重试),返回 200(不暴露失败)。
     归属校验:session 必须归属当前用户且属于该分享页;不匹配 → 403/404。
@@ -367,16 +386,9 @@ async def delete_session(share_page_id: str, session_id: str, request: Request, 
         raise HTTPException(status_code=403, detail="无权访问该会话")
     if owner.share_page_id != share_page_id:
         raise HTTPException(status_code=403, detail="会话不属于该分享页")
-    # 双删:RAGFlow DELETE
+    # 双删:RAGFlow DELETE 成功 → 门户硬删除;失败 → 标记 deleted_at(返回 200 不暴露失败)
     settings = request.app.state.settings
-    session_store = request.app.state.session_store
-    try:
-        await delete_session_via_ragflow(settings, share_page.ragflow_resource_id, session_id)
-        # RAGFlow 成功 → 门户侧硬删除
-        session_store.delete(session_id)
-    except HTTPException:
-        # RAGFlow 失败 → 标记 deleted_at(记录保留待重试),返回 200(不暴露失败)
-        session_store.mark_deleted(session_id)
+    await _dual_delete_session(settings, request.app.state.session_store, share_page.ragflow_resource_id, session_id)
     return {"session_id": session_id, "deleted": True}
 
 
@@ -460,12 +472,15 @@ async def admin_update_user(user_id: str, body: UpdateEnabledRequest, request: R
 
 @router.delete("/admin/users/{user_id}")
 async def admin_delete_user(user_id: str, request: Request, user=Depends(require_admin)):
-    """管理员硬删除用户(对应 Slice 5 验收点 6:级联双删 chat_session_owner + RAGFlow API4Conversation)。
+    """管理员硬删除用户(对应 Slice 5 验收点 6:级联删除 chat_session_owner + RAGFlow API4Conversation,无孤儿)。
 
-    级联策略:
+    级联策略(``SessionStore.cascade_delete_for_user``,与单会话双删不同):
       - 遍历用户的所有 chat_session_owner(含 deleted_at 标记的,跨分享页)。
-      - 每条调 RAGFlow DELETE:成功 → 门户硬删除;失败 → 标记 deleted_at(记录保留待重试)。
-      - 最后删 portal_user(无论 RAGFlow 是否失败,用户都删除)。
+      - 每条调 RAGFlow DELETE:**无论成功失败都硬删除门户侧记录**(避免孤儿)。
+        理由:用户已不存在,保留 orphan 会话无法后续重试(无用户上下文);
+        RAGFlow 侧的 API4Conversation 残留由管理员后续手动清理(脚本/管理界面)。
+      - RAGFlow 失败记 ``logger.warning`` 供审计(Slice 6 加端点暴露)。
+      - 最后删 portal_user。
     禁用用户不删会话(走 PATCH /admin/users/{id});硬删除才级联删会话。
     """
     seed = request.app.state.seed
@@ -473,15 +488,8 @@ async def admin_delete_user(user_id: str, request: Request, user=Depends(require
         raise HTTPException(status_code=404, detail="用户不存在")
     settings = request.app.state.settings
     session_store = request.app.state.session_store
-    # 级联双删用户的所有会话(含 deleted_at 标记的,跨分享页)
-    for owner in session_store.list_all_for_user(user_id):
-        try:
-            await delete_session_via_ragflow(settings, owner.ragflow_resource_id, owner.session_id)
-            # RAGFlow 成功 → 门户侧硬删除
-            session_store.delete(owner.session_id)
-        except HTTPException:
-            # RAGFlow 失败 → 标记 deleted_at(记录保留待重试),不阻塞用户删除
-            session_store.mark_deleted(owner.session_id)
+    # 级联删除用户所有会话(RAGFlow 失败也硬删除门户侧,避免孤儿;失败记日志)
+    await session_store.cascade_delete_for_user(user_id, settings)
     # 删除用户(无论 RAGFlow 是否失败)
     seed.delete_user(user_id)
     return {"user_id": user_id, "deleted": True}
@@ -570,9 +578,7 @@ async def admin_list_share_pages(request: Request, user=Depends(require_admin)):
 
 
 @router.patch("/admin/share-pages/{share_page_id}")
-async def admin_update_share_page(
-    share_page_id: str, body: UpdateEnabledRequest, request: Request, user=Depends(require_admin)
-):
+async def admin_update_share_page(share_page_id: str, body: UpdateEnabledRequest, request: Request, user=Depends(require_admin)):
     """管理员启用/禁用分享页(对应 PRD 用户故事 13)。"""
     seed = request.app.state.seed
     if not seed.set_share_page_enabled(share_page_id, body.enabled):
@@ -584,7 +590,10 @@ async def admin_update_share_page(
 async def admin_delete_session(share_page_id: str, session_id: str, request: Request, user=Depends(require_admin)):
     """管理员删除任意用户的会话(对应 Slice 5 验收点 5:管理员双删,不校验归属)。
 
-    双删策略与普通用户删除一致:RAGFlow 成功 → 门户硬删除;失败 → 标记 deleted_at。
+    双删策略与普通用户删除一致(``_dual_delete_session``):RAGFlow 成功 → 门户硬删除;
+    失败 → 标记 deleted_at。
+    校验:share_page_id 存在 + session 属于该分享页(与 rename_session/delete_session
+    校验链一致,不匹配 → 403);管理员不校验 portal_user_id 归属(可删任意用户的会话)。
     """
     seed = request.app.state.seed
     if seed.get_share_page(share_page_id) is None:
@@ -592,14 +601,12 @@ async def admin_delete_session(share_page_id: str, session_id: str, request: Req
     owner = request.app.state.session_store.get(session_id)
     if owner is None:
         raise HTTPException(status_code=404, detail="会话不存在")
-    # 双删:RAGFlow DELETE(管理员不校验归属,可删任意用户的会话)
+    # 校验 session 属于该分享页(与 rename_session/delete_session 校验链一致)
+    if owner.share_page_id != share_page_id:
+        raise HTTPException(status_code=403, detail="会话不属于该分享页")
+    # 双删:RAGFlow DELETE(管理员不校验 portal_user_id 归属,可删任意用户的会话)
     settings = request.app.state.settings
-    session_store = request.app.state.session_store
-    try:
-        await delete_session_via_ragflow(settings, owner.ragflow_resource_id, session_id)
-        session_store.delete(session_id)
-    except HTTPException:
-        session_store.mark_deleted(session_id)
+    await _dual_delete_session(settings, request.app.state.session_store, owner.ragflow_resource_id, session_id)
     return {"session_id": session_id, "deleted": True}
 
 
@@ -621,9 +628,7 @@ def _validate_subject_exists(seed, subject_type: str, subject_id: str) -> None:
 
 
 @router.post("/admin/share-pages/{share_page_id}/grants", status_code=201)
-async def admin_create_grant(
-    share_page_id: str, body: CreateGrantRequest, request: Request, user=Depends(require_admin)
-):
+async def admin_create_grant(share_page_id: str, body: CreateGrantRequest, request: Request, user=Depends(require_admin)):
     """管理员把分享页授权给用户或用户组(对应 PRD 用户故事 16-17)。
 
     subject_type/permission 由 CreateGrantRequest 的 Literal 类型在入口处
