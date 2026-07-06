@@ -227,4 +227,37 @@ describe('AuditLogsAdminPage', () => {
 
     expect(await screen.findByText('暂无日志')).toBeInTheDocument();
   });
+
+  it('按时间范围筛选 — 触发带 since/until 的 GET /admin/audit-logs', async () => {
+    const user = userEvent.setup();
+    globalThis.fetch = mockFetch([
+      { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
+      { url: '/admin/users', status: 200, body: USERS_RESPONSE },
+      { url: '/admin/audit-logs', status: 200, body: AUDIT_LOGS_RESPONSE },
+      {
+        // 2023-11-14 ~ 2023-11-15 对应日志 at=1700001000(2023-11-14)的筛选
+        url: '/admin/audit-logs?since=1699920000&until=1700092799',
+        status: 200,
+        body: { audit_logs: [AUDIT_LOGS_RESPONSE.audit_logs[0]] },
+      },
+    ]);
+
+    renderPage();
+
+    await screen.findByTestId('audit-row-1');
+
+    await user.type(screen.getByLabelText('起始日期'), '2023-11-14');
+    await user.type(screen.getByLabelText('结束日期'), '2023-11-15');
+    await user.click(screen.getByRole('button', { name: '筛选' }));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('audit-row-2')).not.toBeInTheDocument();
+    });
+    expect(screen.getByTestId('audit-row-1')).toBeInTheDocument();
+
+    const calls = getFetchCalls(globalThis.fetch);
+    const lastCall = calls[calls.length - 1];
+    expect(lastCall.url).toContain('since=');
+    expect(lastCall.url).toContain('until=');
+  });
 });

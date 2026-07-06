@@ -658,6 +658,14 @@ PRD D9 决定一期仅全屏 Chat,字段已预留(`embed_type` / `ragflow_type`)
 | TD3 | Feature Envy | `portal/models.py` `build_seed_data` | 直接构造 `PortalUserModel`/`SharePageModel` 绕过 `SeedData` CRUD。**评估为有意为之**:固定 ID(`u_admin`/`sp_default`)保证 idempotent seed,`create_user` 用随机 ID 无法保证。 | Won't fix(有理由) |
 | TD4 | Mysterious Name | `portal/models.py` `self._sm`(38 次) | `_sm` 对 `session_maker` 过简,`_session_maker` 更诚实。 | 待重构(随 TD1 一起) |
 | TD5 | Primitive Obsession(pre-existing) | `portal/db.py` `SharePageGrantModel` | `subject_type`/`permission` 仍为 `String(16)`,虽同文件已定义 `SubjectType`/`Permission` Literal。pre-existing,非 Slice 8 引入。 | 延后(影响 schema 迁移) |
+| TD6 | Duplicated Code | `frontend/src/pages/admin/*` + `SharePageDetailPage.tsx` | `formatTime` 函数在 4+ 前端文件重复定义。可抽 `frontend/src/utils/formatTime.ts`。 | 待重构 |
+| TD7 | Duplicated Code | `frontend/src/pages/admin/*.tsx` | 6 个 admin 页同构 `useEffect` + cancelled IIFE + ApiError catch + `busyId` 乐观更新/回滚模式。可抽 `useAdminList` / `useOptimisticToggle` hook。 | 待重构 |
+| TD8 | Duplicated Code | `portal/gateway.py` `_sync_message_count_after_sse` 与 `portal/routes.py` `resume_session` | message_count 同步逻辑(`fetch_session_history_via_ragflow` + `update_message_count(len(messages))`)两处重复。可聚到 `SessionStore.sync_message_count_from_history`。 | 待重构 |
+| TD9 | Data Clumps | `portal/models.py` PortalUser + `portal/db.py` PortalUserModel + `portal/oidc.py` + `portal/routes.py` | `sso_provider` + `sso_external_id` 6 处捆绑出现。可捆成 `SSOIdentity(provider, external_id)` 小类型。 | 待重构 |
+| TD10 | Mysterious Name | `portal/routes.py` `_assert_oidc_enabled` | 名字只说「enabled」,实际还校验 4 项配置完整性(缺则 500)。改名 `_assert_oidc_ready` 或拆 `_assert_oidc_enabled` + `_assert_oidc_configured`。 | 待重构 |
+| TD11 | Middle Man | `portal/routes.py` `_oidc_config(settings)` | 仅 4 字段直传到 `OIDCConfig(...)`,路由层只用一次、无独立测试。可内联或让 `oidc.py` 直接收 `Settings`。 | 待重构(轻微) |
+| TD12 | Speculative Generality | `portal/oidc.py` `_discovery_cache` + `clear_discovery_cache()` | 进程级 dict + 钩子,但 spec 无多 IdP 场景,`SSO_PROVIDER = "oidc"` 写死。缓存键用 issuer 是过度抽象。保留无害,删亦佳。 | 待重构(轻微) |
+| TD13 | Divergent Change(deprecated API) | `portal/main.py` `@app.on_event("startup"/"shutdown")` | FastAPI 旧式 API,有 DeprecationWarning。应迁移到 lifespan context manager。 | 待重构 |
 
 ## 迁移至正式 issue tracker 时的说明
 

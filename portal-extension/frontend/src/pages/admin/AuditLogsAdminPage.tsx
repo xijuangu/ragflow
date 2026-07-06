@@ -45,6 +45,8 @@ export default function AuditLogsAdminPage() {
   // 筛选表单
   const [filterActor, setFilterActor] = useState('');
   const [filterAction, setFilterAction] = useState('');
+  const [filterSince, setFilterSince] = useState(''); // YYYY-MM-DD
+  const [filterUntil, setFilterUntil] = useState(''); // YYYY-MM-DD
 
   const userMap = useMemo(() => {
     const m = new Map<string, AdminUser>();
@@ -53,13 +55,20 @@ export default function AuditLogsAdminPage() {
   }, [users]);
 
   const loadLogs = useCallback(
-    async (opts: { actorUserId?: string; action?: string } = {}) => {
+    async (opts: {
+      actorUserId?: string;
+      action?: string;
+      since?: number;
+      until?: number;
+    } = {}) => {
       setLogs(null);
       setError(null);
       try {
         const res = await api.listAdminAuditLogs({
           actor_user_id: opts.actorUserId || undefined,
           action: opts.action || undefined,
+          since: opts.since,
+          until: opts.until,
         });
         setLogs(res.audit_logs);
       } catch (e) {
@@ -93,12 +102,21 @@ export default function AuditLogsAdminPage() {
   const handleSearch = useCallback(
     async (e: FormEvent) => {
       e.preventDefault();
+      // date input(YYYY-MM-DD)→ epoch 秒;since 取当日 00:00 UTC,until 取当日 23:59:59 UTC
+      const sinceEpoch = filterSince
+        ? Math.floor(Date.parse(`${filterSince}T00:00:00Z`) / 1000)
+        : undefined;
+      const untilEpoch = filterUntil
+        ? Math.floor(Date.parse(`${filterUntil}T23:59:59Z`) / 1000)
+        : undefined;
       await loadLogs({
         actorUserId: filterActor,
         action: filterAction,
+        since: Number.isNaN(sinceEpoch) ? undefined : sinceEpoch,
+        until: Number.isNaN(untilEpoch) ? undefined : untilEpoch,
       });
     },
-    [filterActor, filterAction, loadLogs],
+    [filterActor, filterAction, filterSince, filterUntil, loadLogs],
   );
 
   return (
@@ -139,6 +157,24 @@ export default function AuditLogsAdminPage() {
                 </option>
               ))}
             </select>
+          </div>
+          <div className="form-field">
+            <label htmlFor="filter-since">起始日期</label>
+            <input
+              id="filter-since"
+              type="date"
+              value={filterSince}
+              onChange={(e) => setFilterSince(e.target.value)}
+            />
+          </div>
+          <div className="form-field">
+            <label htmlFor="filter-until">结束日期</label>
+            <input
+              id="filter-until"
+              type="date"
+              value={filterUntil}
+              onChange={(e) => setFilterUntil(e.target.value)}
+            />
           </div>
           <button type="submit" className="btn btn-primary">
             筛选
