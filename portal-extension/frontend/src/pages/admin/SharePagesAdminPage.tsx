@@ -1,23 +1,39 @@
 /**
- * 分享页管理页(Slice 11,验收点 4)— 列表 / 创建(填 dialog_id)/ 启用禁用。
+ * 分享页管理页(Slice 11,验收点 4 + Slice 16 扩展)— 列表 / 创建 / 启用禁用。
  *
  * 对应后端:
  *   - GET /admin/share-pages(列表,含未授权与禁用的)
- *   - POST /admin/share-pages(创建,关联 RAGFlow dialog_id,201)
+ *   - POST /admin/share-pages(创建,关联 RAGFlow dialog_id/agent_id,201)
  *   - PATCH /admin/share-pages/:id(启用/禁用)
  *
- * embed_type/ragflow_type 一期固定值(D9),不开放选择器,后端 create_share_page 默认填。
+ * Slice 16:embed_type/ragflow_type 开放选择器(D9 一期固定值已扩展)。
+ *   - embed_type:fullscreen(全屏 iframe)/ widget(悬浮组件 snippet)
+ *   - ragflow_type:chat(/chat/share)/ agent(/agent/share)
  */
 import { useCallback, useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import { ApiError, api, type AdminSharePage } from '../../api/client';
+
+interface SharePageFormState {
+  name: string;
+  ragflow_resource_id: string;
+  embed_type: 'fullscreen' | 'widget';
+  ragflow_type: 'chat' | 'agent';
+}
+
+const DEFAULT_FORM: SharePageFormState = {
+  name: '',
+  ragflow_resource_id: '',
+  embed_type: 'fullscreen',
+  ragflow_type: 'chat',
+};
 
 export default function SharePagesAdminPage() {
   const [pages, setPages] = useState<AdminSharePage[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
 
-  const [form, setForm] = useState({ name: '', ragflow_resource_id: '' });
+  const [form, setForm] = useState<SharePageFormState>(DEFAULT_FORM);
   const [formError, setFormError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
 
@@ -45,14 +61,19 @@ export default function SharePagesAdminPage() {
       const name = form.name.trim();
       const ragflow_resource_id = form.ragflow_resource_id.trim();
       if (!name || !ragflow_resource_id) {
-        setFormError('分享页名称与 dialog_id 均不能为空');
+        setFormError('分享页名称与资源 ID 均不能为空');
         return;
       }
       setCreating(true);
       try {
-        const created = await api.createAdminSharePage({ name, ragflow_resource_id });
+        const created = await api.createAdminSharePage({
+          name,
+          ragflow_resource_id,
+          embed_type: form.embed_type,
+          ragflow_type: form.ragflow_type,
+        });
         setPages((prev) => (prev ? [...prev, created] : [created]));
-        setForm({ name: '', ragflow_resource_id: '' });
+        setForm(DEFAULT_FORM);
       } catch (e) {
         setFormError(e instanceof ApiError ? e.message : '创建分享页失败');
       } finally {
@@ -106,15 +127,41 @@ export default function SharePagesAdminPage() {
             />
           </div>
           <div className="form-field">
-            <label htmlFor="new-sp-dialog">RAGFlow dialog_id</label>
+            <label htmlFor="new-sp-dialog">RAGFlow 资源 ID</label>
             <input
               id="new-sp-dialog"
               type="text"
               value={form.ragflow_resource_id}
               onChange={(e) => setForm((f) => ({ ...f, ragflow_resource_id: e.target.value }))}
-              placeholder="如 dialog-abc123"
+              placeholder="chat 类型填 dialog_id;agent 类型填 agent_id"
               required
             />
+          </div>
+          <div className="form-field">
+            <label htmlFor="new-sp-embed-type">嵌入类型</label>
+            <select
+              id="new-sp-embed-type"
+              value={form.embed_type}
+              onChange={(e) =>
+                setForm((f) => ({ ...f, embed_type: e.target.value as 'fullscreen' | 'widget' }))
+              }
+            >
+              <option value="fullscreen">fullscreen(全屏 iframe)</option>
+              <option value="widget">widget(悬浮组件 snippet)</option>
+            </select>
+          </div>
+          <div className="form-field">
+            <label htmlFor="new-sp-ragflow-type">RAGFlow 类型</label>
+            <select
+              id="new-sp-ragflow-type"
+              value={form.ragflow_type}
+              onChange={(e) =>
+                setForm((f) => ({ ...f, ragflow_type: e.target.value as 'chat' | 'agent' }))
+              }
+            >
+              <option value="chat">chat(对话助手)</option>
+              <option value="agent">agent(Agent 工作流)</option>
+            </select>
           </div>
           <button type="submit" className="btn btn-primary" disabled={creating}>
             {creating ? '创建中…' : '创建分享页'}
@@ -133,8 +180,9 @@ export default function SharePagesAdminPage() {
             <thead>
               <tr>
                 <th>名称</th>
-                <th>dialog_id</th>
-                <th>类型</th>
+                <th>资源 ID</th>
+                <th>嵌入类型</th>
+                <th>RAGFlow 类型</th>
                 <th>状态</th>
                 <th>操作</th>
               </tr>
@@ -144,6 +192,7 @@ export default function SharePagesAdminPage() {
                 <tr key={p.id} data-testid={`share-page-row-${p.id}`}>
                   <td>{p.name}</td>
                   <td className="mono">{p.ragflow_resource_id}</td>
+                  <td>{p.embed_type}</td>
                   <td>{p.ragflow_type}</td>
                   <td>
                     {p.enabled ? (

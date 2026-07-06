@@ -24,6 +24,9 @@
                           迁移时现有数据归入此 org;新建用户/组/分享页默认此 org)
   PUBLIC_RATE_LIMIT_PER_MIN  Slice 15 公开分享页每 IP 每分钟请求上限(默认 10;<=0 禁用限流)
   PUBLIC_AUDIT_ENABLED    Slice 15 公开访问审计开关(默认 true;false 时不写 public_chat 审计)
+  WIDGET_FRAME_ANCESTORS  Slice 16 widget 跨域嵌入允许的 frame-ancestors 来源(默认 * 允许任意域;
+                          生产建议配置为具体域名列表,如 https://example.com https://app.example.com)。
+                          仅对 /widget/* 路径生效,其他路径保持 X-Frame-Options: SAMEORIGIN(D10)。
 """
 
 import os
@@ -60,6 +63,10 @@ class Settings:
     public_rate_limit_per_min: int = 10
     # 公开访问审计开关(默认 true 写 public_chat 审计;false 时跳过,节省内存)
     public_audit_enabled: bool = True
+    # Slice 16:widget 跨域嵌入允许的 frame-ancestors 来源(默认 * 允许任意域;
+    # 生产建议配置为具体域名列表,如 https://example.com https://app.example.com)。
+    # 仅对 /widget/* 路径生效,其他路径保持 X-Frame-Options: SAMEORIGIN(D10)。
+    widget_frame_ancestors: str = "*"
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -98,4 +105,6 @@ def load_settings() -> Settings:
         # Slice 15:公开分享页限流与审计配置
         public_rate_limit_per_min=int(os.environ.get("PUBLIC_RATE_LIMIT_PER_MIN", "10")),
         public_audit_enabled=_env_bool("PUBLIC_AUDIT_ENABLED", True),
+        # Slice 16:widget 跨域嵌入 frame-ancestors(默认 * 允许任意域,生产建议配置具体域名)
+        widget_frame_ancestors=os.environ.get("WIDGET_FRAME_ANCESTORS", "*"),
     )

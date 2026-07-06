@@ -23,8 +23,18 @@ export interface UserInfo {
   is_admin: boolean;
 }
 
+/** embed-url 端点响应 — fullscreen 类型返回 iframe_url,widget 类型返回 widget_url + snippet。 */
 export interface EmbedUrlResponse {
-  iframe_url: string;
+  /** fullscreen 类型:iframe 嵌入 URL(含 auth=T_short)。widget 类型不存在此字段。 */
+  iframe_url?: string;
+  /** widget 类型:独立 widget 页面 URL(/widget/<id>)。fullscreen 类型不存在此字段。 */
+  widget_url?: string;
+  /** widget 类型:可嵌入任意页面的 iframe HTML snippet。fullscreen 类型不存在此字段。 */
+  snippet?: string;
+  /** widget 类型响应含 embed_type=widget;fullscreen 类型响应可能不含此字段(向后兼容)。 */
+  embed_type?: string;
+  /** agent 类型响应含 ragflow_type=agent;chat 类型响应可能不含此字段(向后兼容)。 */
+  ragflow_type?: string;
   share_page_id: string;
   expires_in: number;
 }
@@ -346,10 +356,13 @@ export const api = {
     return request<{ share_pages: AdminSharePage[] }>('/admin/share-pages');
   },
 
-  /** 创建分享页(POST /admin/share-pages,关联 RAGFlow dialog_id,201 成功)。 */
+  /** 创建分享页(POST /admin/share-pages,关联 RAGFlow dialog_id/agent_id,201 成功)。
+   *  Slice 16:embed_type/ragflow_type 由管理员表单选择器传入(默认 fullscreen/chat)。 */
   createAdminSharePage(body: {
     name: string;
     ragflow_resource_id: string;
+    embed_type?: 'fullscreen' | 'widget';
+    ragflow_type?: 'chat' | 'agent';
   }): Promise<AdminSharePage> {
     return request<AdminSharePage>('/admin/share-pages', {
       method: 'POST',

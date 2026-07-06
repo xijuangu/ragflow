@@ -25,6 +25,17 @@ Slice 5 扩展(原型 H7/H8 验证结论 — 会话重命名/删除双删):
   - rename_session_via_ragflow:调 RAGFlow PATCH 端点更新 API4Conversation.name。
   - delete_session_via_ragflow:调 RAGFlow DELETE 端点删除 API4Conversation。
   - 均复用 Slice 2 的 _build_upstream_client / _build_upstream_headers / _ragflow_http_error helper。
+
+Slice 16 扩展(widget + Agent 支持):
+  - build_agent_iframe_url:构造 RAGFlow Agent iframe URL(/agent/share?...)。
+  - build_widget_url / build_widget_snippet:widget 独立页面 URL 与可嵌入 iframe snippet。
+  - precreate_agent_session_via_ragflow / fetch_agent_session_history_via_ragflow /
+    rename_agent_session_via_ragflow / delete_agent_session_via_ragflow:
+    agent 类型走 RAGFlow agentbot 端点(/api/v1/agentbots/<id>/...),与 chat 的
+    chatbot 端点(/api/v1/chatbots/<id>/...)对应。
+  - proxy_sse_to_ragflow 加 ragflow_type 参数:agent 类型上游走 agentbot 端点,
+    message_count 同步调 fetch_agent_session_history_via_ragflow。
+  - 校验链对 widget 与 agent 类型同样生效(不因 ragflow_type/embed_type 跳过)。
 """
 
 import json
@@ -220,6 +231,50 @@ def build_iframe_url(ragflow_host: str, dialog_id: str, t_short: str, session_id
     return f"{ragflow_host.rstrip('/')}/chat/share?{urlencode(params)}"
 
 
+def build_agent_iframe_url(ragflow_host: str, agent_id: str, t_short: str, session_id: str = "") -> str:
+    """构造 RAGFlow Agent iframe URL(Slice 16 — agent 类型)。
+
+    URL 格式(对应 RAGFlow Agent 分享页注入点):
+      {RAGFLOW_HOST}/agent/share?shared_id={agent_id}&auth={T_short}&from=agent[&session_id=...]
+
+    与 build_iframe_url 的区别:路径为 /agent/share(而非 /chat/share),from=agent。
+    shared_id 放 agent_id(复用 share_page.ragflow_resource_id 字段)。
+    """
+    params = {"shared_id": agent_id, "auth": t_short, "from": "agent"}
+    if session_id:
+        params["session_id"] = session_id
+    return f"{ragflow_host.rstrip('/')}/agent/share?{urlencode(params)}"
+
+
+def build_widget_url(portal_origin: str, share_page_id: str) -> str:
+    """构造 widget 独立 HTML 页面 URL(Slice 16 — widget 类型)。
+
+    返回门户的 /widget/<share_page_id> 路径,供前端生成可嵌入 iframe snippet。
+    portal_origin 为门户同源 origin(如 http://localhost:8000 或 https://portal.example);
+    若为空则返回相对路径(同源场景)。
+    """
+    base = portal_origin.rstrip("/") if portal_origin else ""
+    return f"{base}/widget/{share_page_id}"
+
+
+def build_widget_snippet(widget_url: str) -> str:
+    """构造可嵌入任意页面的 iframe snippet(Slice 16 — widget 类型)。
+
+    返回一段 HTML,含右下角固定定位的 iframe(指向 /widget/<id>),
+    管理员复制粘贴到任意页面即可加载悬浮组件。
+
+    snippet 设计(简化方案,不跨 React 组件边界):
+      - iframe 固定定位在页面右下角(bottom: 20px; right: 20px)。
+      - 初始尺寸 400x600(悬浮对话窗典型大小)。
+      - 外部页面通过 CSS 覆盖 .ragflow-widget-frame 可调整位置/尺寸。
+    """
+    return (
+        f'<iframe class="ragflow-widget-frame" src="{widget_url}" '
+        f'style="position:fixed;bottom:20px;right:20px;width:400px;height:600px;border:0;'
+        f'z-index:2147483647;" title="RAGFlow 悬浮组件" allow="clipboard-read; clipboard-write"></iframe>'
+    )
+
+
 def extract_t_short(request: Request):
     """从请求 Authorization header 提取 T_short。
 
@@ -343,6 +398,43 @@ async def precreate_session_via_ragflow(settings, dialog_id: str) -> str:
     raise HTTPException(status_code=502, detail="RAGFlow 预创建 session 未返回 session_id")
 
 
+async def precreate_agent_session_via_ragflow(settings, agent_id: str) -> str:
+    """调 RAGFlow Agent 创建空 session,返回 session_id(Slice 16 — agent 预创建)。
+
+    调 POST /api/v1/agentbots/<agent_id>/completions(question="", stream=true),
+    RAGFlow 创建 agent session 并在首帧返回 session_id。
+
+    与 precreate_session_via_ragflow 的区别:上游走 agentbot 端点
+    (/api/v1/agentbots/<id>/completions 而非 /api/v1/chatbots/<id>/completions)。
+    首帧解析逻辑与 chat 一致(RAGFlow agentbot 与 chatbot 返回结构相同)。
+    """
+    upstream_url = f"{settings.ragflow_host.rstrip('/')}/api/v1/agentbots/{agent_id}/completions"
+    upstream_headers = _build_upstream_headers(settings.ragflow_beta_token, content_type="application/json")
+    body = json.dumps({"question": "", "stream": True, "quote": True}).encode("utf-8")
+    async with _build_upstream_client(timeout=30.0) as client:
+        async with client.stream("POST", upstream_url, content=body, headers=upstream_headers) as resp:
+            if resp.status_code != 200:
+                raise _ragflow_http_error(resp, "RAGFlow 预创建 agent session 失败")
+            async for line in resp.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                payload = line[len("data:") :].strip()
+                if not payload:
+                    continue
+                try:
+                    data = json.loads(payload)
+                except json.JSONDecodeError:
+                    continue
+                session_id = (
+                    (data.get("data") or {}).get("session_id")
+                    if isinstance(data.get("data"), dict)
+                    else data.get("session_id")
+                )
+                if session_id:
+                    return str(session_id)
+    raise HTTPException(status_code=502, detail="RAGFlow 预创建 agent session 未返回 session_id")
+
+
 async def fetch_session_history_via_ragflow(settings, dialog_id: str, session_id: str) -> dict:
     """调 RAGFlow GET 端点取回会话消息与引用(对应验收点 5:重新打开恢复)。
 
@@ -362,6 +454,23 @@ async def fetch_session_history_via_ragflow(settings, dialog_id: str, session_id
         return data
 
 
+async def fetch_agent_session_history_via_ragflow(settings, agent_id: str, session_id: str) -> dict:
+    """调 RAGFlow Agent GET 端点取回 agent 会话消息与引用(Slice 16 — agent 类型)。
+
+    调 GET /api/v1/agentbots/<agent_id>/sessions/<session_id>,与 chat 版本对应。
+    返回结构与 chat 版本一致(RAGFlow agentbot 与 chatbot GET 端点返回结构相同)。
+    """
+    upstream_url = f"{settings.ragflow_host.rstrip('/')}/api/v1/agentbots/{agent_id}/sessions/{session_id}"
+    upstream_headers = _build_upstream_headers(settings.ragflow_beta_token)
+    async with _build_upstream_client(timeout=30.0) as client:
+        resp = await client.get(upstream_url, headers=upstream_headers)
+        if resp.status_code != 200:
+            raise _ragflow_http_error(resp, "RAGFlow 取回 agent 会话失败")
+        body = resp.json()
+        data = body.get("data", body) if isinstance(body, dict) else body
+        return data
+
+
 async def rename_session_via_ragflow(settings, dialog_id: str, session_id: str, name: str) -> None:
     """调 RAGFlow PATCH 端点更新 API4Conversation.name(对应 Slice 5 验收点:重命名同步)。
 
@@ -375,6 +484,20 @@ async def rename_session_via_ragflow(settings, dialog_id: str, session_id: str, 
         resp = await client.patch(upstream_url, headers=upstream_headers, json={"name": name})
         if resp.status_code != 200:
             raise _ragflow_http_error(resp, "RAGFlow 重命名会话失败")
+
+
+async def rename_agent_session_via_ragflow(settings, agent_id: str, session_id: str, name: str) -> None:
+    """调 RAGFlow Agent PATCH 端点更新 agent 会话标题(Slice 16 — agent 类型重命名)。
+
+    调 PATCH /api/v1/agentbots/<agent_id>/sessions/<session_id>,与 chat 版本对应。
+    同步策略与 chat 一致:RAGFlow 成功才更新门户 title;失败抛 502。
+    """
+    upstream_url = f"{settings.ragflow_host.rstrip('/')}/api/v1/agentbots/{agent_id}/sessions/{session_id}"
+    upstream_headers = _build_upstream_headers(settings.ragflow_beta_token, content_type="application/json")
+    async with _build_upstream_client(timeout=30.0) as client:
+        resp = await client.patch(upstream_url, headers=upstream_headers, json={"name": name})
+        if resp.status_code != 200:
+            raise _ragflow_http_error(resp, "RAGFlow 重命名 agent 会话失败")
 
 
 async def delete_session_via_ragflow(settings, dialog_id: str, session_id: str) -> None:
@@ -391,18 +514,43 @@ async def delete_session_via_ragflow(settings, dialog_id: str, session_id: str) 
             raise _ragflow_http_error(resp, "RAGFlow 删除会话失败")
 
 
-async def _sync_message_count_after_sse(settings, session_store, session_id: str, dialog_id: str) -> None:
+async def delete_agent_session_via_ragflow(settings, agent_id: str, session_id: str) -> None:
+    """调 RAGFlow Agent DELETE 端点删除 agent 会话(Slice 16 — agent 类型删除)。
+
+    调 DELETE /api/v1/agentbots/<agent_id>/sessions/<session_id>,与 chat 版本对应。
+    双删策略与 chat 一致:RAGFlow 成功 → 门户硬删除;失败 → 标记 deleted_at 待重试。
+    """
+    upstream_url = f"{settings.ragflow_host.rstrip('/')}/api/v1/agentbots/{agent_id}/sessions/{session_id}"
+    upstream_headers = _build_upstream_headers(settings.ragflow_beta_token)
+    async with _build_upstream_client(timeout=30.0) as client:
+        resp = await client.delete(upstream_url, headers=upstream_headers)
+        if resp.status_code != 200:
+            raise _ragflow_http_error(resp, "RAGFlow 删除 agent 会话失败")
+
+
+async def _sync_message_count_after_sse(
+    settings,
+    session_store,
+    session_id: str,
+    dialog_id: str,
+    ragflow_type: str = "chat",
+) -> None:
     """Slice 12:SSE 流成功后调 GET history 取最新消息数,更新 message_count。
 
     与 ``resume_session``(routes.py)中的 message_count 同步逻辑一致,保证
     SSE 代理后 message_count 不再滞后(对应 ISSUES.md Issue 12 验收点 4-5)。
+
+    Slice 16:加 ``ragflow_type`` 参数,agent 类型调 agentbot 端点取 history。
 
     失败处理:GET history 失败(网络抖动/RAGFlow 5xx)只记 ``logger.warning``,
     不抛异常(流已成功,不能因后续操作失败破坏已完成的 SSE 响应);
     message_count 保持原值,下次 SSE 成功或 resume_session 时再同步。
     """
     try:
-        history = await fetch_session_history_via_ragflow(settings, dialog_id, session_id)
+        if ragflow_type == "agent":
+            history = await fetch_agent_session_history_via_ragflow(settings, dialog_id, session_id)
+        else:
+            history = await fetch_session_history_via_ragflow(settings, dialog_id, session_id)
     except Exception as e:
         logger.warning(
             "SSE 流成功后调 GET history 失败(message_count 保持原值),session_id=%s error=%s",
@@ -415,7 +563,7 @@ async def _sync_message_count_after_sse(settings, session_store, session_id: str
         session_store.update_message_count(session_id, len(messages))
 
 
-async def proxy_sse_to_ragflow(request: Request, dialog_id: str):
+async def proxy_sse_to_ragflow(request: Request, dialog_id: str, ragflow_type: str = "chat"):
     """SSE 代理:校验同源 cookie + T_short + grant + session_id 归属 → 用 beta Token 调 RAGFlow bot_api → 流式回传。
 
     对应验收点 4(无效/过期 T_short → 401)与验收点 6(beta Token 调 RAGFlow SSE)。
@@ -487,7 +635,7 @@ async def proxy_sse_to_ragflow(request: Request, dialog_id: str):
     # 归属隔离:若请求体含 session_id,校验其归属当前 T_short 持有用户
     if request_session_id and session_store is not None:
         _assert_session_ownership(session_store, request_session_id, record.portal_user_id, dialog_id)
-    return _build_sse_streaming_response(settings, body, dialog_id, request_session_id, session_store)
+    return _build_sse_streaming_response(settings, body, dialog_id, request_session_id, session_store, ragflow_type)
 
 
 async def _proxy_sse_public_core(request: Request, dialog_id: str, t_short: str, record):
@@ -500,6 +648,9 @@ async def _proxy_sse_public_core(request: Request, dialog_id: str, t_short: str,
       4. 若请求体含 session_id:归属 u_anonymous(公开会话锚点)。
 
     此函数不处理限流与审计(由调用方决定是否加),仅做校验 + SSE 代理。
+
+    Slice 16:公开分享页当前仅支持 chat 类型(public embed-url 走 build_iframe_url
+    即 /chat/share);后续若开放公开 agent,需在此传 share_page.ragflow_type。
     """
     settings = request.app.state.settings
     token_store = request.app.state.token_store
@@ -526,18 +677,32 @@ async def _proxy_sse_public_core(request: Request, dialog_id: str, t_short: str,
     # 步骤 4:session 归属 u_anonymous(公开会话锚点)
     if request_session_id and session_store is not None:
         _assert_session_ownership(session_store, request_session_id, record.portal_user_id, dialog_id)
-    return _build_sse_streaming_response(settings, body, dialog_id, request_session_id, session_store)
+    # 公开分享页当前仅 chat 类型,ragflow_type 固定为 'chat'
+    return _build_sse_streaming_response(
+        settings, body, dialog_id, request_session_id, session_store, ragflow_type="chat"
+    )
 
 
 def _build_sse_streaming_response(
-    settings, body: bytes, dialog_id: str, request_session_id: str, session_store
+    settings,
+    body: bytes,
+    dialog_id: str,
+    request_session_id: str,
+    session_store,
+    ragflow_type: str = "chat",
 ) -> StreamingResponse:
     """构造 SSE 流式响应(标准路径与公开路径共用)。
 
     用 beta Token 调 RAGFlow bot_api,流式转发(beta Token 只在此处使用,不返回浏览器)。
     流成功完成后更新 last_active_at 与 message_count(与 Slice 12 一致)。
+
+    Slice 16:加 ``ragflow_type`` 参数,agent 类型走 agentbot 端点
+    (/api/v1/agentbots/<id>/completions),chat 类型走 chatbot 端点
+    (/api/v1/chatbots/<id>/completions)。
     """
-    upstream_url = f"{settings.ragflow_host.rstrip('/')}/api/v1/chatbots/{dialog_id}/completions"
+    # Slice 16:agent 类型走 agentbot 端点,chat 类型走 chatbot 端点
+    bot_segment = "agentbots" if ragflow_type == "agent" else "chatbots"
+    upstream_url = f"{settings.ragflow_host.rstrip('/')}/api/v1/{bot_segment}/{dialog_id}/completions"
     upstream_headers = _build_upstream_headers(settings.ragflow_beta_token, content_type="application/json")
 
     async def stream_generator():
@@ -557,9 +722,12 @@ def _build_sse_streaming_response(
             # Slice 2:仅在流成功完成后更新 last_active_at(失败流不更新,避免误推活跃时间)
             # Slice 12:同一时机更新 message_count(调 GET history 取最新消息数,
             #   与 resume_session 同逻辑保证一致;GET history 失败只 log warning 不破坏流)
+            # Slice 16:agent 类型调 agentbot 端点取 history(chat 类型调 chatbot 端点)
             if success and request_session_id and session_store is not None:
                 session_store.update_last_active(request_session_id)
-                await _sync_message_count_after_sse(settings, session_store, request_session_id, dialog_id)
+                await _sync_message_count_after_sse(
+                    settings, session_store, request_session_id, dialog_id, ragflow_type
+                )
 
     return StreamingResponse(stream_generator(), media_type="text/event-stream")
 
