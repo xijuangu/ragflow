@@ -33,7 +33,7 @@ import logging
 import secrets
 import time
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
@@ -249,15 +249,38 @@ def _session_owner_from_orm(row: ChatSessionOwnerModel) -> ChatSessionOwner:
     )
 
 
-class SessionStore:
+class _StoreBase:
+    """SessionStore / AuditStore / SeedData 共享的 session 管理基类(TD1 + TD4)。
+
+    提供 `_transact(fn)` 上下文管理器,消除 `with self._session_maker() as session:
+    ... session.commit()` 形状的重复(原 39 处)。`_session_maker` 命名取代过简的
+    `_sm`(TD4 重命名)。
+    """
+
+    def __init__(self, session_maker: sessionmaker):
+        self._session_maker = session_maker
+
+    def _transact(self, fn) -> Any:
+        """执行 ``fn(session)`` 并在成功(无异常)后 commit,返回 fn 的结果。
+
+        fn 接收 SQLAlchemy session,返回任意结果;_transact 在 fn 成功后 commit
+        并返回 fn 的结果。fn 抛异常时,``with`` 上下文管理器自动回滚。
+
+        适用于「单 session、成功即 commit、失败即回滚」的简单写事务;
+        多步/条件 commit/带 try-except 的复杂逻辑不套用,保持原样。
+        """
+        with self._session_maker() as session:
+            result = fn(session)
+            session.commit()
+            return result
+
+
+class SessionStore(_StoreBase):
     """会话归属表 — Slice 8 改为 SQLAlchemy 持久化(外部 API 不变)。
 
     类似 TokenStore,但记录的是「session_id → 门户用户」的归属关系。
     Slice 2 不持久化,Slice 4 仍内存,Slice 8 迁移到 DB。
     """
-
-    def __init__(self, session_maker: sessionmaker):
-        self._sm = session_maker
 
     def bind(
         self,
@@ -283,26 +306,27 @@ class SessionStore:
             last_active_at=now,
             org_id=org_id,
         )
-        with self._sm() as session:
-            row = ChatSessionOwnerModel(
-                session_id=owner.session_id,
-                share_page_id=owner.share_page_id,
-                portal_user_id=owner.portal_user_id,
-                ragflow_resource_id=owner.ragflow_resource_id,
-                title=owner.title,
-                created_at=owner.created_at,
-                last_active_at=owner.last_active_at,
-                deleted_at=None,
-                message_count=0,
-                org_id=owner.org_id,
+        self._transact(
+            lambda session: session.add(
+                ChatSessionOwnerModel(
+                    session_id=owner.session_id,
+                    share_page_id=owner.share_page_id,
+                    portal_user_id=owner.portal_user_id,
+                    ragflow_resource_id=owner.ragflow_resource_id,
+                    title=owner.title,
+                    created_at=owner.created_at,
+                    last_active_at=owner.last_active_at,
+                    deleted_at=None,
+                    message_count=0,
+                    org_id=owner.org_id,
+                )
             )
-            session.add(row)
-            session.commit()
+        )
         return owner
 
     def get(self, session_id: str):
         """按 session_id 取回归属记录;不存在返回 None。"""
-        with self._sm() as session:
+        with self._session_maker() as session:
             row = session.get(ChatSessionOwnerModel, session_id)
             return _session_owner_from_orm(row) if row is not None else None
 
@@ -312,7 +336,7 @@ class SessionStore:
         基础隔离:只返回 portal_user_id 匹配的记录(用户看不到他人的 session)。
         Slice 5:排除 deleted_at 非空的记录(标记待重试的不在用户列表显示)。
         """
-        with self._sm() as session:
+        with self._session_maker() as session:
             stmt = select(ChatSessionOwnerModel).where(
                 ChatSessionOwnerModel.portal_user_id == portal_user_id,
                 ChatSessionOwnerModel.share_page_id == share_page_id,
@@ -325,26 +349,30 @@ class SessionStore:
 
         返回 True 表示 session 存在并已更新;False 表示 session 不存在。
         """
-        with self._sm() as session:
+
+        def _do(session) -> bool:
             row = session.get(ChatSessionOwnerModel, session_id)
             if row is None:
                 return False
             row.last_active_at = time.time()
-            session.commit()
             return True
+
+        return self._transact(_do)
 
     def rename(self, session_id: str, title: str) -> bool:
         """重命名会话标题(对应 Slice 5 验收点:用户重命名自己的会话)。
 
         返回 True 表示 session 存在并已更新;False 表示 session 不存在。
         """
-        with self._sm() as session:
+
+        def _do(session) -> bool:
             row = session.get(ChatSessionOwnerModel, session_id)
             if row is None:
                 return False
             row.title = title
-            session.commit()
             return True
+
+        return self._transact(_do)
 
     def update_message_count(self, session_id: str, count: int) -> bool:
         """更新会话消息数(恢复会话后用 len(messages) 同步,Slice 6 验收点 3)。
@@ -353,26 +381,30 @@ class SessionStore:
         不会持久化,故提供此公开 API 由路由层调用。
         返回 True 表示 session 存在并已更新;False 表示 session 不存在。
         """
-        with self._sm() as session:
+
+        def _do(session) -> bool:
             row = session.get(ChatSessionOwnerModel, session_id)
             if row is None:
                 return False
             row.message_count = count
-            session.commit()
             return True
+
+        return self._transact(_do)
 
     def delete(self, session_id: str) -> bool:
         """硬删除会话归属记录(从存储移除,对应 Slice 5 双删成功后清门户侧)。
 
         返回 True 表示 session 存在并已删除;False 表示 session 不存在。
         """
-        with self._sm() as session:
+
+        def _do(session) -> bool:
             row = session.get(ChatSessionOwnerModel, session_id)
             if row is None:
                 return False
             session.delete(row)
-            session.commit()
             return True
+
+        return self._transact(_do)
 
     def mark_deleted(self, session_id: str) -> bool:
         """标记会话为待删除(双删失败时:RAGFlow 删除失败,门户侧标记 deleted_at 待重试)。
@@ -380,13 +412,15 @@ class SessionStore:
         记录保留(不从存储移除),供后台重试任务查询。
         返回 True 表示 session 存在并已标记;False 表示 session 不存在。
         """
-        with self._sm() as session:
+
+        def _do(session) -> bool:
             row = session.get(ChatSessionOwnerModel, session_id)
             if row is None:
                 return False
             row.deleted_at = time.time()
-            session.commit()
             return True
+
+        return self._transact(_do)
 
     def list_all_for_user(self, portal_user_id: str) -> list:
         """返回用户的所有会话(跨分享页,用于 Slice 5 用户硬删除级联)。
@@ -394,13 +428,13 @@ class SessionStore:
         与 list_for_user 的区别:不限 share_page_id,且包含 deleted_at 标记的记录
         (级联删除需处理所有会话,包括待重试的)。
         """
-        with self._sm() as session:
+        with self._session_maker() as session:
             stmt = select(ChatSessionOwnerModel).where(ChatSessionOwnerModel.portal_user_id == portal_user_id)
             return [_session_owner_from_orm(r) for r in session.scalars(stmt)]
 
     def list_pending_deletion(self) -> list:
         """返回 deleted_at 非空的会话(供后台重试任务查询,Slice 5 提供查询不实现重试)。"""
-        with self._sm() as session:
+        with self._session_maker() as session:
             stmt = select(ChatSessionOwnerModel).where(ChatSessionOwnerModel.deleted_at.is_not(None))
             return [_session_owner_from_orm(r) for r in session.scalars(stmt)]
 
@@ -424,7 +458,7 @@ class SessionStore:
         Slice 13:org_id 过滤(is_admin 可按 org 筛选;org_admin 强制本 org)。
         """
         kw_lower = keyword.lower() if keyword else None
-        with self._sm() as session:
+        with self._session_maker() as session:
             stmt = select(ChatSessionOwnerModel).where(ChatSessionOwnerModel.deleted_at.is_(None))
             if portal_user_id is not None:
                 stmt = stmt.where(ChatSessionOwnerModel.portal_user_id == portal_user_id)
@@ -483,6 +517,48 @@ class SessionStore:
             results.append((owner.session_id, success))
         return results
 
+    async def sync_message_count_from_history(
+        self,
+        settings,
+        dialog_id: str,
+        session_id: str,
+        ragflow_type: str = "chat",
+        history: dict | None = None,
+    ) -> dict | None:
+        """从 RAGFlow 取回 history 并同步 message_count(TD2 + TD8 合并点)。
+
+        合并三处重复的「fetch history + update_message_count(len(messages))」逻辑:
+          - gateway.py ``_sync_message_count_after_sse``(SSE 流成功后同步)
+          - routes.py ``resume_session``(恢复会话时同步)
+          - routes.py ``admin_get_session``(管理员查看会话时同步)
+
+        参数:
+          settings: Settings 实例(含 ragflow_host / ragflow_beta_token)。
+          dialog_id: RAGFlow 资源 ID(chatbot 或 agentbot 的 ID)。
+          session_id: 会话 ID。
+          ragflow_type: 'chat' 走 chatbot 端点,'agent' 走 agentbot 端点。
+          history: 若调用方已 fetch 过 history,直接传入避免重复请求;
+                   None 则内部调 fetch(延迟导入 portal.gateway)。
+
+        返回 history dict(供调用方用于响应体)。异常不吞 — 由调用方决定
+        错误处理(SSE 路径用 try/except + logger.warning;routes 路径用 _invoke_upstream)。
+        """
+        if history is None:
+            # 延迟导入避免循环依赖(models 不直接依赖 gateway)
+            from portal.gateway import (
+                fetch_agent_session_history_via_ragflow,
+                fetch_session_history_via_ragflow,
+            )
+
+            if ragflow_type == "agent":
+                history = await fetch_agent_session_history_via_ragflow(settings, dialog_id, session_id)
+            else:
+                history = await fetch_session_history_via_ragflow(settings, dialog_id, session_id)
+        if isinstance(history, dict):
+            messages = history.get("messages", [])
+            self.update_message_count(session_id, len(messages))
+        return history
+
 
 def _gen_id(prefix: str) -> str:
     """生成带前缀的随机 ID(降低碰撞,便于调试可读)。"""
@@ -524,14 +600,11 @@ def _audit_log_from_orm(row: AuditLogModel) -> AuditLog:
     )
 
 
-class AuditStore:
+class AuditStore(_StoreBase):
     """审计日志存储 — Slice 6 内存,Slice 8 改为 SQLAlchemy 持久化(外部 API 不变)。
 
     永久保留,不自动清理(PR D8b);普通用户的日常操作不记审计(PR D7b 仅敏感操作)。
     """
-
-    def __init__(self, session_maker: sessionmaker):
-        self._sm = session_maker
 
     def record(
         self,
@@ -559,19 +632,20 @@ class AuditStore:
             meta_json=json.dumps(meta, ensure_ascii=False) if meta else "",
             org_id=org_id,
         )
-        with self._sm() as session:
-            row = AuditLogModel(
-                id=log.id,
-                actor_user_id=log.actor_user_id,
-                action=log.action,
-                target_type=log.target_type,
-                target_id=log.target_id,
-                at=log.at,
-                meta_json=log.meta_json,
-                org_id=log.org_id,
+        self._transact(
+            lambda session: session.add(
+                AuditLogModel(
+                    id=log.id,
+                    actor_user_id=log.actor_user_id,
+                    action=log.action,
+                    target_type=log.target_type,
+                    target_id=log.target_id,
+                    at=log.at,
+                    meta_json=log.meta_json,
+                    org_id=log.org_id,
+                )
             )
-            session.add(row)
-            session.commit()
+        )
         return log
 
     def list(
@@ -590,7 +664,7 @@ class AuditStore:
 
         Slice 13:org_id 过滤(is_admin 可按 org 筛选;org_admin 强制本 org)。
         """
-        with self._sm() as session:
+        with self._session_maker() as session:
             stmt = select(AuditLogModel)
             if actor_user_id is not None:
                 stmt = stmt.where(AuditLogModel.actor_user_id == actor_user_id)
@@ -606,7 +680,7 @@ class AuditStore:
             return [_audit_log_from_orm(r) for r in session.scalars(stmt)]
 
 
-class SeedData:
+class SeedData(_StoreBase):
     """可变存储 — Slice 4 把 Slice 1-3 的硬编码数据改为 CRUD 入口,
     Slice 8 改为 SQLAlchemy 持久化(外部 API 不变)。
 
@@ -615,9 +689,6 @@ class SeedData:
 
     所有写操作都通过 SQLAlchemy session 提交事务,保证一致性。
     """
-
-    def __init__(self, session_maker: sessionmaker):
-        self._sm = session_maker
 
     # -----------------------------------------------------------------
     # 用户 CRUD
@@ -654,20 +725,21 @@ class SeedData:
             org_id=org_id,
             org_admin=org_admin,
         )
-        with self._sm() as session:
-            row = PortalUserModel(
-                id=user.id,
-                username=user.username,
-                password_hash=user.password_hash,
-                email=user.email,
-                is_admin=user.is_admin,
-                enabled=user.enabled,
-                created_at=user.created_at,
-                org_id=user.org_id,
-                org_admin=user.org_admin,
+        self._transact(
+            lambda session: session.add(
+                PortalUserModel(
+                    id=user.id,
+                    username=user.username,
+                    password_hash=user.password_hash,
+                    email=user.email,
+                    is_admin=user.is_admin,
+                    enabled=user.enabled,
+                    created_at=user.created_at,
+                    org_id=user.org_id,
+                    org_admin=user.org_admin,
+                )
             )
-            session.add(row)
-            session.commit()
+        )
         return user
 
     def get_user_by_sso(self, sso_provider: str, sso_external_id: str):
@@ -676,7 +748,7 @@ class SeedData:
         Slice 14:SSO 回调用此方法匹配本地用户。自建账号用户的 sso_provider 为 NULL,
         不会被匹配(只有 SSO 创建的用户 sso_provider 非空)。
         """
-        with self._sm() as session:
+        with self._session_maker() as session:
             stmt = select(PortalUserModel).where(
                 PortalUserModel.sso_provider == sso_provider,
                 PortalUserModel.sso_external_id == sso_external_id,
@@ -712,32 +784,33 @@ class SeedData:
             sso_external_id=sso_external_id,
             org_id=org_id,
         )
-        with self._sm() as session:
-            row = PortalUserModel(
-                id=user.id,
-                username=user.username,
-                password_hash=user.password_hash,
-                email=user.email,
-                is_admin=user.is_admin,
-                enabled=user.enabled,
-                created_at=user.created_at,
-                sso_provider=user.sso_provider,
-                sso_external_id=user.sso_external_id,
-                org_id=user.org_id,
+        self._transact(
+            lambda session: session.add(
+                PortalUserModel(
+                    id=user.id,
+                    username=user.username,
+                    password_hash=user.password_hash,
+                    email=user.email,
+                    is_admin=user.is_admin,
+                    enabled=user.enabled,
+                    created_at=user.created_at,
+                    sso_provider=user.sso_provider,
+                    sso_external_id=user.sso_external_id,
+                    org_id=user.org_id,
+                )
             )
-            session.add(row)
-            session.commit()
+        )
         return user
 
     def get_user(self, user_id: str):
         """按 id 取用户;不存在返回 None。"""
-        with self._sm() as session:
+        with self._session_maker() as session:
             row = session.get(PortalUserModel, user_id)
             return _user_from_orm(row) if row is not None else None
 
     def get_user_by_username(self, username: str):
         """按 username 取用户;不存在返回 None。"""
-        with self._sm() as session:
+        with self._session_maker() as session:
             stmt = select(PortalUserModel).where(PortalUserModel.username == username)
             row = session.scalars(stmt).first()
             return _user_from_orm(row) if row is not None else None
@@ -748,7 +821,7 @@ class SeedData:
         Slice 13:org_id=None 返回全部(平台管理员视角);传 org_id 只返回该 org 用户
         (org_admin 视角只看本 org)。
         """
-        with self._sm() as session:
+        with self._session_maker() as session:
             stmt = select(PortalUserModel)
             if org_id is not None:
                 stmt = stmt.where(PortalUserModel.org_id == org_id)
@@ -761,19 +834,21 @@ class SeedData:
         """
         from sqlalchemy import distinct
 
-        with self._sm() as session:
+        with self._session_maker() as session:
             stmt = select(distinct(PortalUserModel.org_id))
             return sorted(session.scalars(stmt).all())
 
     def set_user_enabled(self, user_id: str, enabled: bool) -> bool:
         """启用/禁用用户;返回 True 表示找到并更新。"""
-        with self._sm() as session:
+
+        def _do(session) -> bool:
             row = session.get(PortalUserModel, user_id)
             if row is None:
                 return False
             row.enabled = enabled
-            session.commit()
             return True
+
+        return self._transact(_do)
 
     def delete_user(self, portal_user_id: str) -> bool:
         """硬删除用户(Slice 5):从 portal_user 删除 + 清理组成员关系。
@@ -782,7 +857,7 @@ class SeedData:
         (由路由层调 SessionStore.delete + delete_session_via_ragflow 完成级联双删)。
         返回 True 表示找到并删除;False 表示用户不存在。
         """
-        with self._sm() as session:
+        with self._session_maker() as session:
             row = session.get(PortalUserModel, portal_user_id)
             if row is None:
                 return False
@@ -804,15 +879,16 @@ class SeedData:
         Slice 13:接受 org_id(默认 'default'),组归入指定 org。
         """
         group = PortalGroup(id=_gen_id("g"), name=name, created_at=time.time(), org_id=org_id)
-        with self._sm() as session:
-            row = PortalGroupModel(id=group.id, name=group.name, created_at=group.created_at, org_id=group.org_id)
-            session.add(row)
-            session.commit()
+        self._transact(
+            lambda session: session.add(
+                PortalGroupModel(id=group.id, name=group.name, created_at=group.created_at, org_id=group.org_id)
+            )
+        )
         return group
 
     def get_group(self, group_id: str):
         """按 id 取用户组;不存在返回 None。"""
-        with self._sm() as session:
+        with self._session_maker() as session:
             row = session.get(PortalGroupModel, group_id)
             return _group_from_orm(row) if row is not None else None
 
@@ -821,7 +897,7 @@ class SeedData:
 
         Slice 13:org_id=None 返回全部(平台管理员视角);传 org_id 只返回该 org 用户组。
         """
-        with self._sm() as session:
+        with self._session_maker() as session:
             stmt = select(PortalGroupModel)
             if org_id is not None:
                 stmt = stmt.where(PortalGroupModel.org_id == org_id)
@@ -836,7 +912,7 @@ class SeedData:
 
         Slice 13:组成员关系写入 org_id(从 group 继承,便于按 org 筛选)。
         """
-        with self._sm() as session:
+        with self._session_maker() as session:
             group_row = session.get(PortalGroupModel, group_id)
             if group_row is None:
                 return False
@@ -858,17 +934,19 @@ class SeedData:
 
     def remove_group_member(self, group_id: str, user_id: str) -> bool:
         """从用户组移除用户;返回 True 表示找到并移除。"""
-        with self._sm() as session:
+
+        def _do(session) -> bool:
             row = session.get(PortalGroupMemberModel, (group_id, user_id))
             if row is None:
                 return False
             session.delete(row)
-            session.commit()
             return True
+
+        return self._transact(_do)
 
     def list_user_groups(self, user_id: str) -> list:
         """返回用户所属的所有 group_id(用于 ACL 解析)。"""
-        with self._sm() as session:
+        with self._session_maker() as session:
             stmt = select(PortalGroupMemberModel.group_id).where(PortalGroupMemberModel.user_id == user_id)
             return list(session.scalars(stmt))
 
@@ -878,7 +956,7 @@ class SeedData:
         组不存在时返回空集合(调用方按需先 get_group 校验存在性)。
         返回集合的拷贝,避免外部修改内部状态。
         """
-        with self._sm() as session:
+        with self._session_maker() as session:
             stmt = select(PortalGroupMemberModel.user_id).where(PortalGroupMemberModel.group_id == group_id)
             return set(session.scalars(stmt))
 
@@ -911,24 +989,25 @@ class SeedData:
             created_at=time.time(),
             org_id=org_id,
         )
-        with self._sm() as session:
-            row = SharePageModel(
-                id=page.id,
-                name=page.name,
-                ragflow_type=page.ragflow_type,
-                ragflow_resource_id=page.ragflow_resource_id,
-                embed_type=page.embed_type,
-                enabled=page.enabled,
-                created_at=page.created_at,
-                org_id=page.org_id,
+        self._transact(
+            lambda session: session.add(
+                SharePageModel(
+                    id=page.id,
+                    name=page.name,
+                    ragflow_type=page.ragflow_type,
+                    ragflow_resource_id=page.ragflow_resource_id,
+                    embed_type=page.embed_type,
+                    enabled=page.enabled,
+                    created_at=page.created_at,
+                    org_id=page.org_id,
+                )
             )
-            session.add(row)
-            session.commit()
+        )
         return page
 
     def get_share_page(self, share_page_id: str):
         """按 id 取分享页;不存在返回 None。"""
-        with self._sm() as session:
+        with self._session_maker() as session:
             row = session.get(SharePageModel, share_page_id)
             return _share_page_from_orm(row) if row is not None else None
 
@@ -937,7 +1016,7 @@ class SeedData:
 
         Slice 13:org_id=None 返回全部(平台管理员视角);传 org_id 只返回该 org 分享页。
         """
-        with self._sm() as session:
+        with self._session_maker() as session:
             stmt = select(SharePageModel)
             if org_id is not None:
                 stmt = stmt.where(SharePageModel.org_id == org_id)
@@ -945,13 +1024,15 @@ class SeedData:
 
     def set_share_page_enabled(self, share_page_id: str, enabled: bool) -> bool:
         """启用/禁用分享页;返回 True 表示找到并更新。"""
-        with self._sm() as session:
+
+        def _do(session) -> bool:
             row = session.get(SharePageModel, share_page_id)
             if row is None:
                 return False
             row.enabled = enabled
-            session.commit()
             return True
+
+        return self._transact(_do)
 
     def set_share_page_public(self, share_page_id: str, is_public: bool) -> bool:
         """Slice 15:设置分享页公开/私有;返回 True 表示找到并更新。
@@ -959,13 +1040,15 @@ class SeedData:
         公开分享页(is_public=true)允许免登录访问 + IP 限流;
         关闭后,已签发的公开 T_short 立即失效(网关每次校验 is_public 状态)。
         """
-        with self._sm() as session:
+
+        def _do(session) -> bool:
             row = session.get(SharePageModel, share_page_id)
             if row is None:
                 return False
             row.is_public = is_public
-            session.commit()
             return True
+
+        return self._transact(_do)
 
     # -----------------------------------------------------------------
     # 授权 CRUD
@@ -983,7 +1066,7 @@ class SeedData:
 
         Slice 13:grant 的 org_id 从 share_page 继承(便于按 org 筛选 grant)。
         """
-        with self._sm() as session:
+        with self._session_maker() as session:
             stmt = select(SharePageGrantModel).where(
                 SharePageGrantModel.share_page_id == share_page_id,
                 SharePageGrantModel.subject_type == subject_type,
@@ -1009,7 +1092,7 @@ class SeedData:
 
     def list_grants(self, share_page_id: str) -> list:
         """列出某分享页的所有 grant。"""
-        with self._sm() as session:
+        with self._session_maker() as session:
             stmt = select(SharePageGrantModel).where(SharePageGrantModel.share_page_id == share_page_id)
             return [_grant_from_orm(r) for r in session.scalars(stmt)]
 
@@ -1020,7 +1103,8 @@ class SeedData:
         返回 True 表示找到并删除;False 表示 grant 不存在(调用方 → 404)。
         不删除 chat_session_owner 记录(历史会话保留,管理员可查)。
         """
-        with self._sm() as session:
+
+        def _do(session) -> bool:
             stmt = select(SharePageGrantModel).where(
                 SharePageGrantModel.share_page_id == share_page_id,
                 SharePageGrantModel.subject_type == subject_type,
@@ -1030,8 +1114,9 @@ class SeedData:
             if row is None:
                 return False
             session.delete(row)
-            session.commit()
             return True
+
+        return self._transact(_do)
 
     # -----------------------------------------------------------------
     # ACL 解析(网关校验链步骤 2)
@@ -1051,7 +1136,7 @@ class SeedData:
         grant.org_id 在 create_grant 时从 share_page 继承,故等价于
         share_page.org_id == user.org_id。
         """
-        with self._sm() as session:
+        with self._session_maker() as session:
             # 用户存在性检查 + 取 user.org_id
             user_row = session.get(PortalUserModel, portal_user_id)
             if user_row is None:
@@ -1086,7 +1171,7 @@ class SeedData:
         list_user_granted_share_page_ids 统一 ACL 解析(消除重复的 grant 过滤逻辑)。
         """
         authorized_page_ids = self.list_user_granted_share_page_ids(portal_user_id)
-        with self._sm() as session:
+        with self._session_maker() as session:
             result: list = []
             for pid in authorized_page_ids:
                 row = session.get(SharePageModel, pid)
