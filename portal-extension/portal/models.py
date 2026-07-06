@@ -81,6 +81,8 @@ class PortalUser:
     """门户用户(对应 portal_user 表)。
 
     Slice 4 补齐 email / created_at 字段(D5 数据模型)。
+    Slice 14 加 sso_provider / sso_external_id(可空,自建账号用户为 None;
+    SSO 用户首次登录时写入,用于匹配 IdP 返回的 sub)。
     """
 
     id: str
@@ -90,6 +92,9 @@ class PortalUser:
     is_admin: bool = False
     enabled: bool = True
     created_at: float = field(default_factory=time.time)
+    # Slice 14:SSO 登录字段(可空,自建账号用户为 None)
+    sso_provider: str | None = None
+    sso_external_id: str | None = None
 
 
 @dataclass
@@ -170,6 +175,8 @@ def _user_from_orm(row: PortalUserModel) -> PortalUser:
         is_admin=row.is_admin,
         enabled=row.enabled,
         created_at=row.created_at,
+        sso_provider=row.sso_provider,
+        sso_external_id=row.sso_external_id,
     )
 
 
@@ -585,6 +592,60 @@ class SeedData:
                 is_admin=user.is_admin,
                 enabled=user.enabled,
                 created_at=user.created_at,
+            )
+            session.add(row)
+            session.commit()
+        return user
+
+    def get_user_by_sso(self, sso_provider: str, sso_external_id: str):
+        """按 SSO provider + external_id(sub) 查用户;不存在返回 None。
+
+        Slice 14:SSO 回调用此方法匹配本地用户。自建账号用户的 sso_provider 为 NULL,
+        不会被匹配(只有 SSO 创建的用户 sso_provider 非空)。
+        """
+        with self._sm() as session:
+            stmt = select(PortalUserModel).where(
+                PortalUserModel.sso_provider == sso_provider,
+                PortalUserModel.sso_external_id == sso_external_id,
+            )
+            row = session.scalars(stmt).first()
+            return _user_from_orm(row) if row is not None else None
+
+    def create_sso_user(
+        self,
+        sso_provider: str,
+        sso_external_id: str,
+        username: str,
+        email: str = "",
+    ) -> PortalUser:
+        """SSO 用户首次登录时自动创建本地用户记录(Slice 14)。
+
+        默认 is_admin=false、enabled=true(权限与自建普通账号一致);
+        password_hash 为空(SSO 用户不用密码登录,但字段 NOT NULL,存占位值)。
+        username 从 IdP claims 取(email_preferred 或 sub),调用方需保证唯一。
+        """
+        user = PortalUser(
+            id=_gen_id("u"),
+            username=username,
+            password_hash="",  # SSO 用户无密码(NOT NULL 占位)
+            email=email,
+            is_admin=False,
+            enabled=True,
+            created_at=time.time(),
+            sso_provider=sso_provider,
+            sso_external_id=sso_external_id,
+        )
+        with self._sm() as session:
+            row = PortalUserModel(
+                id=user.id,
+                username=user.username,
+                password_hash=user.password_hash,
+                email=user.email,
+                is_admin=user.is_admin,
+                enabled=user.enabled,
+                created_at=user.created_at,
+                sso_provider=user.sso_provider,
+                sso_external_id=user.sso_external_id,
             )
             session.add(row)
             session.commit()

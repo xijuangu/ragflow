@@ -23,10 +23,12 @@ Slice 6 新增:
 """
 
 import json
+import secrets
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 from portal.auth import LoginError, authenticate, get_current_user, require_admin
@@ -39,6 +41,7 @@ from portal.gateway import (
     rename_session_via_ragflow,
 )
 from portal.models import Permission, PortalGroup, PortalUser, SharePage, SharePageGrant, SubjectType
+from portal.oidc import SSO_PROVIDER, OIDCConfig, exchange_code_for_claims, get_authorization_url
 from portal.password import hash_password
 
 router = APIRouter()
@@ -103,6 +106,9 @@ def _user_to_dict(user: PortalUser) -> dict:
         "is_admin": user.is_admin,
         "enabled": user.enabled,
         "created_at": user.created_at,
+        # Slice 14:SSO 绑定信息(None=自建账号用户)
+        "sso_provider": user.sso_provider,
+        "sso_external_id": user.sso_external_id,
     }
 
 
@@ -259,6 +265,131 @@ async def get_me(user=Depends(get_current_user)):
     未登录 → 403(get_current_user 抛 HTTPException)。
     """
     return {"username": user.username, "is_admin": user.is_admin}
+
+
+# ---------------------------------------------------------------------------
+# Slice 14:SSO/OIDC 登录(叠加在自建账号体系上,不破坏 POST /login)
+# ---------------------------------------------------------------------------
+
+
+def _oidc_config(settings) -> OIDCConfig:
+    """从 Settings 提取 OIDC 配置切片(供 oidc 模块使用)。"""
+    return OIDCConfig(
+        issuer=settings.oidc_issuer,
+        client_id=settings.oidc_client_id,
+        client_secret=settings.oidc_client_secret,
+        redirect_uri=settings.oidc_redirect_uri,
+    )
+
+
+def _assert_oidc_enabled(settings) -> None:
+    """校验 OIDC 已启用且配置完整;未启用 → 404,配置不全 → 500。"""
+    if not settings.oidc_enabled:
+        raise HTTPException(status_code=404, detail="SSO 登录未启用")
+    missing = [
+        name
+        for name, val in (
+            ("OIDC_ISSUER", settings.oidc_issuer),
+            ("OIDC_CLIENT_ID", settings.oidc_client_id),
+            ("OIDC_CLIENT_SECRET", settings.oidc_client_secret),
+            ("OIDC_REDIRECT_URI", settings.oidc_redirect_uri),
+        )
+        if not val
+    ]
+    if missing:
+        raise HTTPException(status_code=500, detail=f"SSO 配置不完整,缺少: {', '.join(missing)}")
+
+
+@router.get("/sso/login")
+async def sso_login(request: Request):
+    """SSO 登录入口:生成 state+nonce 存 session,重定向到 IdP 授权 URL。
+
+    流程步骤 1:前端点「SSO 登录」→ 跳此端点 → 302 重定向到 IdP。
+    state 防 CSRF,nonce 防重放(回调时校验 + 写入 id_token 验证)。
+    OIDC 未启用 → 404;配置不全 → 500。
+    """
+    settings = request.app.state.settings
+    _assert_oidc_enabled(settings)
+    state = secrets.token_urlsafe(32)
+    nonce = secrets.token_urlsafe(32)
+    request.session["sso_state"] = state
+    request.session["sso_nonce"] = nonce
+    auth_url = await get_authorization_url(_oidc_config(settings), state, nonce)
+    return RedirectResponse(url=auth_url, status_code=302)
+
+
+@router.get("/sso/callback")
+async def sso_callback(
+    request: Request,
+    code: str | None = Query(None, description="IdP 返回的授权码"),
+    state: str | None = Query(None, description="IdP 返回的 state(需与 session 一致)"),
+    error: str | None = Query(None, description="IdP 返回的错误(OAuth2 error 字段)"),
+    error_description: str | None = Query(None, description="IdP 错误描述"),
+):
+    """SSO 回调:校验 state → 换 id_token → 匹配/创建本地用户 → 建立会话 → 跳分享页列表。
+
+    流程步骤 2-5(对应 ISSUES.md Issue 14 验收点):
+      - IdP 错误(error 参数)→ 400 明确提示。
+      - state 不匹配 → 400(CSRF 防护)。
+      - code 换 token / id_token 验证失败 → 502(IdP 不可达 / token 无效)。
+      - 用户匹配:sso_provider + sso_external_id(=sub)。不存在则按 sso_auto_create 创建/拒绝。
+      - 禁用用户(enabled=false)→ 403(与自建账号登录一致)。
+      - 成功:建立同源会话(与 POST /login 一致)+ 写 login_success 审计(meta 含 provider)
+        + 302 跳前端首页(分享页列表)。
+    """
+    settings = request.app.state.settings
+    _assert_oidc_enabled(settings)
+    # IdP 主动返回错误(用户拒绝授权 / IdP 内部错误)
+    if error:
+        detail = f"{error}: {error_description}" if error_description else error
+        raise HTTPException(status_code=400, detail=f"SSO IdP 返回错误: {detail}")
+    if not code:
+        raise HTTPException(status_code=400, detail="SSO 回调缺少授权码")
+    # state 校验(CSRF 防护):必须与 session 中 /sso/login 存的 state 一致
+    expected_state = request.session.get("sso_state")
+    saved_nonce = request.session.pop("sso_nonce", None)
+    request.session.pop("sso_state", None)  # 一次性,用完即清
+    if not state or state != expected_state:
+        raise HTTPException(status_code=400, detail="SSO state 校验失败(CSRF 防护)")
+    if not saved_nonce:
+        raise HTTPException(status_code=400, detail="SSO 会话已过期,请重新登录")
+    # code 换 id_token → 验证 → 拿 claims(测试在路由层 mock exchange_code_for_claims)
+    claims = await exchange_code_for_claims(_oidc_config(settings), code, saved_nonce)
+    sub = claims.get("sub")
+    if not sub:
+        raise HTTPException(status_code=502, detail="SSO id_token 缺少 sub 声明")
+    # 匹配本地用户(sso_provider + sso_external_id)
+    seed = request.app.state.seed
+    user = seed.get_user_by_sso(SSO_PROVIDER, str(sub))
+    if user is None:
+        # 不存在 → 按 sso_auto_create 策略创建或拒绝
+        if not settings.sso_auto_create:
+            raise HTTPException(status_code=403, detail="SSO 用户不存在且不允许自动创建")
+        username = claims.get("preferred_username") or claims.get("email") or f"sso_{sub[:16]}"
+        email = claims.get("email") or ""
+        # username 唯一性:若已存在则加后缀(避免冲突)
+        if seed.get_user_by_username(username) is not None:
+            username = f"{username}_sso_{secrets.token_hex(4)}"
+        user = seed.create_sso_user(SSO_PROVIDER, str(sub), username, email)
+    # 禁用用户不能登录(与自建账号登录一致)
+    if not user.enabled:
+        _audit(
+            request,
+            None,
+            "login_failure",
+            "user",
+            user.id,
+            actor_user_id=user.id,
+            provider=SSO_PROVIDER,
+            sub=str(sub),
+            reason="账号已禁用",
+        )
+        raise HTTPException(status_code=403, detail="账号已禁用")
+    # 建立同源会话(与 POST /login 一致)+ 写 login_success 审计(meta 含 provider)
+    _audit(request, user, "login_success", "user", user.id, provider=SSO_PROVIDER, sub=str(sub))
+    request.session["user_id"] = user.id
+    # 跳前端首页(分享页列表);前端路由守卫探测登录态后展示列表
+    return RedirectResponse(url="/", status_code=302)
 
 
 # ---------------------------------------------------------------------------

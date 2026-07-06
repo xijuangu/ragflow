@@ -12,6 +12,12 @@
   T_SHORT_TTL_SECONDS     短期嵌入令牌有效期(默认 300 = 5 分钟)
   PORTAL_DB_URL           Slice 8 DB 连接 URL(默认 sqlite:// 即 in-memory;
                           生产用 mysql+pymysql://user:pass@host:3306/portal)
+  OIDC_ENABLED            Slice 14 是否启用 OIDC SSO 登录(默认 false)
+  OIDC_ISSUER             OIDC IdP 的 issuer URL(如 https://keycloak.example/realms/main)
+  OIDC_CLIENT_ID          OIDC client_id(在 IdP 注册门户时分配)
+  OIDC_CLIENT_SECRET      OIDC client_secret(敏感,只走环境变量)
+  OIDC_REDIRECT_URI       OIDC 回调地址(如 https://portal.example/sso/callback)
+  SSO_AUTO_CREATE         SSO 用户首次登录是否自动创建本地用户(默认 true)
 """
 
 import os
@@ -32,6 +38,21 @@ class Settings:
     ragflow_dialog_id: str
     t_short_ttl_seconds: int
     portal_db_url: str  # Slice 8:DB 连接 URL(SQLite/MySQL 由 URL scheme 决定)
+    # Slice 14:OIDC SSO 配置(默认禁用,OIDC_ENABLED=false 时 SSO 端点返回 404)
+    oidc_enabled: bool = False
+    oidc_issuer: str = ""
+    oidc_client_id: str = ""
+    oidc_client_secret: str = ""
+    oidc_redirect_uri: str = ""
+    sso_auto_create: bool = True
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    """环境变量布尔解析:true/1/yes/on(大小写不敏感)为真,其余为假。"""
+    raw = os.environ.get(name, "")
+    if not raw:
+        return default
+    return raw.strip().lower() in ("true", "1", "yes", "on")
 
 
 def load_settings() -> Settings:
@@ -48,4 +69,11 @@ def load_settings() -> Settings:
         t_short_ttl_seconds=int(os.environ.get("T_SHORT_TTL_SECONDS", "300")),
         # Slice 8:默认 sqlite://(in-memory),生产用 mysql+pymysql://...
         portal_db_url=os.environ.get("PORTAL_DB_URL", "sqlite://"),
+        # Slice 14:OIDC SSO 配置(默认禁用,管理员配置环境变量后启用)
+        oidc_enabled=_env_bool("OIDC_ENABLED", False),
+        oidc_issuer=os.environ.get("OIDC_ISSUER", ""),
+        oidc_client_id=os.environ.get("OIDC_CLIENT_ID", ""),
+        oidc_client_secret=os.environ.get("OIDC_CLIENT_SECRET", ""),
+        oidc_redirect_uri=os.environ.get("OIDC_REDIRECT_URI", ""),
+        sso_auto_create=_env_bool("SSO_AUTO_CREATE", True),
     )

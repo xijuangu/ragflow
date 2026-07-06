@@ -36,6 +36,8 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
     create_engine,
+    inspect,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -71,7 +73,11 @@ class Base(DeclarativeBase):
 
 
 class PortalUserModel(Base):
-    """portal_user 表 ORM 模型。"""
+    """portal_user 表 ORM 模型。
+
+    Slice 14:加 sso_provider / sso_external_id(可空),用于 SSO 用户匹配。
+    自建账号用户这两个字段为 NULL;SSO 用户首次登录时写入。
+    """
 
     __tablename__ = "portal_user"
 
@@ -82,6 +88,9 @@ class PortalUserModel(Base):
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[float] = mapped_column(Float, nullable=False)
+    # Slice 14:SSO 登录字段(可空,自建账号用户为 NULL)
+    sso_provider: Mapped[str | None] = mapped_column(String(32), nullable=True, default=None)
+    sso_external_id: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
 
 
 class PortalGroupModel(Base):
@@ -181,15 +190,37 @@ class AuditLogModel(Base):
     meta_json: Mapped[str] = mapped_column(String(4096), default="", nullable=False)
 
 
+def _migrate_add_sso_columns(engine) -> None:
+    """Slice 14:idempotent 迁移 — 给已有 portal_user 表加 sso_provider / sso_external_id 列。
+
+    `create_all` 不会 ALTER 已有表结构(只创建缺失的表)。对已存在的 portal_user 表,
+    需用 ALTER TABLE ADD COLUMN 补字段。检查列是否已存在,已存在则跳过(idempotent)。
+
+    SQLite/MySQL 均支持 ``ALTER TABLE ... ADD COLUMN ...``;NULL 列无需默认值。
+    """
+    inspector = inspect(engine)
+    if "portal_user" not in inspector.get_table_names():
+        return  # 表不存在(create_all 会建),无需迁移
+    existing_cols = {c["name"] for c in inspector.get_columns("portal_user")}
+    with engine.begin() as conn:
+        if "sso_provider" not in existing_cols:
+            conn.execute(text("ALTER TABLE portal_user ADD COLUMN sso_provider VARCHAR(32) NULL"))
+        if "sso_external_id" not in existing_cols:
+            conn.execute(text("ALTER TABLE portal_user ADD COLUMN sso_external_id VARCHAR(255) NULL"))
+
+
 def init_db(engine) -> None:
     """创建所有 7 张表(idempotent)。
 
     `Base.metadata.create_all` 内部用 `IF NOT EXISTS`(SQLAlchemy 各方言自动处理),
     表已存在则跳过,不报错。可重复执行,对应验收点 1。
 
-    注意:不会 ALTER 已有表结构(新增字段需单独迁移脚本,本 slice 不涉及)。
+    Slice 14:create_all 之后执行 _migrate_add_sso_columns,给已有 portal_user 表
+    补 sso_provider / sso_external_id 列(create_all 不 ALTER 已有表结构)。
+    新建表时模型已含这两列,迁移函数检测到列已存在自动跳过(idempotent)。
     """
     Base.metadata.create_all(engine)
+    _migrate_add_sso_columns(engine)
 
 
 def create_session_maker(engine) -> sessionmaker:
