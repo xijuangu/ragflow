@@ -164,7 +164,7 @@ export default function SharePageDetailPage() {
 
   return (
     <div className="app-layout">
-      <AppHeader username={user?.username} onLogout={logout} />
+      <AppHeader username={user?.username} onLogout={logout} isAdmin={user?.is_admin ?? false} />
       <main className="app-main">
         <div className="back-link">
           <Link to="/share-pages">← 返回列表</Link>

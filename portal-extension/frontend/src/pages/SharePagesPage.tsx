@@ -37,7 +37,7 @@ export default function SharePagesPage() {
 
   return (
     <div className="app-layout">
-      <AppHeader username={user?.username} onLogout={logout} />
+      <AppHeader username={user?.username} onLogout={logout} isAdmin={user?.is_admin ?? false} />
       <main className="app-main">
         <h2 className="page-title">我的分享页</h2>
 
