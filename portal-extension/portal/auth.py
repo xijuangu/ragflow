@@ -60,8 +60,26 @@ async def require_admin(request: Request) -> PortalUser:
     """管理员校验依赖:校验当前用户 is_admin == True,否则 → 403。
 
     所有 /admin/* 路由用 Depends(require_admin)(对应验收点 7:普通用户调管理 API → 403)。
+
+    Slice 13:新增 require_org_admin 接受 is_admin 或 org_admin;本依赖仍只接受 is_admin
+    (平台级操作,如跨 org 全量查看)。大多数 /admin/* 端点改用 require_org_admin,
+    本依赖保留给未来仅平台管理员的端点。
     """
     user = await get_current_user(request)
     if not user.is_admin:
+        raise HTTPException(status_code=403, detail="仅管理员可执行此操作")
+    return user
+
+
+async def require_org_admin(request: Request) -> PortalUser:
+    """org 级管理员或平台管理员校验依赖(Slice 13)。
+
+    接受 is_admin=True(平台管理员,可跨 org)或 org_admin=True(org 级管理员,仅本 org)。
+    普通用户(两者皆 False)→ 403(对应验收点 3:普通用户调管理端点 → 403)。
+
+    org 隔离逻辑由路由层各自实现(is_admin 跨 org;org_admin 强制 user.org_id)。
+    """
+    user = await get_current_user(request)
+    if not user.is_admin and not user.org_admin:
         raise HTTPException(status_code=403, detail="仅管理员可执行此操作")
     return user
