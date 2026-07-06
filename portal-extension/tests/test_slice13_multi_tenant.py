@@ -780,6 +780,25 @@ async def test_org_admin_only_sees_same_org_audit_logs(client_multi_org):
         assert log["org_id"] == "default", "org_admin 只应看到本 org 审计日志"
 
 
+async def test_platform_admin_can_list_all_orgs(client_multi_org):
+    """is_admin 能列出所有 org_id(GET /admin/orgs,验收点 4)。"""
+    await _login(client_multi_org, "admin")
+    resp = await client_multi_org.get("/admin/orgs")
+    assert resp.status_code == 200
+    orgs = resp.json()["orgs"]
+    assert "default" in orgs
+    assert "acme" in orgs
+
+
+async def test_org_admin_only_sees_own_org_in_orgs_list(client_multi_org):
+    """org_admin 列 org 只看到本 org(验收点 4)。"""
+    await _login(client_multi_org, "orgadmin")
+    resp = await client_multi_org.get("/admin/orgs")
+    assert resp.status_code == 200
+    orgs = resp.json()["orgs"]
+    assert orgs == ["default"], "org_admin 只应看到本 org"
+
+
 # ===========================================================================
 # 验收点 2:网关 T_short 签发校验 user.org_id == share_page.org_id
 # ===========================================================================

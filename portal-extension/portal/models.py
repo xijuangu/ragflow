@@ -754,6 +754,17 @@ class SeedData:
                 stmt = stmt.where(PortalUserModel.org_id == org_id)
             return [_user_from_orm(r) for r in session.scalars(stmt)]
 
+    def list_orgs(self) -> list[str]:
+        """列出所有 org_id(平台管理员视角,对应 Slice 13 验收点 4)。
+
+        从 portal_user 表取 distinct org_id,供管理员在筛选下拉中选择。
+        """
+        from sqlalchemy import distinct
+
+        with self._sm() as session:
+            stmt = select(distinct(PortalUserModel.org_id))
+            return sorted(session.scalars(stmt).all())
+
     def set_user_enabled(self, user_id: str, enabled: bool) -> bool:
         """启用/禁用用户;返回 True 表示找到并更新。"""
         with self._sm() as session:

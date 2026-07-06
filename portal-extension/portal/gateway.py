@@ -154,23 +154,6 @@ class TokenStore:
                 count += 1
         return count
 
-    def revoke_tokens_for_share_page(self, share_page_id: str) -> int:
-        """Slice 15:吊销某分享页的所有 T_short(关闭 is_public 时调用)。
-
-        关闭 is_public 后,所有已签发的公开 T_short 立即失效(避免已发出的令牌
-        在 5min TTL 内继续访问已关闭公开的分享页)。标准令牌不受影响(标准令牌
-        仍需 cookie + grant,关闭 is_public 不影响登录用户的访问)。
-
-        实际只吊销 scope='public' 的令牌(标准令牌的失效由 grant 撤销负责)。
-        返回被吊销的令牌数量。
-        """
-        count = 0
-        for record in self._tokens.values():
-            if record.share_page_id == share_page_id and record.scope == "public" and not record.revoked:
-                record.revoked = True
-                count += 1
-        return count
-
 
 class IPRateLimiter:
     """Slice 15:基于 IP 的内存滑动窗口限流器。

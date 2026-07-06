@@ -1533,6 +1533,21 @@ async def admin_list_audit_logs(
     return {"audit_logs": [_audit_log_to_dict(log) for log in logs]}
 
 
+@router.get("/admin/orgs")
+async def admin_list_orgs(
+    request: Request,
+    user=Depends(require_org_admin),
+):
+    """平台管理员列出所有 org_id(对应 Slice 13 验收点 4:能看到 org 维度列表)。
+
+    org_admin 只看到本 org(is_admin 跨 org)。
+    """
+    if not user.is_admin:
+        return {"orgs": [user.org_id]}
+    seed_data = request.app.state.seed
+    return {"orgs": seed_data.list_orgs()}
+
+
 # ===========================================================================
 # Slice 15:公开分享页端点(/public/*)— 免登录访问 + IP 限流 + 匿名会话归属
 # ===========================================================================
