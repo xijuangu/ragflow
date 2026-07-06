@@ -261,38 +261,38 @@ async def test_proxy_sse_streams_from_ragflow(client, real_ragflow):
 
 @pytest.mark.integration
 async def test_iframe_conversation_with_references(client, real_ragflow):
-    """[integration] 完整对话流:首调拿 session_id → 二调提问 → 引用片段可见。"""
+    """[integration] 完整对话流:预创建 session → 首问 → 继续提问 → 引用片段可见。
+
+    Slice 2 之后,正确流程是先预创建 session(绑定归属),再带 session_id 调 SSE。
+    原测试跳过预创建直接调 SSE,导致第 2 轮 session_id 归属校验失败(403)。
+    """
     resp = await client.post("/login", json={"username": "admin", "password": "testpass123"})
     assert resp.status_code == 200
-    resp = await client.get("/share-pages/sp_default/embed-url")
-    assert resp.status_code == 200
-    qs = _extract_iframe_params(resp.json()["iframe_url"])
+    # 预创建 session(绑定到当前用户,通过归属校验)
+    resp = await client.post("/share-pages/sp_default/sessions")
+    assert resp.status_code == 200, f"预创建失败: {resp.text}"
+    body = resp.json()
+    session_id = body["session_id"]
+    assert session_id, "预创建未返回 session_id"
+    # 从预创建返回的 iframe URL 提取 t_short 与 dialog_id
+    qs = _extract_iframe_params(body["iframe_url"])
     t_short = qs["auth"][0]
     dialog_id = qs["shared_id"][0]
     headers = {"Authorization": f"Bearer {t_short}"}
-    # 第 1 轮:无 session_id,RAGFlow 创建 session 返回 prologue
-    session_id = None
+    # 第 1 轮:带 session_id 提问,期望流式回答
     async with client.stream(
         "POST",
         f"/api/v1/chatbots/{dialog_id}/completions",
-        json={"question": "测试", "stream": True, "quote": True},
+        json={"question": "测试", "stream": True, "quote": True, "session_id": session_id},
         headers=headers,
     ) as resp:
         assert resp.status_code == 200
+        body1 = ""
         async for line in resp.aiter_lines():
-            if line.startswith("data:") and "session_id" in line:
-                import json
-
-                try:
-                    data = json.loads(line[5:].strip())
-                    sid = data.get("data", {}).get("session_id") or data.get("session_id")
-                    if sid:
-                        session_id = sid
-                        break
-                except json.JSONDecodeError:
-                    pass
-    assert session_id, "首调未返回 session_id"
-    # 第 2 轮:带 session_id 提问,期望流式回答 + 引用
+            body1 += line + "\n"
+        assert "answer" in body1, f"第 1 轮未收到回答,实际响应: {body1[:300]}"
+        assert real_ragflow["token"] not in body1
+    # 第 2 轮:继续提问,期望流式回答 + 引用
     async with client.stream(
         "POST",
         f"/api/v1/chatbots/{dialog_id}/completions",
@@ -300,10 +300,10 @@ async def test_iframe_conversation_with_references(client, real_ragflow):
         headers=headers,
     ) as resp:
         assert resp.status_code == 200
-        body = ""
+        body2 = ""
         async for line in resp.aiter_lines():
-            body += line + "\n"
+            body2 += line + "\n"
         # 流式回答应含 answer 字段
-        assert "answer" in body, f"未收到回答,实际响应: {body[:300]}"
+        assert "answer" in body2, f"第 2 轮未收到回答,实际响应: {body2[:300]}"
         # beta Token 不泄露
-        assert real_ragflow["token"] not in body
+        assert real_ragflow["token"] not in body2
