@@ -668,6 +668,8 @@ PRD D9 决定一期仅全屏 Chat,字段已预留(`embed_type` / `ragflow_type`)
 > 来源:Slice 8 + Slice 9 合并后的 `/review` Standards 报告(2026-07-06)。记入文档备查,暂不拆 slice,后续迭代时择机处理。
 >
 > 2026-07-06 更新:TD1/2/4/6/7/8/9/10/11/13/14/15 已清理(3 路并行重构,350 passed + 70 passed 全绿)。TD3 Won't fix,TD5 延后,TD12 保留(有测试调用)。
+>
+> 2026-07-06 二次更新:TD 清理后的 `/review`(fixed point `973fc2e`)发现 5 项 smell(4 判断项 + 1 范围蔓延),其中 3 项(TD14 dead param / TD8 守卫丢失 / TD11 重复回归)当场修复,余下 5 项记为 TD16-TD20 备查。
 
 | # | 类型 | 位置 | 描述 | 处置 |
 |---|---|---|---|---|
@@ -686,6 +688,11 @@ PRD D9 决定一期仅全屏 Chat,字段已预留(`embed_type` / `ragflow_type`)
 | TD13 | Divergent Change(deprecated API) | `portal/main.py` `@app.on_event("startup"/"shutdown")` | FastAPI 旧式 API,有 DeprecationWarning。应迁移到 lifespan context manager。 | ✅ 已清理(迁移到 `lifespan` context manager,DeprecationWarning 从 1093 降到 1) |
 | TD14 | Duplicated Code(安全敏感) | `portal/gateway.py` `proxy_sse_public_to_ragflow` 与 `_proxy_sse_public_core` | 公开 SSE 校验链(T_short validate / is_public / enabled / dialog_id / ownership)在两处逐行重复。任一改一侧必漏另一侧。应让 `proxy_sse_public_to_ragflow` 调用 `_proxy_sse_public_core` 而非复制。 | ✅ 已清理(`proxy_sse_public_to_ragflow` 调用 `_proxy_sse_public_core`,校验链统一) |
 | TD15 | Duplicated Code / Repeated Switches | `portal/gateway.py` 4 个 `*_agent_session_via_ragflow` + `portal/routes.py` 4 处 `if ragflow_type == "agent"` | agent session 函数与 chat 版本几乎逐字相同(仅 URL 段 agentbots vs chatbots 不同)。应抽 `_ragflow_session_api(settings, resource_id, ragflow_type)` 统一分发。 | ✅ 已清理(chat 函数加 `ragflow_type` 参数 + `_ragflow_bot_segment` 辅助,agent 函数变 thin wrapper;routes.py 5 个 dispatch helper 统一分发) |
+| TD16 | Feature Envy + Divergent Change | `portal/models.py` `SessionStore.sync_message_count_from_history` | TD8 合并点把 `fetch_*_session_history_via_ragflow`(HTTP 调用)放进数据层 `SessionStore`,需 `# 延迟导入避免循环依赖` 注释掩盖反向依赖;且 SessionStore 原全同步,现混入 async 方法。更合适归宿:gateway/routes 侧 helper 调 `store.update_message_count`。 | 待重构(记自 TD 清理后 `/review` Standards 报告) |
+| TD17 | Repeated Switches + Middle Man | `portal/routes.py` 5 个 dispatch helper + `portal/gateway.py` `_ragflow_bot_segment` + 4 个 `*_agent_session_*` thin wrapper | TD15 半抽取:switch 没消除,只是从调用点搬到两层 helper;4 个 agent 函数退化为 1 行 thin wrapper(注释「供测试 monkeypatch」)。可进一步统一为单分发 + 策略对象,或接受当前形态(agent wrapper 保留供 mock)。 | 待重构(当前测试依赖 agent wrapper 的 monkeypatch,重构需同步改测试) |
+| TD18 | Mysterious Name | `frontend/src/hooks/useOptimisticToggle.ts` | hook 名只反映「乐观」模式,但 `UsersAdminPage.handleDelete` 当悲观删除用(注释「悲观删除:成功后才 filter」),JSDoc 也承认双模。可改名 `useToggleState` 或拆 `useOptimisticToggle` + `usePessimisticToggle`。 | 待重构(命名调整涉及 6 个 admin 页调用方) |
+| TD19 | Speculative Generality | `frontend/src/hooks/useAdminList.ts` | hook 返回 `data`/`setData` 状态,但 6 个 admin 页中 4 个(Groups/Sessions/AuditLogs/Grants)只用 `onSuccess` 分发,从不读 `data`/`setData`。可拆为 `useAdminList`(带状态)+ `useAdminFetch`(仅 fetch+onSuccess),或保持现状(无害的通用 hook)。 | 待重构(低优先,现状无害) |
+| TD20 | Shotgun Surgery(超规格) | `portal/main.py` `create_app` | TD13 仅要求迁移到 lifespan context manager,但 engine/init_db 被提前到 `FastAPI()` 构造之前。功能等价,但属超规格重构。可回退 engine 创建时序到 lifespan 内,或保留(已通过测试,无回归)。 | 待评估(保留现状风险低,回退有回归风险) |
 
 ## 迁移至正式 issue tracker 时的说明
 

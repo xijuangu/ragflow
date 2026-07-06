@@ -573,7 +573,7 @@ async def proxy_sse_to_ragflow(request: Request, dialog_id: str, ragflow_type: s
 
     # Slice 15:公开 T_short 走公开校验链(iframe 兼容 — 公开分享页的 iframe 调标准路径)
     if record.scope == "public":
-        return await _proxy_sse_public_core(request, dialog_id, t_short, record)
+        return await _proxy_sse_public_core(request, dialog_id, t_short)
 
     # 标准校验链(scope='standard')
     # 校验链步骤 0:同源 cookie(spec 步骤 1)— 无 cookie → 403(即使带有效 T_short)
@@ -603,7 +603,6 @@ async def _proxy_sse_public_core(
     request: Request,
     dialog_id: str,
     t_short: str,
-    record,
     *,
     body: bytes | None = None,
     fallback_session_id: str = "",
@@ -620,6 +619,8 @@ async def _proxy_sse_public_core(
     此函数不处理限流与审计(由调用方决定是否加),仅做校验 + SSE 代理。
 
     TD14:``proxy_sse_public_to_ragflow`` 不再内联此校验链,改为调用本函数。
+    本函数拥有 T_short 有效性校验(``token_store.validate``);调用方用
+    ``get_record`` 做 routing/scope 判断即可,不应预先 ``validate`` 再传入。
     参数 ``body`` 供公开端点传入已注入 session_id 的 body(标准路径不传,内部读 request.body)。
     参数 ``fallback_session_id`` 供公开端点传入 URL 中的 session_id(body 无法解析时的回退)。
 
@@ -629,7 +630,7 @@ async def _proxy_sse_public_core(
     settings = request.app.state.settings
     token_store = request.app.state.token_store
     seed = request.app.state.seed
-    # 步骤 1:T_short 有效性(revoked / 过期 → 401)
+    # 步骤 1:T_short 有效性(revoked / 过期 → 401)— 本函数拥有此校验
     record = token_store.validate(t_short)
     if record is None:
         raise HTTPException(status_code=401, detail="令牌无效或已过期")
@@ -777,4 +778,6 @@ async def proxy_sse_public_to_ragflow(request: Request, share_page_id: str, sess
         # 空 body:构造最小 body 含 session_id
         body = json.dumps({"session_id": session_id, "stream": True}).encode("utf-8")
 
-    return await _proxy_sse_public_core(request, dialog_id, t_short, record, body=body, fallback_session_id=session_id)
+    return await _proxy_sse_public_core(
+        request, dialog_id, t_short, body=body, fallback_session_id=session_id
+    )

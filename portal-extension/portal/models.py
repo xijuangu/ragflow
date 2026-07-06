@@ -578,7 +578,10 @@ class SessionStore(_StoreBase):
                 history = await fetch_session_history_via_ragflow(settings, dialog_id, session_id)
         if isinstance(history, dict):
             messages = history.get("messages", [])
-            self.update_message_count(session_id, len(messages))
+            # 仅当 count 变化时才写库(恢复原 resume_session 守卫,SSE/admin 路径同享优化)
+            owner = self.get(session_id)
+            if owner is not None and owner.message_count != len(messages):
+                self.update_message_count(session_id, len(messages))
         return history
 
 

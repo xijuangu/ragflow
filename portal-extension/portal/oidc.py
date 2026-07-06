@@ -46,6 +46,16 @@ class OIDCConfig:
     client_secret: str
     redirect_uri: str
 
+    @classmethod
+    def from_settings(cls, settings) -> "OIDCConfig":
+        """从 Settings 构造(sso_login / sso_callback 共用,消除 TD11 内联后回归的重复)。"""
+        return cls(
+            issuer=settings.oidc_issuer,
+            client_id=settings.oidc_client_id,
+            client_secret=settings.oidc_client_secret,
+            redirect_uri=settings.oidc_redirect_uri,
+        )
+
 
 def _build_client(*, timeout: float = 15.0) -> httpx.AsyncClient:
     """构造 httpx.AsyncClient(trust_env=False,与 gateway 一致)。"""

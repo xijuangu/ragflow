@@ -380,13 +380,9 @@ async def sso_login(request: Request):
     nonce = secrets.token_urlsafe(32)
     request.session["sso_state"] = state
     request.session["sso_nonce"] = nonce
-    # TD11 内联:原 _oidc_config(settings) 仅 4 字段直传,无独立测试,直接构造
-    config = OIDCConfig(
-        issuer=settings.oidc_issuer,
-        client_id=settings.oidc_client_id,
-        client_secret=settings.oidc_client_secret,
-        redirect_uri=settings.oidc_redirect_uri,
-    )
+    # TD11:原 _oidc_config 中间层仅 4 字段直传,无独立测试;但两处调用重复构造。
+    # 折中:工厂方法放回 OIDCConfig 自身(拥有字段的类型),既消除重复又非 Middle Man。
+    config = OIDCConfig.from_settings(settings)
     auth_url = await get_authorization_url(config, state, nonce)
     return RedirectResponse(url=auth_url, status_code=302)
 
@@ -427,13 +423,8 @@ async def sso_callback(
     if not saved_nonce:
         raise HTTPException(status_code=400, detail="SSO 会话已过期,请重新登录")
     # code 换 id_token → 验证 → 拿 claims(测试在路由层 mock exchange_code_for_claims)
-    # TD11 内联:原 _oidc_config(settings) 仅 4 字段直传,无独立测试,直接构造
-    config = OIDCConfig(
-        issuer=settings.oidc_issuer,
-        client_id=settings.oidc_client_id,
-        client_secret=settings.oidc_client_secret,
-        redirect_uri=settings.oidc_redirect_uri,
-    )
+    # TD11:工厂方法放回 OIDCConfig 自身(见 sso_login 同注)
+    config = OIDCConfig.from_settings(settings)
     claims = await exchange_code_for_claims(config, code, saved_nonce)
     sub = claims.get("sub")
     if not sub:
