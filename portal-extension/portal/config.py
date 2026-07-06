@@ -20,6 +20,8 @@
   OIDC_CLIENT_SECRET      OIDC client_secret(敏感,只走环境变量)
   OIDC_REDIRECT_URI       OIDC 回调地址(如 https://portal.example/sso/callback)
   SSO_AUTO_CREATE         SSO 用户首次登录是否自动创建本地用户(默认 true)
+  PORTAL_DEFAULT_ORG_ID   Slice 13 多租户默认 org_id(默认 'default';
+                          迁移时现有数据归入此 org;新建用户/组/分享页默认此 org)
 """
 
 import os
@@ -49,6 +51,8 @@ class Settings:
     oidc_client_secret: str = ""
     oidc_redirect_uri: str = ""
     sso_auto_create: bool = True
+    # Slice 13:多租户默认 org_id(迁移与新建数据的默认 org)
+    portal_default_org_id: str = "default"
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -82,4 +86,6 @@ def load_settings() -> Settings:
         oidc_client_secret=os.environ.get("OIDC_CLIENT_SECRET", ""),
         oidc_redirect_uri=os.environ.get("OIDC_REDIRECT_URI", ""),
         sso_auto_create=_env_bool("SSO_AUTO_CREATE", True),
+        # Slice 13:默认 org_id(可经 PORTAL_DEFAULT_ORG_ID 配置,默认 'default')
+        portal_default_org_id=os.environ.get("PORTAL_DEFAULT_ORG_ID", "default"),
     )

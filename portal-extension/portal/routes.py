@@ -31,7 +31,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
-from portal.auth import LoginError, authenticate, get_current_user, require_admin
+from portal.auth import LoginError, authenticate, get_current_user, require_org_admin
 from portal.gateway import (
     build_iframe_url,
     delete_session_via_ragflow,
@@ -109,6 +109,9 @@ def _user_to_dict(user: PortalUser) -> dict:
         # Slice 14:SSO 绑定信息(None=自建账号用户)
         "sso_provider": user.sso_provider,
         "sso_external_id": user.sso_external_id,
+        # Slice 13:多租户字段
+        "org_id": user.org_id,
+        "org_admin": user.org_admin,
     }
 
 
@@ -118,6 +121,8 @@ def _group_to_dict(group: PortalGroup) -> dict:
         "id": group.id,
         "name": group.name,
         "created_at": group.created_at,
+        # Slice 13:多租户 org_id
+        "org_id": group.org_id,
     }
 
 
@@ -131,6 +136,8 @@ def _share_page_to_dict(page: SharePage) -> dict:
         "embed_type": page.embed_type,
         "enabled": page.enabled,
         "created_at": page.created_at,
+        # Slice 13:多租户 org_id
+        "org_id": page.org_id,
     }
 
 
@@ -158,6 +165,8 @@ def _audit_log_to_dict(log) -> dict:
         "target_id": log.target_id,
         "at": log.at,
         "meta": meta,
+        # Slice 13:多租户 org_id(审计维度,可按 org 筛选)
+        "org_id": log.org_id,
     }
 
 
@@ -189,6 +198,7 @@ def _audit(
     target_id: str,
     *,
     actor_user_id: str | None = None,
+    org_id: str | None = None,
     **meta,
 ) -> None:
     """记录审计日志的统一入口(消除 audit_store.record 调用重复)。
@@ -197,18 +207,46 @@ def _audit(
     login_failure 等无当前用户的场景(user=None)需显式传 ``actor_user_id``
     (如 attempted.id 或 username)。
     meta 通过 ``**kwargs`` 传入,内部组装为 dict,减少各调用点重复构造 dict。
+
+    Slice 13:org_id 默认取当前用户 ``user.org_id``(无用户时 'default');
+    login_failure 场景需显式传 attempted 用户的 org_id。审计日志按 org 维度筛选(验收点 5)。
     """
     if actor_user_id is None:
         if user is None:
             raise ValueError("无当前用户时必须显式传 actor_user_id")
         actor_user_id = user.id
+    if org_id is None:
+        org_id = user.org_id if user is not None else "default"
     request.app.state.audit_store.record(
         actor_user_id=actor_user_id,
         action=action,
         target_type=target_type,
         target_id=target_id,
         meta=meta if meta else None,
+        org_id=org_id,
     )
+
+
+def _assert_same_org_admin(user, target_org_id: str) -> None:
+    """org_admin 只能管理本 org 资源;跨 org → 403。is_admin 跳过(跨 org)。
+
+    Slice 13:org_admin 角色的 org 隔离校验(对应验收点 3)。
+    """
+    if user.is_admin:
+        return
+    if target_org_id != user.org_id:
+        raise HTTPException(status_code=403, detail="无权管理跨 org 资源")
+
+
+def _admin_org_filter(user, org_id_query: str | None) -> str | None:
+    """返回管理员的 org_id 过滤范围(Slice 13)。
+
+    is_admin → org_id_query(None=全部,或 ?org_id 指定);
+    org_admin → 强制 user.org_id(忽略 ?org_id,只看本 org)。
+    """
+    if user.is_admin:
+        return org_id_query
+    return user.org_id
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +268,8 @@ async def login(body: LoginRequest, request: Request):
         # 登录失败审计:actor 用 attempted user id(若用户存在)或 username(若不存在)
         attempted = seed.get_user_by_username(body.username)
         actor_id = attempted.id if attempted else body.username
+        # Slice 13:login_failure 的 org_id 取 attempted 用户的 org(若存在),否则 'default'
+        attempted_org_id = attempted.org_id if attempted else "default"
         _audit(
             request,
             None,
@@ -237,6 +277,7 @@ async def login(body: LoginRequest, request: Request):
             "user",
             actor_id,
             actor_user_id=actor_id,
+            org_id=attempted_org_id,
             username=body.username,
             reason=e.detail,
         )
@@ -503,11 +544,13 @@ async def precreate_session(share_page_id: str, request: Request, user=Depends(g
         "预创建 session 失败",
     )
     # 立即绑定到当前用户(chat_session_owner.portal_user_id NOT NULL)
+    # Slice 13:session 继承 share_page 的 org_id(与 user.org_id 一致,已由 _check_share_page_access 校验)
     request.app.state.session_store.bind(
         session_id=session_id,
         share_page_id=share_page.id,
         portal_user_id=user.id,
         ragflow_resource_id=share_page.ragflow_resource_id,
+        org_id=share_page.org_id,
     )
     # 签发 T_short 并构造含 session_id 的 iframe URL
     token_store = request.app.state.token_store
@@ -694,51 +737,70 @@ async def proxy_chatbot_completions(dialog_id: str, request: Request):
 
 
 @router.post("/admin/users", status_code=201)
-async def admin_create_user(body: CreateUserRequest, request: Request, user=Depends(require_admin)):
+async def admin_create_user(body: CreateUserRequest, request: Request, user=Depends(require_org_admin)):
     """管理员创建用户(用户名 + 邮箱 + 初始密码)。
 
     重复用户名 → 400。响应不含 password_hash。
+
+    Slice 13:org_admin 创建用户强制归入本 org;is_admin 归入 'default'。
     """
     seed = request.app.state.seed
     if seed.get_user_by_username(body.username) is not None:
         raise HTTPException(status_code=400, detail="用户名已存在")
+    # Slice 13:org_admin 强制 org_id=本 org;is_admin 默认 'default'
+    target_org_id = user.org_id if not user.is_admin else "default"
     new_user = seed.create_user(
         username=body.username,
         email=body.email,
         password_hash=hash_password(body.password),
+        org_id=target_org_id,
     )
     return _user_to_dict(new_user)
 
 
 @router.get("/admin/users")
-async def admin_list_users(request: Request, user=Depends(require_admin)):
-    """管理员列出所有用户。"""
+async def admin_list_users(
+    request: Request,
+    org_id: str | None = Query(None, description="按 org_id 过滤(仅 is_admin 生效;org_admin 强制本 org)"),
+    user=Depends(require_org_admin),
+):
+    """管理员列出用户(Slice 13:is_admin 跨 org + ?org_id 筛选;org_admin 只看本 org)。"""
     seed = request.app.state.seed
-    return {"users": [_user_to_dict(u) for u in seed.list_users()]}
+    filter_org = _admin_org_filter(user, org_id)
+    return {"users": [_user_to_dict(u) for u in seed.list_users(org_id=filter_org)]}
 
 
 @router.get("/admin/users/{user_id}")
-async def admin_get_user(user_id: str, request: Request, user=Depends(require_admin)):
-    """管理员查用户详情。"""
+async def admin_get_user(user_id: str, request: Request, user=Depends(require_org_admin)):
+    """管理员查用户详情(Slice 13:org_admin 跨 org → 403)。"""
     seed = request.app.state.seed
     target = seed.get_user(user_id)
     if target is None:
         raise HTTPException(status_code=404, detail="用户不存在")
+    _assert_same_org_admin(user, target.org_id)
     return _user_to_dict(target)
 
 
 @router.patch("/admin/users/{user_id}")
-async def admin_update_user(user_id: str, body: UpdateEnabledRequest, request: Request, user=Depends(require_admin)):
+async def admin_update_user(
+    user_id: str, body: UpdateEnabledRequest, request: Request, user=Depends(require_org_admin)
+):
     """管理员启用/禁用用户(对应 PRD 用户故事 4-5)。
 
     禁用后:用户无法登录(明确错误),会话保留,网关拒绝其请求。
     禁用不删会话(与硬删除的区别:禁用走 PATCH,会话保留;硬删除走 DELETE,级联删会话)。
 
     Slice 6 加审计:启用 → user_enable,禁用 → user_disable(PR D7b)。
+    Slice 13:org_admin 跨 org 修改用户 → 403。
     """
     seed = request.app.state.seed
+    target = seed.get_user(user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    _assert_same_org_admin(user, target.org_id)
     if not seed.set_user_enabled(user_id, body.enabled):
         raise HTTPException(status_code=404, detail="用户不存在")
+    # 重新拉取以反映 enabled 最新值(避免返回 stale 对象)
     target = seed.get_user(user_id)
     # Slice 6 审计:user_enable / user_disable
     _audit(
@@ -753,7 +815,7 @@ async def admin_update_user(user_id: str, body: UpdateEnabledRequest, request: R
 
 
 @router.delete("/admin/users/{user_id}")
-async def admin_delete_user(user_id: str, request: Request, user=Depends(require_admin)):
+async def admin_delete_user(user_id: str, request: Request, user=Depends(require_org_admin)):
     """管理员硬删除用户(对应 Slice 5 验收点 6:级联删除 chat_session_owner + RAGFlow API4Conversation,无孤儿)。
 
     级联策略(``SessionStore.cascade_delete_for_user``,与单会话双删不同):
@@ -766,10 +828,13 @@ async def admin_delete_user(user_id: str, request: Request, user=Depends(require
     禁用用户不删会话(走 PATCH /admin/users/{id});硬删除才级联删会话。
 
     Slice 6 加审计:级联删除的每个会话记 session_delete(门户侧已硬删除,无孤儿)。
+    Slice 13:org_admin 跨 org 删除用户 → 403。
     """
     seed = request.app.state.seed
-    if seed.get_user(user_id) is None:
+    target = seed.get_user(user_id)
+    if target is None:
         raise HTTPException(status_code=404, detail="用户不存在")
+    _assert_same_org_admin(user, target.org_id)
     settings = request.app.state.settings
     session_store = request.app.state.session_store
     # 级联删除用户所有会话(RAGFlow 失败也硬删除门户侧,避免孤儿;失败记日志)
@@ -796,19 +861,31 @@ async def admin_delete_user(user_id: str, request: Request, user=Depends(require
 
 
 @router.post("/admin/groups", status_code=201)
-async def admin_create_group(body: CreateGroupRequest, request: Request, user=Depends(require_admin)):
-    """管理员创建用户组(对应 PRD 用户故事 8)。"""
+async def admin_create_group(body: CreateGroupRequest, request: Request, user=Depends(require_org_admin)):
+    """管理员创建用户组(对应 PRD 用户故事 8)。
+
+    Slice 13:org_admin 创建组强制归入本 org;is_admin 归入 'default'。
+    """
     seed = request.app.state.seed
-    group = seed.create_group(name=body.name)
+    target_org_id = user.org_id if not user.is_admin else "default"
+    group = seed.create_group(name=body.name, org_id=target_org_id)
     return _group_to_dict(group)
 
 
 @router.get("/admin/groups")
-async def admin_list_groups(request: Request, user=Depends(require_admin)):
-    """管理员列出所有用户组(对应 PRD 用户故事 10)。"""
+async def admin_list_groups(
+    request: Request,
+    org_id: str | None = Query(None, description="按 org_id 过滤(仅 is_admin 生效;org_admin 强制本 org)"),
+    user=Depends(require_org_admin),
+):
+    """管理员列出所有用户组(对应 PRD 用户故事 10)。
+
+    Slice 13:is_admin 跨 org + ?org_id 筛选;org_admin 只看本 org。
+    """
     seed = request.app.state.seed
+    filter_org = _admin_org_filter(user, org_id)
     groups = []
-    for g in seed.list_groups():
+    for g in seed.list_groups(org_id=filter_org):
         d = _group_to_dict(g)
         # Slice 8:经 SeedData 公开 API 取成员(原直接访问 seed.group_members dict,现 DB 后端)
         members = seed.list_group_members(g.id)
@@ -823,12 +900,17 @@ async def admin_add_group_member(
     group_id: str,
     body: AddGroupMemberRequest,
     request: Request,
-    user=Depends(require_admin),
+    user=Depends(require_org_admin),
 ):
-    """管理员添加用户到用户组(对应 PRD 用户故事 8)。"""
+    """管理员添加用户到用户组(对应 PRD 用户故事 8)。
+
+    Slice 13:org_admin 跨 org 操作组 → 403。
+    """
     seed = request.app.state.seed
-    if seed.get_group(group_id) is None:
+    group = seed.get_group(group_id)
+    if group is None:
         raise HTTPException(status_code=404, detail="用户组不存在")
+    _assert_same_org_admin(user, group.org_id)
     if seed.get_user(body.user_id) is None:
         raise HTTPException(status_code=404, detail="用户不存在")
     seed.add_group_member(group_id, body.user_id)
@@ -840,12 +922,17 @@ async def admin_remove_group_member(
     group_id: str,
     user_id: str,
     request: Request,
-    user=Depends(require_admin),
+    user=Depends(require_org_admin),
 ):
-    """管理员从用户组移除用户(对应 PRD 用户故事 9)。"""
+    """管理员从用户组移除用户(对应 PRD 用户故事 9)。
+
+    Slice 13:org_admin 跨 org 操作组 → 403。
+    """
     seed = request.app.state.seed
-    if seed.get_group(group_id) is None:
+    group = seed.get_group(group_id)
+    if group is None:
         raise HTTPException(status_code=404, detail="用户组不存在")
+    _assert_same_org_admin(user, group.org_id)
     if not seed.remove_group_member(group_id, user_id):
         raise HTTPException(status_code=404, detail="成员不在该用户组")
     return {"group_id": group_id, "user_id": user_id, "removed": True}
@@ -857,36 +944,54 @@ async def admin_remove_group_member(
 
 
 @router.post("/admin/share-pages", status_code=201)
-async def admin_create_share_page(body: CreateSharePageRequest, request: Request, user=Depends(require_admin)):
+async def admin_create_share_page(body: CreateSharePageRequest, request: Request, user=Depends(require_org_admin)):
     """管理员创建分享页(对应 PRD 用户故事 12)。
 
     embed_type/ragflow_type 一期固定值(D9),不开放选择器。
+
+    Slice 13:org_admin 创建分享页强制归入本 org;is_admin 归入 'default'。
     """
     seed = request.app.state.seed
-    page = seed.create_share_page(name=body.name, ragflow_resource_id=body.ragflow_resource_id)
+    target_org_id = user.org_id if not user.is_admin else "default"
+    page = seed.create_share_page(name=body.name, ragflow_resource_id=body.ragflow_resource_id, org_id=target_org_id)
     return _share_page_to_dict(page)
 
 
 @router.get("/admin/share-pages")
-async def admin_list_share_pages(request: Request, user=Depends(require_admin)):
-    """管理员列出所有分享页(对应 PRD 用户故事 14)。"""
+async def admin_list_share_pages(
+    request: Request,
+    org_id: str | None = Query(None, description="按 org_id 过滤(仅 is_admin 生效;org_admin 强制本 org)"),
+    user=Depends(require_org_admin),
+):
+    """管理员列出所有分享页(对应 PRD 用户故事 14)。
+
+    Slice 13:is_admin 跨 org + ?org_id 筛选;org_admin 只看本 org。
+    """
     seed = request.app.state.seed
-    return {"share_pages": [_share_page_to_dict(p) for p in seed.list_share_pages()]}
+    filter_org = _admin_org_filter(user, org_id)
+    return {"share_pages": [_share_page_to_dict(p) for p in seed.list_share_pages(org_id=filter_org)]}
 
 
 @router.patch("/admin/share-pages/{share_page_id}")
 async def admin_update_share_page(
-    share_page_id: str, body: UpdateEnabledRequest, request: Request, user=Depends(require_admin)
+    share_page_id: str, body: UpdateEnabledRequest, request: Request, user=Depends(require_org_admin)
 ):
-    """管理员启用/禁用分享页(对应 PRD 用户故事 13)。"""
+    """管理员启用/禁用分享页(对应 PRD 用户故事 13)。
+
+    Slice 13:org_admin 跨 org 修改分享页 → 403。
+    """
     seed = request.app.state.seed
+    page = seed.get_share_page(share_page_id)
+    if page is None:
+        raise HTTPException(status_code=404, detail="分享页不存在")
+    _assert_same_org_admin(user, page.org_id)
     if not seed.set_share_page_enabled(share_page_id, body.enabled):
         raise HTTPException(status_code=404, detail="分享页不存在")
     return _share_page_to_dict(seed.get_share_page(share_page_id))
 
 
 @router.delete("/admin/share-pages/{share_page_id}/sessions/{session_id}")
-async def admin_delete_session(share_page_id: str, session_id: str, request: Request, user=Depends(require_admin)):
+async def admin_delete_session(share_page_id: str, session_id: str, request: Request, user=Depends(require_org_admin)):
     """管理员删除任意用户的会话(对应 Slice 5 验收点 5:管理员双删,不校验归属)。
 
     双删策略与普通用户删除一致(``_dual_delete_session``):RAGFlow 成功 → 门户硬删除;
@@ -895,10 +1000,13 @@ async def admin_delete_session(share_page_id: str, session_id: str, request: Req
     校验链一致,不匹配 → 403);管理员不校验 portal_user_id 归属(可删任意用户的会话)。
 
     Slice 6 加审计:RAGFlow 删除成功(门户侧已硬删除)后记 session_delete 审计日志。
+    Slice 13:org_admin 跨 org 操作 → 403。
     """
     seed = request.app.state.seed
-    if seed.get_share_page(share_page_id) is None:
+    page = seed.get_share_page(share_page_id)
+    if page is None:
         raise HTTPException(status_code=404, detail="分享页不存在")
+    _assert_same_org_admin(user, page.org_id)
     owner = request.app.state.session_store.get(session_id)
     if owner is None:
         raise HTTPException(status_code=404, detail="会话不存在")
@@ -944,7 +1052,7 @@ def _validate_subject_exists(seed, subject_type: str, subject_id: str) -> None:
 
 @router.post("/admin/share-pages/{share_page_id}/grants", status_code=201)
 async def admin_create_grant(
-    share_page_id: str, body: CreateGrantRequest, request: Request, user=Depends(require_admin)
+    share_page_id: str, body: CreateGrantRequest, request: Request, user=Depends(require_org_admin)
 ):
     """管理员把分享页授权给用户或用户组(对应 PRD 用户故事 16-17)。
 
@@ -952,10 +1060,13 @@ async def admin_create_grant(
     做 Pydantic 422 校验,无需 handler 内手写 if 校验。
 
     Slice 6 加审计:授权创建后记 grant_create(PR D7b)。
+    Slice 13:org_admin 跨 org 操作 → 403。
     """
     seed = request.app.state.seed
-    if seed.get_share_page(share_page_id) is None:
+    page = seed.get_share_page(share_page_id)
+    if page is None:
         raise HTTPException(status_code=404, detail="分享页不存在")
+    _assert_same_org_admin(user, page.org_id)
     _validate_subject_exists(seed, body.subject_type, body.subject_id)
     grant = seed.create_grant(share_page_id, body.subject_type, body.subject_id, body.permission)
     # Slice 6 审计:grant_create
@@ -973,11 +1084,16 @@ async def admin_create_grant(
 
 
 @router.get("/admin/share-pages/{share_page_id}/grants")
-async def admin_list_grants(share_page_id: str, request: Request, user=Depends(require_admin)):
-    """管理员列出某分享页的所有授权。"""
+async def admin_list_grants(share_page_id: str, request: Request, user=Depends(require_org_admin)):
+    """管理员列出某分享页的所有授权。
+
+    Slice 13:org_admin 跨 org 操作 → 403。
+    """
     seed = request.app.state.seed
-    if seed.get_share_page(share_page_id) is None:
+    page = seed.get_share_page(share_page_id)
+    if page is None:
         raise HTTPException(status_code=404, detail="分享页不存在")
+    _assert_same_org_admin(user, page.org_id)
     return {"grants": [_grant_to_dict(g) for g in seed.list_grants(share_page_id)]}
 
 
@@ -987,7 +1103,7 @@ async def revoke_grant(
     subject_type: str,
     subject_id: str,
     request: Request,
-    user=Depends(require_admin),
+    user=Depends(require_org_admin),
 ):
     """撤销授权:删除 grant + 批量吊销已签发的 T_short(管理员专用)。
 
@@ -999,14 +1115,18 @@ async def revoke_grant(
       - 历史会话(chat_session_owner)保留,不删除(管理员仍可查)。
 
     路径保留 Slice 3 的 /share-pages/... 前缀以保证向后兼容(Slice 3 测试无回归);
-    管理员校验由 Depends(require_admin) 强制(Slice 4 升级)。
+    管理员校验由 Depends(require_org_admin) 强制(Slice 4 升级,Slice 13 扩展)。
+
+    Slice 13:org_admin 跨 org 操作 → 403。
     """
     if subject_type not in ("user", "group"):
         raise HTTPException(status_code=400, detail="subject_type 必须为 user 或 group")
     seed = request.app.state.seed
     # 分享页必须存在(Slice 8:经 SeedData 公开 API 查,原直接访问 share_pages_by_id dict)
-    if seed.get_share_page(share_page_id) is None:
+    page = seed.get_share_page(share_page_id)
+    if page is None:
         raise HTTPException(status_code=404, detail="分享页不存在")
+    _assert_same_org_admin(user, page.org_id)
     # 删除 grant(不存在 → 404)
     if not seed.revoke_grant(share_page_id, subject_type, subject_id):
         raise HTTPException(status_code=404, detail="授权记录不存在")
@@ -1045,7 +1165,8 @@ async def revoke_grant(
 # Slice 6:管理员后台(会话搜索/分级查看/审计日志/待重试清理)
 # ===========================================================================
 #
-# 全部 require_admin(普通用户调任何 /admin/* → 403,Slice 4 已强制)。
+# 全部 require_org_admin(普通用户调任何 /admin/* → 403,Slice 4 已强制;
+# Slice 13 扩展为 is_admin 或 org_admin,org_admin 限本 org)。
 # 审计日志写入点散落在 login / grant / session_delete / user_enable/disable 等
 # 已有路由;此处只新增查询端点与 elevated 查正文端点。
 
@@ -1058,16 +1179,20 @@ async def admin_list_all_sessions(
     since: float | None = Query(None, description="起始时间(unix 时间戳,按 created_at 过滤)"),
     until: float | None = Query(None, description="截止时间(unix 时间戳,按 created_at 过滤)"),
     keyword: str | None = Query(None, description="按会话标题模糊匹配(大小写不敏感)"),
+    org_id: str | None = Query(None, description="按 org_id 过滤(仅 is_admin 生效;org_admin 强制本 org)"),
     limit: int = Query(100, ge=1, le=1000, description="返回条数上限"),
-    user=Depends(require_admin),
+    user=Depends(require_org_admin),
 ):
-    """管理员列出所有用户的会话(按用户/分享页/时间/关键词过滤,返回元数据,不含正文)。
+    """管理员列出所有用户的会话(按用户/分享页/时间/关键词/org 过滤,返回元数据,不含正文)。
 
     对应 Slice 6 验收点 2:管理员能搜索/列出所有用户的会话。
     默认按 created_at 倒序;排除 deleted_at 非空的(待重试删除的会话由
     /admin/sessions/pending-deletion 单独查询)。keyword 按标题模糊匹配(大小写不敏感)。
+
+    Slice 13:is_admin 跨 org + ?org_id 筛选;org_admin 只看本 org。
     """
     session_store = request.app.state.session_store
+    filter_org = _admin_org_filter(user, org_id)
     sessions = session_store.list_all(
         portal_user_id=user_id,
         share_page_id=share_page_id,
@@ -1075,18 +1200,28 @@ async def admin_list_all_sessions(
         until=until,
         keyword=keyword,
         limit=limit,
+        org_id=filter_org,
     )
     return {"sessions": [_session_owner_to_metadata_dict(s) for s in sessions]}
 
 
 @router.get("/admin/sessions/pending-deletion")
-async def admin_list_pending_deletion(request: Request, user=Depends(require_admin)):
+async def admin_list_pending_deletion(
+    request: Request,
+    org_id: str | None = Query(None, description="按 org_id 过滤(仅 is_admin 生效;org_admin 强制本 org)"),
+    user=Depends(require_org_admin),
+):
     """管理员查看待重试删除的会话(deleted_at 非空的记录,Slice 5 标记 + Slice 6 暴露查询)。
 
     对应 Slice 6 验收点 6:管理员能查看待重试删除的会话并手动触发清理。
+
+    Slice 13:is_admin 跨 org + ?org_id 筛选;org_admin 只看本 org。
     """
     session_store = request.app.state.session_store
+    filter_org = _admin_org_filter(user, org_id)
     pending = session_store.list_pending_deletion()
+    if filter_org is not None:
+        pending = [s for s in pending if s.org_id == filter_org]
     return {"sessions": [_session_owner_to_metadata_dict(s) for s in pending]}
 
 
@@ -1095,7 +1230,7 @@ async def admin_get_session(
     session_id: str,
     request: Request,
     elevated: bool = Query(False, description="true=查正文(写审计);缺省/false=只看元数据"),
-    user=Depends(require_admin),
+    user=Depends(require_org_admin),
 ):
     """管理员查看会话详情(分级查看,对应 Slice 6 验收点 3-4)。
 
@@ -1107,11 +1242,13 @@ async def admin_get_session(
       3. 返回 {metadata, messages, reference}。
 
     对应 PRD D7a:管理员默认只看元数据,查正文需二次确认 + 写审计。
+    Slice 13:org_admin 跨 org 查看会话 → 403。
     """
     session_store = request.app.state.session_store
     owner = session_store.get(session_id)
     if owner is None:
         raise HTTPException(status_code=404, detail="会话不存在")
+    _assert_same_org_admin(user, owner.org_id)
     metadata = _session_owner_to_metadata_dict(owner)
     if not elevated:
         # 默认只返回元数据,不写审计,不调 RAGFlow(验收点 3)
@@ -1146,18 +1283,21 @@ async def admin_get_session(
 
 
 @router.post("/admin/sessions/{session_id}/retry-delete")
-async def admin_retry_delete_session(session_id: str, request: Request, user=Depends(require_admin)):
+async def admin_retry_delete_session(session_id: str, request: Request, user=Depends(require_org_admin)):
     """管理员手动触发待重试会话的清理(对应 Slice 6 验收点 6)。
 
     流程:
       1. 校验 session 存在且 deleted_at 非空(必须是待重试状态)。
       2. 调 RAGFlow DELETE;成功 → 删门户记录(硬删除),记 session_delete 审计。
       3. RAGFlow 失败 → 透传 HTTPException(可能 404/500/502),门户侧记录保留(仍待重试)。
+
+    Slice 13:org_admin 跨 org 操作 → 403。
     """
     session_store = request.app.state.session_store
     owner = session_store.get(session_id)
     if owner is None:
         raise HTTPException(status_code=404, detail="会话不存在")
+    _assert_same_org_admin(user, owner.org_id)
     if owner.deleted_at is None:
         raise HTTPException(status_code=400, detail="该会话不在待重试状态(deleted_at 为空)")
     settings = request.app.state.settings
@@ -1189,19 +1329,24 @@ async def admin_list_audit_logs(
     action: str | None = Query(None, description="按 action 过滤(8 类敏感操作之一)"),
     since: float | None = Query(None, description="起始时间(unix 时间戳)"),
     until: float | None = Query(None, description="截止时间(unix 时间戳)"),
+    org_id: str | None = Query(None, description="按 org_id 过滤(仅 is_admin 生效;org_admin 强制本 org)"),
     limit: int = Query(100, ge=1, le=1000, description="返回条数上限"),
-    user=Depends(require_admin),
+    user=Depends(require_org_admin),
 ):
-    """管理员查看审计日志(按 action/actor/时间过滤,对应 Slice 6 验收点 5)。
+    """管理员查看审计日志(按 action/actor/时间/org 过滤,对应 Slice 6 验收点 5)。
 
     返回最新的 limit 条(按 at 倒序)。审计日志永久保留,无 TTL(PR D8b)。
+
+    Slice 13:is_admin 跨 org + ?org_id 筛选;org_admin 只看本 org(对应验收点 5)。
     """
     audit_store = request.app.state.audit_store
+    filter_org = _admin_org_filter(user, org_id)
     logs = audit_store.list(
         actor_user_id=actor_user_id,
         action=action,
         since=since,
         until=until,
         limit=limit,
+        org_id=filter_org,
     )
     return {"audit_logs": [_audit_log_to_dict(log) for log in logs]}

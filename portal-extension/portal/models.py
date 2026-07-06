@@ -83,6 +83,8 @@ class PortalUser:
     Slice 4 补齐 email / created_at 字段(D5 数据模型)。
     Slice 14 加 sso_provider / sso_external_id(可空,自建账号用户为 None;
     SSO 用户首次登录时写入,用于匹配 IdP 返回的 sub)。
+    Slice 13 加 org_id(默认 'default',多租户隔离)+ org_admin(默认 False,
+    介于普通用户与平台 is_admin 之间的 org 级管理员角色)。
     """
 
     id: str
@@ -95,6 +97,9 @@ class PortalUser:
     # Slice 14:SSO 登录字段(可空,自建账号用户为 None)
     sso_provider: str | None = None
     sso_external_id: str | None = None
+    # Slice 13:多租户字段(org_id 默认 'default';org_admin 默认 False)
+    org_id: str = "default"
+    org_admin: bool = False
 
 
 @dataclass
@@ -102,11 +107,14 @@ class PortalGroup:
     """用户组(对应 portal_group 表,D4)。
 
     用于按组批量授权,组成员继承组对分享页的 use 权限。
+    Slice 13 加 org_id(默认 'default'),组按 org 隔离。
     """
 
     id: str
     name: str
     created_at: float = field(default_factory=time.time)
+    # Slice 13:多租户 org_id
+    org_id: str = "default"
 
 
 @dataclass
@@ -114,6 +122,7 @@ class SharePage:
     """分享页(对应 share_page 表)。
 
     ragflow_type / embed_type 一期固定值(D9),不开放选择器。
+    Slice 13 加 org_id(默认 'default'),分享页按 org 隔离。
     """
 
     id: str
@@ -123,6 +132,8 @@ class SharePage:
     embed_type: EmbedType = "fullscreen"
     enabled: bool = True
     created_at: float = field(default_factory=time.time)
+    # Slice 13:多租户 org_id
+    org_id: str = "default"
 
 
 @dataclass
@@ -146,6 +157,8 @@ class ChatSessionOwner:
     session_id 为主键(对应 RAGFlow API4Conversation.id);
     portal_user_id NOT NULL(预创建时即绑定到当前用户)。
     Slice 5 加 deleted_at 字段(双删失败标记,None=正常,非空=待重试)。
+    Slice 13 加 org_id(默认 'default',与用户/分享页的 org_id 一致;
+    网关跨 org 访问会话 → 403)。
     """
 
     session_id: str
@@ -159,6 +172,8 @@ class ChatSessionOwner:
     # Slice 6 修复:消息数(预创建为 0,恢复会话 GET history 时用 len(messages) 更新;
     # SSE 代理后可能滞后,但字段存在满足 spec「元数据含消息数」要求)。
     message_count: int = 0
+    # Slice 13:多租户 org_id
+    org_id: str = "default"
 
 
 # ---------------------------------------------------------------------------
@@ -177,11 +192,18 @@ def _user_from_orm(row: PortalUserModel) -> PortalUser:
         created_at=row.created_at,
         sso_provider=row.sso_provider,
         sso_external_id=row.sso_external_id,
+        org_id=row.org_id,
+        org_admin=row.org_admin,
     )
 
 
 def _group_from_orm(row: PortalGroupModel) -> PortalGroup:
-    return PortalGroup(id=row.id, name=row.name, created_at=row.created_at)
+    return PortalGroup(
+        id=row.id,
+        name=row.name,
+        created_at=row.created_at,
+        org_id=row.org_id,
+    )
 
 
 def _share_page_from_orm(row: SharePageModel) -> SharePage:
@@ -193,6 +215,7 @@ def _share_page_from_orm(row: SharePageModel) -> SharePage:
         embed_type=row.embed_type,
         enabled=row.enabled,
         created_at=row.created_at,
+        org_id=row.org_id,
     )
 
 
@@ -216,6 +239,7 @@ def _session_owner_from_orm(row: ChatSessionOwnerModel) -> ChatSessionOwner:
         last_active_at=row.last_active_at,
         deleted_at=row.deleted_at,
         message_count=row.message_count,
+        org_id=row.org_id,
     )
 
 
@@ -236,8 +260,12 @@ class SessionStore:
         portal_user_id: str,
         ragflow_resource_id: str,
         title: str = "",
+        org_id: str = "default",
     ) -> ChatSessionOwner:
-        """预创建 session 后绑定到当前用户(对应验收点 1:归属绑定)。"""
+        """预创建 session 后绑定到当前用户(对应验收点 1:归属绑定)。
+
+        Slice 13:接受 org_id(默认 'default'),session 继承 share_page/user 的 org_id。
+        """
         now = time.time()
         owner = ChatSessionOwner(
             session_id=session_id,
@@ -247,6 +275,7 @@ class SessionStore:
             title=title or "新会话",
             created_at=now,
             last_active_at=now,
+            org_id=org_id,
         )
         with self._sm() as session:
             row = ChatSessionOwnerModel(
@@ -259,6 +288,7 @@ class SessionStore:
                 last_active_at=owner.last_active_at,
                 deleted_at=None,
                 message_count=0,
+                org_id=owner.org_id,
             )
             session.add(row)
             session.commit()
@@ -376,13 +406,16 @@ class SessionStore:
         until: float | None = None,
         keyword: str | None = None,
         limit: int = 100,
+        org_id: str | None = None,
     ) -> list:
-        """管理员跨用户列出所有会话(按用户/分享页/时间/关键词过滤,Slice 6 验收点 2)。
+        """管理员跨用户列出所有会话(按用户/分享页/时间/关键词/org 过滤,Slice 6 验收点 2)。
 
         与 list_for_user 的区别:不限 portal_user_id(管理员视角),支持多维度过滤;
         排除 deleted_at 非空的记录(待重试的会话由 list_pending_deletion 单独查询)。
         默认按 created_at 倒序(最新的在前),limit 默认 100。
         keyword 按标题模糊匹配(大小写不敏感的 ``in`` 匹配,None 表示不过滤)。
+
+        Slice 13:org_id 过滤(is_admin 可按 org 筛选;org_admin 强制本 org)。
         """
         kw_lower = keyword.lower() if keyword else None
         with self._sm() as session:
@@ -395,6 +428,8 @@ class SessionStore:
                 stmt = stmt.where(ChatSessionOwnerModel.created_at >= since)
             if until is not None:
                 stmt = stmt.where(ChatSessionOwnerModel.created_at <= until)
+            if org_id is not None:
+                stmt = stmt.where(ChatSessionOwnerModel.org_id == org_id)
             # keyword 模糊匹配:在 Python 层过滤(SQLite LIKE 大小写敏感不一致,统一 Python 层)
             rows = list(session.scalars(stmt))
             if kw_lower is not None:
@@ -455,6 +490,8 @@ class AuditLog:
     8 类敏感操作(PR D7b):login_success | login_failure | grant_create |
     grant_revoke | session_delete | session_view_elevated | user_enable | user_disable。
     永久保留,无 TTL/自动清理(PR D8b)。
+
+    Slice 13 加 org_id(默认 'default',审计日志按 org 维度筛选,对应验收点 5)。
     """
 
     id: str
@@ -464,6 +501,8 @@ class AuditLog:
     target_id: str
     at: float  # unix 时间戳(与 chat_session_owner.created_at 一致)
     meta_json: str  # JSON string,可选上下文(如 username / subject_type 等)
+    # Slice 13:多租户 org_id(审计维度,可按 org 筛选)
+    org_id: str = "default"
 
 
 def _audit_log_from_orm(row: AuditLogModel) -> AuditLog:
@@ -475,6 +514,7 @@ def _audit_log_from_orm(row: AuditLogModel) -> AuditLog:
         target_id=row.target_id,
         at=row.at,
         meta_json=row.meta_json,
+        org_id=row.org_id,
     )
 
 
@@ -494,11 +534,14 @@ class AuditStore:
         target_type: AuditTargetType,
         target_id: str,
         meta: dict | None = None,
+        org_id: str = "default",
     ) -> AuditLog:
         """记录一条审计日志(8 类敏感操作之一)。
 
         meta 为可选上下文 dict,序列化为 JSON 字符串存入 meta_json。
         返回新建的 AuditLog(已写入 DB)。
+
+        Slice 13:接受 org_id(默认 'default'),审计日志按 org 维度筛选(验收点 5)。
         """
         log = AuditLog(
             id=_gen_id("al"),
@@ -508,6 +551,7 @@ class AuditStore:
             target_id=target_id,
             at=time.time(),
             meta_json=json.dumps(meta, ensure_ascii=False) if meta else "",
+            org_id=org_id,
         )
         with self._sm() as session:
             row = AuditLogModel(
@@ -518,6 +562,7 @@ class AuditStore:
                 target_id=log.target_id,
                 at=log.at,
                 meta_json=log.meta_json,
+                org_id=log.org_id,
             )
             session.add(row)
             session.commit()
@@ -530,11 +575,14 @@ class AuditStore:
         since: float | None = None,
         until: float | None = None,
         limit: int = 100,
+        org_id: str | None = None,
     ) -> list:
-        """查询审计日志(按 actor/action/时间过滤,默认按时间倒序)。
+        """查询审计日志(按 actor/action/时间/org 过滤,默认按时间倒序)。
 
         与 SessionStore.list_all 一致的过滤语义:None 表示不过滤该维度。
         默认 limit=100;返回最新的 limit 条(按 at 倒序)。
+
+        Slice 13:org_id 过滤(is_admin 可按 org 筛选;org_admin 强制本 org)。
         """
         with self._sm() as session:
             stmt = select(AuditLogModel)
@@ -546,6 +594,8 @@ class AuditStore:
                 stmt = stmt.where(AuditLogModel.at >= since)
             if until is not None:
                 stmt = stmt.where(AuditLogModel.at <= until)
+            if org_id is not None:
+                stmt = stmt.where(AuditLogModel.org_id == org_id)
             stmt = stmt.order_by(AuditLogModel.at.desc()).limit(limit)
             return [_audit_log_from_orm(r) for r in session.scalars(stmt)]
 
@@ -567,12 +617,25 @@ class SeedData:
     # 用户 CRUD
     # -----------------------------------------------------------------
 
-    def create_user(self, username: str, email: str, password_hash: str, *, is_admin: bool = False) -> PortalUser:
+    def create_user(
+        self,
+        username: str,
+        email: str,
+        password_hash: str,
+        *,
+        is_admin: bool = False,
+        org_id: str = "default",
+        org_admin: bool = False,
+    ) -> PortalUser:
         """创建用户(管理员调用);username 必须唯一(DB 唯一约束保证)。
 
         返回新建的 PortalUser(已写入 DB)。
         调用方需在写入前检查 username 重复(本方法不抛异常,只追加;
         DB 唯一约束是兜底,但调用方先查可给出更友好的错误)。
+
+        Slice 13:接受 org_id(默认 'default')与 org_admin(默认 False)。
+        org_admin 创建用户时若未指定 org_id,默认归入创建者同 org 由路由层处理;
+        本方法只负责写入传入的 org_id(默认 'default')。
         """
         user = PortalUser(
             id=_gen_id("u"),
@@ -582,6 +645,8 @@ class SeedData:
             is_admin=is_admin,
             enabled=True,
             created_at=time.time(),
+            org_id=org_id,
+            org_admin=org_admin,
         )
         with self._sm() as session:
             row = PortalUserModel(
@@ -592,6 +657,8 @@ class SeedData:
                 is_admin=user.is_admin,
                 enabled=user.enabled,
                 created_at=user.created_at,
+                org_id=user.org_id,
+                org_admin=user.org_admin,
             )
             session.add(row)
             session.commit()
@@ -617,12 +684,15 @@ class SeedData:
         sso_external_id: str,
         username: str,
         email: str = "",
+        org_id: str = "default",
     ) -> PortalUser:
         """SSO 用户首次登录时自动创建本地用户记录(Slice 14)。
 
         默认 is_admin=false、enabled=true(权限与自建普通账号一致);
         password_hash 为空(SSO 用户不用密码登录,但字段 NOT NULL,存占位值)。
         username 从 IdP claims 取(email_preferred 或 sub),调用方需保证唯一。
+
+        Slice 13:接受 org_id(默认 'default'),SSO 用户归入指定 org。
         """
         user = PortalUser(
             id=_gen_id("u"),
@@ -634,6 +704,7 @@ class SeedData:
             created_at=time.time(),
             sso_provider=sso_provider,
             sso_external_id=sso_external_id,
+            org_id=org_id,
         )
         with self._sm() as session:
             row = PortalUserModel(
@@ -646,6 +717,7 @@ class SeedData:
                 created_at=user.created_at,
                 sso_provider=user.sso_provider,
                 sso_external_id=user.sso_external_id,
+                org_id=user.org_id,
             )
             session.add(row)
             session.commit()
@@ -664,10 +736,16 @@ class SeedData:
             row = session.scalars(stmt).first()
             return _user_from_orm(row) if row is not None else None
 
-    def list_users(self) -> list:
-        """列出所有用户。"""
+    def list_users(self, org_id: str | None = None) -> list:
+        """列出所有用户(可选按 org_id 过滤)。
+
+        Slice 13:org_id=None 返回全部(平台管理员视角);传 org_id 只返回该 org 用户
+        (org_admin 视角只看本 org)。
+        """
         with self._sm() as session:
             stmt = select(PortalUserModel)
+            if org_id is not None:
+                stmt = stmt.where(PortalUserModel.org_id == org_id)
             return [_user_from_orm(r) for r in session.scalars(stmt)]
 
     def set_user_enabled(self, user_id: str, enabled: bool) -> bool:
@@ -703,11 +781,14 @@ class SeedData:
     # 用户组 CRUD
     # -----------------------------------------------------------------
 
-    def create_group(self, name: str) -> PortalGroup:
-        """创建用户组(管理员调用)。"""
-        group = PortalGroup(id=_gen_id("g"), name=name, created_at=time.time())
+    def create_group(self, name: str, org_id: str = "default") -> PortalGroup:
+        """创建用户组(管理员调用)。
+
+        Slice 13:接受 org_id(默认 'default'),组归入指定 org。
+        """
+        group = PortalGroup(id=_gen_id("g"), name=name, created_at=time.time(), org_id=org_id)
         with self._sm() as session:
-            row = PortalGroupModel(id=group.id, name=group.name, created_at=group.created_at)
+            row = PortalGroupModel(id=group.id, name=group.name, created_at=group.created_at, org_id=group.org_id)
             session.add(row)
             session.commit()
         return group
@@ -718,10 +799,15 @@ class SeedData:
             row = session.get(PortalGroupModel, group_id)
             return _group_from_orm(row) if row is not None else None
 
-    def list_groups(self) -> list:
-        """列出所有用户组。"""
+    def list_groups(self, org_id: str | None = None) -> list:
+        """列出所有用户组(可选按 org_id 过滤)。
+
+        Slice 13:org_id=None 返回全部(平台管理员视角);传 org_id 只返回该 org 用户组。
+        """
         with self._sm() as session:
             stmt = select(PortalGroupModel)
+            if org_id is not None:
+                stmt = stmt.where(PortalGroupModel.org_id == org_id)
             return [_group_from_orm(r) for r in session.scalars(stmt)]
 
     def add_group_member(self, group_id: str, user_id: str) -> bool:
@@ -730,9 +816,12 @@ class SeedData:
         组或用户不存在 → 返回 False(调用方 → 404)。
         重复添加 → 幂等返回 True(复合主键去重,DB 层 INSERT OR IGNORE 语义由
         SQLite/MySQL 各自处理;此处先查再插,保证幂等)。
+
+        Slice 13:组成员关系写入 org_id(从 group 继承,便于按 org 筛选)。
         """
         with self._sm() as session:
-            if session.get(PortalGroupModel, group_id) is None:
+            group_row = session.get(PortalGroupModel, group_id)
+            if group_row is None:
                 return False
             if session.get(PortalUserModel, user_id) is None:
                 return False
@@ -740,7 +829,12 @@ class SeedData:
             existing = session.get(PortalGroupMemberModel, (group_id, user_id))
             if existing is not None:
                 return True
-            row = PortalGroupMemberModel(group_id=group_id, user_id=user_id, added_at=time.time())
+            row = PortalGroupMemberModel(
+                group_id=group_id,
+                user_id=user_id,
+                added_at=time.time(),
+                org_id=group_row.org_id,
+            )
             session.add(row)
             session.commit()
             return True
@@ -775,8 +869,11 @@ class SeedData:
     # 分享页 CRUD
     # -----------------------------------------------------------------
 
-    def create_share_page(self, name: str, ragflow_resource_id: str) -> SharePage:
-        """创建分享页(管理员调用);embed_type/ragflow_type 一期固定(D9)。"""
+    def create_share_page(self, name: str, ragflow_resource_id: str, org_id: str = "default") -> SharePage:
+        """创建分享页(管理员调用);embed_type/ragflow_type 一期固定(D9)。
+
+        Slice 13:接受 org_id(默认 'default'),分享页归入指定 org。
+        """
         page = SharePage(
             id=_gen_id("sp"),
             name=name,
@@ -785,6 +882,7 @@ class SeedData:
             embed_type="fullscreen",
             enabled=True,
             created_at=time.time(),
+            org_id=org_id,
         )
         with self._sm() as session:
             row = SharePageModel(
@@ -795,6 +893,7 @@ class SeedData:
                 embed_type=page.embed_type,
                 enabled=page.enabled,
                 created_at=page.created_at,
+                org_id=page.org_id,
             )
             session.add(row)
             session.commit()
@@ -806,10 +905,15 @@ class SeedData:
             row = session.get(SharePageModel, share_page_id)
             return _share_page_from_orm(row) if row is not None else None
 
-    def list_share_pages(self) -> list:
-        """列出所有分享页。"""
+    def list_share_pages(self, org_id: str | None = None) -> list:
+        """列出所有分享页(可选按 org_id 过滤)。
+
+        Slice 13:org_id=None 返回全部(平台管理员视角);传 org_id 只返回该 org 分享页。
+        """
         with self._sm() as session:
             stmt = select(SharePageModel)
+            if org_id is not None:
+                stmt = stmt.where(SharePageModel.org_id == org_id)
             return [_share_page_from_orm(r) for r in session.scalars(stmt)]
 
     def set_share_page_enabled(self, share_page_id: str, enabled: bool) -> bool:
@@ -835,6 +939,8 @@ class SeedData:
         幂等:若已存在 (share_page_id, subject_type, subject_id, permission) 完全相同的 grant,
         返回现有 grant 不重复创建(避免误创建两次导致撤销一次后残留 grant 仍使 has_use_grant=True
         的安全漏洞;撤销一次即彻底)。DB 唯一约束兜底。
+
+        Slice 13:grant 的 org_id 从 share_page 继承(便于按 org 筛选 grant)。
         """
         with self._sm() as session:
             stmt = select(SharePageGrantModel).where(
@@ -846,11 +952,15 @@ class SeedData:
             existing = session.scalars(stmt).first()
             if existing is not None:
                 return _grant_from_orm(existing)
+            # Slice 13:从 share_page 继承 org_id(不存在则默认 'default')
+            share_page_row = session.get(SharePageModel, share_page_id)
+            grant_org_id = share_page_row.org_id if share_page_row is not None else "default"
             row = SharePageGrantModel(
                 share_page_id=share_page_id,
                 subject_type=subject_type,
                 subject_id=subject_id,
                 permission=permission,
+                org_id=grant_org_id,
             )
             session.add(row)
             session.commit()
@@ -894,13 +1004,23 @@ class SeedData:
           - subject_type='user' and subject_id == portal_user_id(直接授权)
           - subject_type='group' and subject_id in 用户所属组列表(组继承)
         用户不存在 → 空集合。
+
+        Slice 13:跨 org 隔离 — grant.org_id 必须匹配 user.org_id,
+        跨 org 的 grant 不计入授权集合(对应验收点 2:跨 org 访问 → 403)。
+        grant.org_id 在 create_grant 时从 share_page 继承,故等价于
+        share_page.org_id == user.org_id。
         """
         with self._sm() as session:
-            # 用户存在性检查
-            if session.get(PortalUserModel, portal_user_id) is None:
+            # 用户存在性检查 + 取 user.org_id
+            user_row = session.get(PortalUserModel, portal_user_id)
+            if user_row is None:
                 return set()
+            user_org_id = user_row.org_id
             user_group_ids = set(self.list_user_groups(portal_user_id))
-            stmt = select(SharePageGrantModel).where(SharePageGrantModel.permission == "use")
+            stmt = select(SharePageGrantModel).where(
+                SharePageGrantModel.permission == "use",
+                SharePageGrantModel.org_id == user_org_id,  # Slice 13:跨 org 隔离
+            )
             authorized: set = set()
             for g in session.scalars(stmt):
                 if g.subject_type == "user" and g.subject_id == portal_user_id:
@@ -943,6 +1063,7 @@ def build_seed_data(settings: Settings, session_maker: sessionmaker) -> SeedData
     """
     seed = SeedData(session_maker)
     # admin(平台管理员,D5)— idempotent:已存在则跳过
+    # Slice 13:org_id='default'(seed 数据归入默认 org)
     if seed.get_user("u_admin") is None:
         admin = PortalUser(
             id="u_admin",
@@ -952,6 +1073,7 @@ def build_seed_data(settings: Settings, session_maker: sessionmaker) -> SeedData
             is_admin=True,
             enabled=True,
             created_at=time.time(),
+            org_id="default",
         )
         with session_maker() as session:
             session.add(
@@ -963,10 +1085,12 @@ def build_seed_data(settings: Settings, session_maker: sessionmaker) -> SeedData
                     is_admin=admin.is_admin,
                     enabled=admin.enabled,
                     created_at=admin.created_at,
+                    org_id=admin.org_id,
                 )
             )
             session.commit()
     # user2(普通用户,Slice 3 隔离测试用)
+    # Slice 13:org_id='default'
     if seed.get_user("u_user2") is None:
         user2 = PortalUser(
             id="u_user2",
@@ -976,6 +1100,7 @@ def build_seed_data(settings: Settings, session_maker: sessionmaker) -> SeedData
             is_admin=False,
             enabled=True,
             created_at=time.time(),
+            org_id="default",
         )
         with session_maker() as session:
             session.add(
@@ -987,10 +1112,12 @@ def build_seed_data(settings: Settings, session_maker: sessionmaker) -> SeedData
                     is_admin=user2.is_admin,
                     enabled=user2.enabled,
                     created_at=user2.created_at,
+                    org_id=user2.org_id,
                 )
             )
             session.commit()
     # 默认分享页(Slice 1 硬编码,关联配置的 RAGFLOW_DIALOG_ID)
+    # Slice 13:org_id='default'
     if seed.get_share_page("sp_default") is None:
         share_page = SharePage(
             id="sp_default",
@@ -1000,6 +1127,7 @@ def build_seed_data(settings: Settings, session_maker: sessionmaker) -> SeedData
             embed_type="fullscreen",
             enabled=True,
             created_at=time.time(),
+            org_id="default",
         )
         with session_maker() as session:
             session.add(
@@ -1011,6 +1139,7 @@ def build_seed_data(settings: Settings, session_maker: sessionmaker) -> SeedData
                     embed_type=share_page.embed_type,
                     enabled=share_page.enabled,
                     created_at=share_page.created_at,
+                    org_id=share_page.org_id,
                 )
             )
             session.commit()
