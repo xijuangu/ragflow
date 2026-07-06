@@ -241,6 +241,26 @@ async def login(body: LoginRequest, request: Request):
     return {"username": user.username, "is_admin": user.is_admin}
 
 
+@router.post("/logout")
+async def logout(request: Request, user=Depends(get_current_user)):
+    """登出端点:清除同源会话 cookie。
+
+    HTTP-only cookie 无法由前端 JS 清除,必须由服务端清除。
+    对应 Slice 9 验收点 6:登出后回登录页,再访问分享页 → 跳转登录页。
+    """
+    request.session.clear()
+    return {"logged_out": True}
+
+
+@router.get("/me")
+async def get_me(user=Depends(get_current_user)):
+    """返回当前登录用户信息(前端路由守卫探测登录态用)。
+
+    未登录 → 403(get_current_user 抛 HTTPException)。
+    """
+    return {"username": user.username, "is_admin": user.is_admin}
+
+
 # ---------------------------------------------------------------------------
 # 分享页访问(普通用户)
 # ---------------------------------------------------------------------------

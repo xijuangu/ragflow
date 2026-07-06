@@ -8,7 +8,10 @@ Slice 2:session_id 捕获与归属绑定 + 历史恢复(对应 ISSUES.md Issue 2
 RAGFlow 侧仅在 bot_api.py 加 GET 端点;真实 beta Token 全程不离开网关服务端。
 """
 
+from pathlib import Path
+
 from fastapi import FastAPI, Request
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from portal.config import load_settings
@@ -41,6 +44,11 @@ def create_app() -> FastAPI:
     # Slice 6:audit_log 内存表(永久保留,无 TTL/自动清理,PR D8b)
     app.state.audit_store = AuditStore()
     app.include_router(router)
+    # Slice 9:静态托管前端 SPA(放在路由注册之后,html=True 兜底 SPA 路由)。
+    # 只有 frontend/dist 存在时才挂载(开发时 Vite dev server 不需要此挂载)。
+    _frontend_dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+    if _frontend_dist.is_dir():
+        app.mount("/", StaticFiles(directory=str(_frontend_dist), html=True), name="frontend")
     return app
 
 
