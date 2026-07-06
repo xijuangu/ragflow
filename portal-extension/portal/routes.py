@@ -524,8 +524,9 @@ async def precreate_session(share_page_id: str, request: Request, user=Depends(g
 async def list_sessions(share_page_id: str, request: Request, user=Depends(get_current_user)):
     """我的会话列表:返回当前用户在该分享页下的 session 列表。
 
-    对应验收点 4:用户能在「我的会话」看到该 session(标题、最后活跃时间)。
+    对应验收点 4:用户能在「我的会话」看到该 session(标题、最后活跃时间、消息数)。
     基础隔离:只返回 portal_user_id 匹配的记录(用户看不到他人的 session)。
+    message_count:预创建时为 0,恢复会话(GET history)或 SSE 代理后更新。
     """
     seed = request.app.state.seed
     _check_share_page_access(seed, share_page_id, user)
@@ -537,6 +538,7 @@ async def list_sessions(share_page_id: str, request: Request, user=Depends(get_c
                 "title": s.title,
                 "created_at": s.created_at,
                 "last_active_at": s.last_active_at,
+                "message_count": s.message_count,
             }
             for s in sessions
         ]

@@ -29,6 +29,34 @@ export interface EmbedUrlResponse {
   expires_in: number;
 }
 
+/** 「我的会话」列表项 — 对应 GET /share-pages/:id/sessions 响应。 */
+export interface SessionSummary {
+  session_id: string;
+  title: string;
+  created_at: number;
+  last_active_at: number;
+  message_count: number;
+}
+
+/** POST /share-pages/:id/sessions 预创建会话响应。 */
+export interface PrecreateSessionResponse {
+  session_id: string;
+  iframe_url: string;
+  share_page_id: string;
+}
+
+/** PATCH /share-pages/:id/sessions/:sid 重命名响应。 */
+export interface RenameSessionResponse {
+  session_id: string;
+  title: string;
+}
+
+/** DELETE /share-pages/:id/sessions/:sid 删除响应。 */
+export interface DeleteSessionResponse {
+  session_id: string;
+  deleted: boolean;
+}
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -89,5 +117,40 @@ export const api = {
 
   getEmbedUrl(id: string): Promise<EmbedUrlResponse> {
     return request<EmbedUrlResponse>(`/share-pages/${encodeURIComponent(id)}/embed-url`);
+  },
+
+  /** 列出当前用户在该分享页下的会话(标题、时间、消息数)。 */
+  listSessions(sharePageId: string): Promise<{ sessions: SessionSummary[] }> {
+    return request<{ sessions: SessionSummary[] }>(
+      `/share-pages/${encodeURIComponent(sharePageId)}/sessions`,
+    );
+  },
+
+  /** 预创建空会话,返回 session_id 与带 session_id 的 iframe_url(对应「新建会话」)。 */
+  precreateSession(sharePageId: string): Promise<PrecreateSessionResponse> {
+    return request<PrecreateSessionResponse>(
+      `/share-pages/${encodeURIComponent(sharePageId)}/sessions`,
+      { method: 'POST' },
+    );
+  },
+
+  /** 重命名会话(同步:RAGFlow 成功才更新门户 title)。 */
+  renameSession(
+    sharePageId: string,
+    sessionId: string,
+    title: string,
+  ): Promise<RenameSessionResponse> {
+    return request<RenameSessionResponse>(
+      `/share-pages/${encodeURIComponent(sharePageId)}/sessions/${encodeURIComponent(sessionId)}`,
+      { method: 'PATCH', body: JSON.stringify({ title }) },
+    );
+  },
+
+  /** 删除会话(双删:RAGFlow 成功 → 门户硬删除;失败 → 标记 deleted_at)。 */
+  deleteSession(sharePageId: string, sessionId: string): Promise<DeleteSessionResponse> {
+    return request<DeleteSessionResponse>(
+      `/share-pages/${encodeURIComponent(sharePageId)}/sessions/${encodeURIComponent(sessionId)}`,
+      { method: 'DELETE' },
+    );
   },
 };
