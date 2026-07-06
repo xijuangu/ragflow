@@ -15,7 +15,10 @@ Slice 8:DB 持久化迁移(内存存储 → SQLAlchemy)。
     用户重新登录获取新 T_short;见 gateway.py 文档说明)。
 """
 
+from pathlib import Path
+
 from fastapi import FastAPI, Request
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
 from starlette.middleware.sessions import SessionMiddleware
@@ -80,6 +83,11 @@ def create_app() -> FastAPI:
     # audit_log DB 持久化(永久保留,PR D8b)
     app.state.audit_store = AuditStore(session_maker)
     app.include_router(router)
+    # Slice 9:静态托管前端 SPA(放在路由注册之后,html=True 兜底 SPA 路由)。
+    # 只有 frontend/dist 存在时才挂载(开发时 Vite dev server 不需要此挂载)。
+    _frontend_dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+    if _frontend_dist.is_dir():
+        app.mount("/", StaticFiles(directory=str(_frontend_dist), html=True), name="frontend")
     return app
 
 
