@@ -30,6 +30,9 @@ os.environ.setdefault("RAGFLOW_HOST", FAKE_RAGFLOW_HOST)
 os.environ.setdefault("RAGFLOW_DIALOG_ID", "test-dialog-id-12345")
 os.environ.setdefault("RAGFLOW_BETA_TOKEN", FAKE_BETA_TOKEN)
 os.environ.setdefault("T_SHORT_TTL_SECONDS", "300")
+# Slice 8:单元测试用 SQLite in-memory(每测试独立 engine,见 app fixture),
+# 不依赖外部 MySQL,不污染生产数据。
+os.environ.setdefault("PORTAL_DB_URL", "sqlite://")
 
 import httpx  # noqa: E402 — 环境变量须先于 portal.main 导入设置
 import pytest  # noqa: E402

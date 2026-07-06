@@ -52,7 +52,21 @@ class TokenRecord:
 
 
 class TokenStore:
-    """内存令牌表 — Slice 1 不持久化,Slice 4 可换 DB。"""
+    """内存令牌表 — Slice 1 不持久化,Slice 8 保留内存(决策说明见下)。
+
+    Slice 8 决策:T_short 不持久化,进程重启后所有已签发令牌失效。
+    理由(ISSUES.md Issue 8 验收点 5 允许二选一):
+      1. T_short 本质短命(默认 5 分钟过期,T_SHORT_TTL_SECONDS 可配),
+         持久化的收益极小(5 分钟内的令牌很快自然过期)。
+      2. T_short 是「用户登录态 + grant」的派生凭据,不是独立事实源 —
+         用户重新登录即可获取新 T_short,不丢失任何业务数据。
+      3. 保留内存避免每次 SSE 请求都查 DB(网关校验链步骤 2 高频调用),
+         降低延迟与 DB 负载。
+      4. 撤销机制靠「删 grant + 启动后 grant 已不在 DB」自然实现:
+         重启后旧 T_short 失效,用户重新登录时若 grant 已撤销则拒绝签发新 T_short。
+    副作用:重启时正在进行的 iframe 对话会中断(用户刷新页面重新登录即可恢复),
+    历史会话(chat_session_owner)仍在 DB,不丢失。
+    """
 
     def __init__(self):
         self._tokens: dict = {}
@@ -347,7 +361,8 @@ async def proxy_sse_to_ragflow(request: Request, dialog_id: str):
     if record is None:
         raise HTTPException(status_code=401, detail="令牌无效或已过期")
     # 校验 T_short 绑定的分享页对应的 dialog_id 与请求的 dialog_id 一致
-    share_page = seed.share_pages_by_id.get(record.share_page_id)
+    # Slice 8:经 SeedData 公开 API 查分享页(原直接访问 share_pages_by_id dict,现 DB 后端)
+    share_page = seed.get_share_page(record.share_page_id)
     if not share_page or share_page.ragflow_resource_id != dialog_id:
         raise HTTPException(status_code=401, detail="令牌与目标资源不匹配")
     # 读取请求体(原样转发给 RAGFlow)

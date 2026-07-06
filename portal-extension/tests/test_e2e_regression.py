@@ -640,7 +640,8 @@ async def test_branch_hard_delete_user_cascades_sessions(client, app, mock_precr
     assert app.state.session_store.get(fake_session_1) is None, "硬删除用户应级联删 session_1"
     assert app.state.session_store.get(fake_session_2) is None, "硬删除用户应级联删 session_2"
     # 验证无孤儿:session_store 中无任何 portal_user_id 指向 alice 的记录
-    alice_sessions = [s for s in app.state.session_store._sessions.values() if s.portal_user_id == alice["id"]]
+    # Slice 8:经公开 API list_all_for_user 查询(含 deleted_at 非空的记录,跨分享页)
+    alice_sessions = app.state.session_store.list_all_for_user(alice["id"])
     assert alice_sessions == [], "硬删除用户后不应残留任何会话记录(无孤儿)"
 
 
@@ -688,7 +689,8 @@ async def test_branch_hard_delete_user_cascades_even_if_ragflow_fails(client, ap
         "RAGFlow 失败的会话也应硬删除(无孤儿,用户已不存在无法重试)"
     )
     # 验证无孤儿
-    alice_sessions = [s for s in app.state.session_store._sessions.values() if s.portal_user_id == alice["id"]]
+    # Slice 8:经公开 API list_all_for_user 查询(含 deleted_at 非空的记录,跨分享页)
+    alice_sessions = app.state.session_store.list_all_for_user(alice["id"])
     assert alice_sessions == [], "硬删除用户后不应残留任何会话记录(无孤儿)"
 
 
@@ -720,7 +722,8 @@ async def test_branch_admin_elevated_view_writes_audit(client, app, mock_precrea
     assert body["reference"] == fake_history["reference"]
 
     # audit_log 有 session_view_elevated 记录
-    elevated_logs = [log for log in app.state.audit_store._logs if log.action == "session_view_elevated"]
+    # Slice 8:经公开 API audit_store.list(action=...) 查询(DB 后端,按 at 倒序)
+    elevated_logs = app.state.audit_store.list(action="session_view_elevated")
     assert len(elevated_logs) >= 1, "session_view_elevated 审计记录缺失"
     assert any(log.target_id == fake_session and log.target_type == "session" for log in elevated_logs), (
         "审计记录 target_id 应为 session_id"

@@ -6,19 +6,49 @@
 Slice 1:最小可登录的分享页访问骨架(对应 ISSUES.md Issue 1)。
 Slice 2:session_id 捕获与归属绑定 + 历史恢复(对应 ISSUES.md Issue 2)。
 RAGFlow 侧仅在 bot_api.py 加 GET 端点;真实 beta Token 全程不离开网关服务端。
+
+Slice 8:DB 持久化迁移(内存存储 → SQLAlchemy)。
+  - 启动时根据 PORTAL_DB_URL 创建 engine(SQLite/MySQL 由 URL scheme 决定)。
+  - init_db 创建 7 张表(idempotent,可重复执行)。
+  - build_seed_data 从 DB 读 seed,不存在则写入(idempotent)。
+  - TokenStore 保留内存(T_short 5min 过期 + 可撤销,重启失效可接受,
+    用户重新登录获取新 T_short;见 gateway.py 文档说明)。
 """
 
 from fastapi import FastAPI, Request
+from sqlalchemy import create_engine
+from sqlalchemy.pool import StaticPool
 from starlette.middleware.sessions import SessionMiddleware
 
 from portal.config import load_settings
+from portal.db import create_session_maker, init_db
 from portal.gateway import TokenStore
 from portal.models import AuditStore, SessionStore, build_seed_data
 from portal.routes import router
 
 
+def _create_engine_from_url(db_url: str):
+    """根据 DB URL 创建 engine。
+
+    SQLite in-memory(`sqlite://` 或 `sqlite:///:memory:`)用 StaticPool
+    共享连接,保证 :memory: 跨 session 可见;其他方言(MySQL 等)用默认 pool。
+    """
+    if db_url.startswith("sqlite"):
+        # SQLite:check_same_thread=False 让 FastAPI 多线程也能用;
+        # in-memory 必须 StaticPool 共享同一连接(否则每连接独立 DB)
+        is_memory = db_url in ("sqlite://", "sqlite:///:memory:")
+        return create_engine(
+            db_url,
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool if is_memory else None,
+            future=True,
+        )
+    # MySQL/其他:默认连接池
+    return create_engine(db_url, future=True, pool_pre_ping=True)
+
+
 def create_app() -> FastAPI:
-    """构造 FastAPI 应用:挂载会话中间件、硬编码数据、令牌表、会话表、审计表、路由。"""
+    """构造 FastAPI 应用:挂载会话中间件、DB engine、令牌表、会话表、审计表、路由。"""
     settings = load_settings()
     app = FastAPI(title="RAGFlow 权限门户", version="0.2.0")
     # 同源 HTTP-only 签名会话 cookie
@@ -32,14 +62,23 @@ def create_app() -> FastAPI:
         response.headers["X-Frame-Options"] = "SAMEORIGIN"
         return response
 
-    # 硬编码数据、配置、内存令牌表、内存会话表挂到 app.state,供路由读取
+    # Slice 8:创建 DB engine + 初始化表 + session_maker
+    engine = _create_engine_from_url(settings.portal_db_url)
+    init_db(engine)  # idempotent:表已存在则跳过
+    session_maker = create_session_maker(engine)
+
+    # 配置、DB 后端存储、内存令牌表挂到 app.state,供路由读取
     app.state.settings = settings
-    app.state.seed = build_seed_data(settings)
+    app.state.db_engine = engine
+    app.state.session_maker = session_maker
+    # build_seed_data 启动时 idempotent 写入(admin/user2/默认分享页/grant)
+    app.state.seed = build_seed_data(settings, session_maker)
+    # TokenStore 保留内存(T_short 短命 + 可撤销,重启失效可接受)
     app.state.token_store = TokenStore()
-    # Slice 2:chat_session_owner 内存表(Slice 4 才上 DB)
-    app.state.session_store = SessionStore()
-    # Slice 6:audit_log 内存表(永久保留,无 TTL/自动清理,PR D8b)
-    app.state.audit_store = AuditStore()
+    # chat_session_owner DB 持久化(进程重启后会话归属不丢)
+    app.state.session_store = SessionStore(session_maker)
+    # audit_log DB 持久化(永久保留,PR D8b)
+    app.state.audit_store = AuditStore(session_maker)
     app.include_router(router)
     return app
 

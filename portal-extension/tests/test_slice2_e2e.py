@@ -18,7 +18,6 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 import pytest
 
-from portal.models import PortalUser, SharePageGrant
 from portal.password import hash_password
 
 
@@ -229,23 +228,13 @@ async def test_resume_unknown_session_returns_404(client):
 async def test_user_cannot_access_other_users_session(client, app, monkeypatch):
     """用户 B 调用户 A 的 session → 403;用户 B 列表看不到 A 的 session。"""
     # 在 app 中追加第二个用户(用于隔离测试)
-    user_b = PortalUser(
-        id="u_userb",
+    # Slice 8:经 SeedData 公开 API 创建用户 + 授权(原直接改内部 dict/list,现 DB 后端)
+    user_b = app.state.seed.create_user(
         username="userb",
+        email="userb@example.com",
         password_hash=hash_password("testpass123"),
-        is_admin=False,
-        enabled=True,
     )
-    app.state.seed.users_by_username["userb"] = user_b
-    app.state.seed.users_by_id[user_b.id] = user_b
-    app.state.seed.grants.append(
-        SharePageGrant(
-            share_page_id="sp_default",
-            subject_type="user",
-            subject_id=user_b.id,
-            permission="use",
-        )
-    )
+    app.state.seed.create_grant("sp_default", "user", user_b.id, "use")
 
     # admin 登录并预创建 session
     await _login(client)
@@ -279,23 +268,13 @@ async def test_sse_rejects_other_users_session(client, app, monkeypatch):
     网关在代理前就拒绝,不会调上游 RAGFlow。
     """
     # 在 app 中追加第二个用户(用于隔离测试)
-    user_b = PortalUser(
-        id="u_userb",
+    # Slice 8:经 SeedData 公开 API 创建用户 + 授权(原直接改内部 dict/list,现 DB 后端)
+    user_b = app.state.seed.create_user(
         username="userb",
+        email="userb@example.com",
         password_hash=hash_password("testpass123"),
-        is_admin=False,
-        enabled=True,
     )
-    app.state.seed.users_by_username["userb"] = user_b
-    app.state.seed.users_by_id[user_b.id] = user_b
-    app.state.seed.grants.append(
-        SharePageGrant(
-            share_page_id="sp_default",
-            subject_type="user",
-            subject_id=user_b.id,
-            permission="use",
-        )
-    )
+    app.state.seed.create_grant("sp_default", "user", user_b.id, "use")
 
     # admin 登录并预创建 session(归属 admin)
     await _login(client)

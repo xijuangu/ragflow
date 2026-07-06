@@ -737,8 +737,10 @@ def test_seed_data_revoke_grant_supports_subject_type(app):
     assert seed.revoke_grant(page.id, "user", user.id) is True
     assert seed.has_use_grant(page.id, user.id) is False
     # 组 grant 仍在
+    # Slice 8:经公开 API list_grants 查询(原直接访问 seed.grants,现 DB 后端)
     assert any(
-        g.share_page_id == page.id and g.subject_type == "group" and g.subject_id == group.id for g in seed.grants
+        g.share_page_id == page.id and g.subject_type == "group" and g.subject_id == group.id
+        for g in seed.list_grants(page.id)
     )
     # 撤销 group grant
     assert seed.revoke_grant(page.id, "group", group.id) is True
@@ -759,11 +761,13 @@ def test_create_grant_idempotent(app):
     grant1 = seed.create_grant(page.id, "user", user.id, "use")
     # 第二次创建相同四元组 → 返回现有 grant,不新增
     grant2 = seed.create_grant(page.id, "user", user.id, "use")
-    assert grant1 is grant2, "幂等创建应返回同一 grant 对象"
+    # Slice 8:DB 后端每次返回新的 dataclass 实例(值相等而非引用相同);
+    # 幂等语义由「不重复插入 + 撤销一次即彻底」保证,而非对象身份。
+    assert grant1 == grant2, "幂等创建应返回值相等的 grant(不重复插入)"
     # grants 列表只有一条该四元组的记录
     matching = [
         g
-        for g in seed.grants
+        for g in seed.list_grants(page.id)
         if g.share_page_id == page.id and g.subject_type == "user" and g.subject_id == user.id and g.permission == "use"
     ]
     assert len(matching) == 1, f"幂等创建应只产生一条 grant,实际 {len(matching)} 条"
@@ -781,9 +785,11 @@ def test_create_grant_different_permission_not_idempotent(app):
 
     grant_use = seed.create_grant(page.id, "user", user.id, "use")
     grant_manage = seed.create_grant(page.id, "user", user.id, "manage")
-    assert grant_use is not grant_manage, "不同 permission 应为不同 grant"
+    assert grant_use != grant_manage, "不同 permission 应为不同 grant"
     matching = [
-        g for g in seed.grants if g.share_page_id == page.id and g.subject_type == "user" and g.subject_id == user.id
+        g
+        for g in seed.list_grants(page.id)
+        if g.share_page_id == page.id and g.subject_type == "user" and g.subject_id == user.id
     ]
     assert len(matching) == 2
 
