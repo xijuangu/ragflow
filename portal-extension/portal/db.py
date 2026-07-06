@@ -114,7 +114,10 @@ class PortalGroupMemberModel(Base):
 
 
 class SharePageModel(Base):
-    """share_page 表 ORM 模型。"""
+    """share_page 表 ORM 模型。
+
+    Slice 15:加 is_public 字段(默认 False),公开分享页免登录访问。
+    """
 
     __tablename__ = "share_page"
 
@@ -125,6 +128,8 @@ class SharePageModel(Base):
     embed_type: Mapped[str] = mapped_column(String(32), default="fullscreen", nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[float] = mapped_column(Float, nullable=False)
+    # Slice 15:公开分享(免登录访问 + IP 限流),默认 False
+    is_public: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
 class SharePageGrantModel(Base):
@@ -209,6 +214,26 @@ def _migrate_add_sso_columns(engine) -> None:
             conn.execute(text("ALTER TABLE portal_user ADD COLUMN sso_external_id VARCHAR(255) NULL"))
 
 
+def _migrate_add_is_public_column(engine) -> None:
+    """Slice 15:idempotent 迁移 — 给已有 share_page 表加 is_public 列(默认 False)。
+
+    与 ``_migrate_add_sso_columns`` 同模式:create_all 不 ALTER 已有表结构,
+    需用 ALTER TABLE ADD COLUMN 补字段。检查列是否已存在,已存在则跳过(idempotent)。
+
+    SQLite/MySQL 均支持 ``ALTER TABLE ... ADD COLUMN ...``;NOT NULL 列需带默认值
+    (SQLite 用 0/1 表示 BOOLEAN,MySQL 用 FALSE)。
+    """
+    inspector = inspect(engine)
+    if "share_page" not in inspector.get_table_names():
+        return  # 表不存在(create_all 会建),无需迁移
+    existing_cols = {c["name"] for c in inspector.get_columns("share_page")}
+    if "is_public" in existing_cols:
+        return  # 列已存在,跳过
+    with engine.begin() as conn:
+        # SQLite/MySQL 都支持 BOOLEAN NOT NULL DEFAULT 0/False
+        conn.execute(text("ALTER TABLE share_page ADD COLUMN is_public BOOLEAN NOT NULL DEFAULT 0"))
+
+
 def init_db(engine) -> None:
     """创建所有 7 张表(idempotent)。
 
@@ -218,9 +243,13 @@ def init_db(engine) -> None:
     Slice 14:create_all 之后执行 _migrate_add_sso_columns,给已有 portal_user 表
     补 sso_provider / sso_external_id 列(create_all 不 ALTER 已有表结构)。
     新建表时模型已含这两列,迁移函数检测到列已存在自动跳过(idempotent)。
+
+    Slice 15:create_all 之后执行 _migrate_add_is_public_column,给已有 share_page 表
+    补 is_public 列(默认 False)。新建表时模型已含此列,迁移函数检测到列已存在自动跳过。
     """
     Base.metadata.create_all(engine)
     _migrate_add_sso_columns(engine)
+    _migrate_add_is_public_column(engine)
 
 
 def create_session_maker(engine) -> sessionmaker:

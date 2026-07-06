@@ -20,6 +20,8 @@
   OIDC_CLIENT_SECRET      OIDC client_secret(敏感,只走环境变量)
   OIDC_REDIRECT_URI       OIDC 回调地址(如 https://portal.example/sso/callback)
   SSO_AUTO_CREATE         SSO 用户首次登录是否自动创建本地用户(默认 true)
+  PUBLIC_RATE_LIMIT_PER_MIN  Slice 15 公开分享页每 IP 每分钟请求上限(默认 10;<=0 禁用限流)
+  PUBLIC_AUDIT_ENABLED    Slice 15 公开访问审计开关(默认 true;false 时不写 public_chat 审计)
 """
 
 import os
@@ -49,6 +51,11 @@ class Settings:
     oidc_client_secret: str = ""
     oidc_redirect_uri: str = ""
     sso_auto_create: bool = True
+    # Slice 15:公开分享页限流与审计配置
+    # 每 IP 每分钟请求上限(默认 10);<=0 禁用限流(用于测试或低风险场景)
+    public_rate_limit_per_min: int = 10
+    # 公开访问审计开关(默认 true 写 public_chat 审计;false 时跳过,节省内存)
+    public_audit_enabled: bool = True
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -82,4 +89,7 @@ def load_settings() -> Settings:
         oidc_client_secret=os.environ.get("OIDC_CLIENT_SECRET", ""),
         oidc_redirect_uri=os.environ.get("OIDC_REDIRECT_URI", ""),
         sso_auto_create=_env_bool("SSO_AUTO_CREATE", True),
+        # Slice 15:公开分享页限流与审计配置
+        public_rate_limit_per_min=int(os.environ.get("PUBLIC_RATE_LIMIT_PER_MIN", "10")),
+        public_audit_enabled=_env_bool("PUBLIC_AUDIT_ENABLED", True),
     )
