@@ -78,15 +78,35 @@ AuditTargetType = Literal["user", "share_page", "session", "grant"]
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class SSOIdentity:
+    """SSO 身份标识(provider + external_id 捆绑,TD9 消除 Data Clumps)。
+
+    把 ``sso_provider`` + ``sso_external_id`` 两个字段捆成一个小类型,
+    消除 6 处 Data Clumps(PortalUser / PortalUserModel / oidc / routes)。
+    DB 模型保留两列(ORM 映射不变),Python 层用 SSOIdentity。
+
+    - ``provider``:SSO provider 标识(当前固定 "oidc",见 ``oidc.SSO_PROVIDER``)。
+    - ``external_id``:IdP 返回的 sub(IdP 唯一标识,用于匹配本地用户)。
+    frozen=True 让其成为不可变值对象(语义清晰,可安全共享)。
+    """
+
+    provider: str
+    external_id: str
+
+
 @dataclass
 class PortalUser:
     """门户用户(对应 portal_user 表)。
 
     Slice 4 补齐 email / created_at 字段(D5 数据模型)。
-    Slice 14 加 sso_provider / sso_external_id(可空,自建账号用户为 None;
+    Slice 14 加 SSO 身份(可空,自建账号用户为 None;
     SSO 用户首次登录时写入,用于匹配 IdP 返回的 sub)。
     Slice 13 加 org_id(默认 'default',多租户隔离)+ org_admin(默认 False,
     介于普通用户与平台 is_admin 之间的 org 级管理员角色)。
+
+    TD9:原 ``sso_provider`` + ``sso_external_id`` 两字段捆成 ``sso: SSOIdentity | None``。
+    DB 模型 PortalUserModel 保留两列(ORM 映射),``_user_from_orm`` 构造时组装。
     """
 
     id: str
@@ -96,9 +116,8 @@ class PortalUser:
     is_admin: bool = False
     enabled: bool = True
     created_at: float = field(default_factory=time.time)
-    # Slice 14:SSO 登录字段(可空,自建账号用户为 None)
-    sso_provider: str | None = None
-    sso_external_id: str | None = None
+    # Slice 14 / TD9:SSO 身份(可空,自建账号用户为 None)
+    sso: SSOIdentity | None = None
     # Slice 13:多租户字段(org_id 默认 'default';org_admin 默认 False)
     org_id: str = "default"
     org_admin: bool = False
@@ -187,6 +206,10 @@ class ChatSessionOwner:
 
 
 def _user_from_orm(row: PortalUserModel) -> PortalUser:
+    # TD9:DB 保留 sso_provider/sso_external_id 两列,组装成 SSOIdentity 小类型
+    sso: SSOIdentity | None = None
+    if row.sso_provider is not None and row.sso_external_id is not None:
+        sso = SSOIdentity(provider=row.sso_provider, external_id=row.sso_external_id)
     return PortalUser(
         id=row.id,
         username=row.username,
@@ -195,8 +218,7 @@ def _user_from_orm(row: PortalUserModel) -> PortalUser:
         is_admin=row.is_admin,
         enabled=row.enabled,
         created_at=row.created_at,
-        sso_provider=row.sso_provider,
-        sso_external_id=row.sso_external_id,
+        sso=sso,
         org_id=row.org_id,
         org_admin=row.org_admin,
     )
@@ -742,24 +764,26 @@ class SeedData(_StoreBase):
         )
         return user
 
-    def get_user_by_sso(self, sso_provider: str, sso_external_id: str):
-        """按 SSO provider + external_id(sub) 查用户;不存在返回 None。
+    def get_user_by_sso(self, sso: SSOIdentity):
+        """按 SSO 身份(provider + external_id)查用户;不存在返回 None。
 
-        Slice 14:SSO 回调用此方法匹配本地用户。自建账号用户的 sso_provider 为 NULL,
-        不会被匹配(只有 SSO 创建的用户 sso_provider 非空)。
+        Slice 14:SSO 回调用此方法匹配本地用户。自建账号用户的 sso 为 None
+        (DB 中 sso_provider/sso_external_id 为 NULL,不会被匹配;
+        只有 SSO 创建的用户这两列非空)。
+
+        TD9:参数从 ``(sso_provider, sso_external_id)`` 两参数改为 ``SSOIdentity`` 单参数。
         """
         with self._session_maker() as session:
             stmt = select(PortalUserModel).where(
-                PortalUserModel.sso_provider == sso_provider,
-                PortalUserModel.sso_external_id == sso_external_id,
+                PortalUserModel.sso_provider == sso.provider,
+                PortalUserModel.sso_external_id == sso.external_id,
             )
             row = session.scalars(stmt).first()
             return _user_from_orm(row) if row is not None else None
 
     def create_sso_user(
         self,
-        sso_provider: str,
-        sso_external_id: str,
+        sso: SSOIdentity,
         username: str,
         email: str = "",
         org_id: str = "default",
@@ -771,6 +795,7 @@ class SeedData(_StoreBase):
         username 从 IdP claims 取(email_preferred 或 sub),调用方需保证唯一。
 
         Slice 13:接受 org_id(默认 'default'),SSO 用户归入指定 org。
+        TD9:参数从 ``(sso_provider, sso_external_id)`` 两参数改为 ``SSOIdentity`` 单参数。
         """
         user = PortalUser(
             id=_gen_id("u"),
@@ -780,8 +805,7 @@ class SeedData(_StoreBase):
             is_admin=False,
             enabled=True,
             created_at=time.time(),
-            sso_provider=sso_provider,
-            sso_external_id=sso_external_id,
+            sso=sso,
             org_id=org_id,
         )
         self._transact(
@@ -794,8 +818,9 @@ class SeedData(_StoreBase):
                     is_admin=user.is_admin,
                     enabled=user.enabled,
                     created_at=user.created_at,
-                    sso_provider=user.sso_provider,
-                    sso_external_id=user.sso_external_id,
+                    # DB 保留两列(ORM 映射),从 SSOIdentity 拆出写入
+                    sso_provider=sso.provider,
+                    sso_external_id=sso.external_id,
                     org_id=user.org_id,
                 )
             )

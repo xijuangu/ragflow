@@ -15,13 +15,14 @@ Slice 8:DB 持久化迁移(内存存储 → SQLAlchemy)。
     用户重新登录获取新 T_short;见 gateway.py 文档说明)。
 
 Slice 12:双删重试定时任务(asyncio.create_task + asyncio.sleep 循环)。
-  - startup hook 启动 ``_retry_delete_loop`` 后台 task。
-  - shutdown hook 取消 task(优雅退出,无残留)。
+  - lifespan startup 启动 ``_retry_delete_loop`` 后台 task。
+  - lifespan shutdown 取消 task(优雅退出,无残留)。
   - 间隔走 ``settings.retry_delete_interval_seconds``(默认 300s,<=0 禁用)。
   - 选型理由见 ``portal/tasks.py`` 模块文档。
 """
 
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -63,7 +64,26 @@ def _create_engine_from_url(db_url: str):
 def create_app() -> FastAPI:
     """构造 FastAPI 应用:挂载会话中间件、DB engine、令牌表、会话表、审计表、路由。"""
     settings = load_settings()
-    app = FastAPI(title="RAGFlow 权限门户", version="0.2.0")
+
+    # Slice 8:创建 DB engine + 初始化表 + session_maker(在 lifespan 之外创建,
+    # 保证 app.state 在路由注册前就绪;startup 阶段启动后台 task)
+    engine = _create_engine_from_url(settings.portal_db_url)
+    init_db(engine)  # idempotent:表已存在则跳过
+    session_maker = create_session_maker(engine)
+
+    # Slice 12:lifespan context manager 替代 deprecated 的 @app.on_event
+    # startup:启动双删重试定时任务;shutdown:取消 task(优雅退出,无残留)
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        # startup
+        start_retry_delete_task(app)
+        try:
+            yield
+        finally:
+            # shutdown(无论正常退出或异常都取消 task,避免残留)
+            await stop_retry_delete_task(app)
+
+    app = FastAPI(title="RAGFlow 权限门户", version="0.2.0", lifespan=lifespan)
     # 同源 HTTP-only 签名会话 cookie
     app.add_middleware(SessionMiddleware, secret_key=settings.session_secret)
 
@@ -85,11 +105,6 @@ def create_app() -> FastAPI:
             response.headers["X-Frame-Options"] = "SAMEORIGIN"
         return response
 
-    # Slice 8:创建 DB engine + 初始化表 + session_maker
-    engine = _create_engine_from_url(settings.portal_db_url)
-    init_db(engine)  # idempotent:表已存在则跳过
-    session_maker = create_session_maker(engine)
-
     # 配置、DB 后端存储、内存令牌表挂到 app.state,供路由读取
     app.state.settings = settings
     app.state.db_engine = engine
@@ -110,15 +125,6 @@ def create_app() -> FastAPI:
     _frontend_dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
     if _frontend_dist.is_dir():
         app.mount("/", StaticFiles(directory=str(_frontend_dist), html=True), name="frontend")
-
-    # Slice 12:注册 startup/shutdown hook 启动/取消双删重试定时任务
-    @app.on_event("startup")
-    async def _startup_retry_task():
-        start_retry_delete_task(app)
-
-    @app.on_event("shutdown")
-    async def _shutdown_retry_task():
-        await stop_retry_delete_task(app)
 
     return app
 

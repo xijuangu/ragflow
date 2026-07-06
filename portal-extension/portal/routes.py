@@ -56,6 +56,7 @@ from portal.models import (
     RagflowType,
     SharePage,
     SharePageGrant,
+    SSOIdentity,
     SubjectType,
 )
 from portal.oidc import SSO_PROVIDER, OIDCConfig, exchange_code_for_claims, get_authorization_url
@@ -134,9 +135,10 @@ def _user_to_dict(user: PortalUser) -> dict:
         "is_admin": user.is_admin,
         "enabled": user.enabled,
         "created_at": user.created_at,
-        # Slice 14:SSO 绑定信息(None=自建账号用户)
-        "sso_provider": user.sso_provider,
-        "sso_external_id": user.sso_external_id,
+        # Slice 14 / TD9:SSO 绑定信息(None=自建账号用户)
+        # 从 SSOIdentity 拆出,保持 API 响应键名不变(向后兼容前端)
+        "sso_provider": user.sso.provider if user.sso else None,
+        "sso_external_id": user.sso.external_id if user.sso else None,
         # Slice 13:多租户字段
         "org_id": user.org_id,
         "org_admin": user.org_admin,
@@ -342,18 +344,12 @@ async def get_me(user=Depends(get_current_user)):
 # ---------------------------------------------------------------------------
 
 
-def _oidc_config(settings) -> OIDCConfig:
-    """从 Settings 提取 OIDC 配置切片(供 oidc 模块使用)。"""
-    return OIDCConfig(
-        issuer=settings.oidc_issuer,
-        client_id=settings.oidc_client_id,
-        client_secret=settings.oidc_client_secret,
-        redirect_uri=settings.oidc_redirect_uri,
-    )
+def _assert_oidc_ready(settings) -> None:
+    """校验 OIDC 已启用且配置完整;未启用 → 404,配置不全 → 500。
 
-
-def _assert_oidc_enabled(settings) -> None:
-    """校验 OIDC 已启用且配置完整;未启用 → 404,配置不全 → 500。"""
+    TD10 改名:原名 ``_assert_oidc_enabled`` 名不副实(只说「enabled」,
+    实际还校验 4 项配置完整性)。``_ready`` 涵盖「启用 + 配置完整」两层语义。
+    """
     if not settings.oidc_enabled:
         raise HTTPException(status_code=404, detail="SSO 登录未启用")
     missing = [
@@ -379,12 +375,19 @@ async def sso_login(request: Request):
     OIDC 未启用 → 404;配置不全 → 500。
     """
     settings = request.app.state.settings
-    _assert_oidc_enabled(settings)
+    _assert_oidc_ready(settings)
     state = secrets.token_urlsafe(32)
     nonce = secrets.token_urlsafe(32)
     request.session["sso_state"] = state
     request.session["sso_nonce"] = nonce
-    auth_url = await get_authorization_url(_oidc_config(settings), state, nonce)
+    # TD11 内联:原 _oidc_config(settings) 仅 4 字段直传,无独立测试,直接构造
+    config = OIDCConfig(
+        issuer=settings.oidc_issuer,
+        client_id=settings.oidc_client_id,
+        client_secret=settings.oidc_client_secret,
+        redirect_uri=settings.oidc_redirect_uri,
+    )
+    auth_url = await get_authorization_url(config, state, nonce)
     return RedirectResponse(url=auth_url, status_code=302)
 
 
@@ -408,7 +411,7 @@ async def sso_callback(
         + 302 跳前端首页(分享页列表)。
     """
     settings = request.app.state.settings
-    _assert_oidc_enabled(settings)
+    _assert_oidc_ready(settings)
     # IdP 主动返回错误(用户拒绝授权 / IdP 内部错误)
     if error:
         detail = f"{error}: {error_description}" if error_description else error
@@ -424,13 +427,21 @@ async def sso_callback(
     if not saved_nonce:
         raise HTTPException(status_code=400, detail="SSO 会话已过期,请重新登录")
     # code 换 id_token → 验证 → 拿 claims(测试在路由层 mock exchange_code_for_claims)
-    claims = await exchange_code_for_claims(_oidc_config(settings), code, saved_nonce)
+    # TD11 内联:原 _oidc_config(settings) 仅 4 字段直传,无独立测试,直接构造
+    config = OIDCConfig(
+        issuer=settings.oidc_issuer,
+        client_id=settings.oidc_client_id,
+        client_secret=settings.oidc_client_secret,
+        redirect_uri=settings.oidc_redirect_uri,
+    )
+    claims = await exchange_code_for_claims(config, code, saved_nonce)
     sub = claims.get("sub")
     if not sub:
         raise HTTPException(status_code=502, detail="SSO id_token 缺少 sub 声明")
-    # 匹配本地用户(sso_provider + sso_external_id)
+    # 匹配本地用户(TD9:用 SSOIdentity 替代 provider + external_id 两参数)
     seed = request.app.state.seed
-    user = seed.get_user_by_sso(SSO_PROVIDER, str(sub))
+    sso_identity = SSOIdentity(provider=SSO_PROVIDER, external_id=str(sub))
+    user = seed.get_user_by_sso(sso_identity)
     if user is None:
         # 不存在 → 按 sso_auto_create 策略创建或拒绝
         if not settings.sso_auto_create:
@@ -440,7 +451,7 @@ async def sso_callback(
         # username 唯一性:若已存在则加后缀(避免冲突)
         if seed.get_user_by_username(username) is not None:
             username = f"{username}_sso_{secrets.token_hex(4)}"
-        user = seed.create_sso_user(SSO_PROVIDER, str(sub), username, email)
+        user = seed.create_sso_user(sso_identity, username, email)
     # 禁用用户不能登录(与自建账号登录一致)
     if not user.enabled:
         _audit(
