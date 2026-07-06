@@ -666,24 +666,26 @@ PRD D9 决定一期仅全屏 Chat,字段已预留(`embed_type` / `ragflow_type`)
 ## 技术债(待重构,非 slice)
 
 > 来源:Slice 8 + Slice 9 合并后的 `/review` Standards 报告(2026-07-06)。记入文档备查,暂不拆 slice,后续迭代时择机处理。
+>
+> 2026-07-06 更新:TD1/2/4/6/7/8/9/10/11/13/14/15 已清理(3 路并行重构,350 passed + 70 passed 全绿)。TD3 Won't fix,TD5 延后,TD12 保留(有测试调用)。
 
 | # | 类型 | 位置 | 描述 | 处置 |
 |---|---|---|---|---|
-| TD1 | Duplicated Code | `portal/models.py` SeedData/SessionStore/AuditStore | `with self._sm() as session: ... session.commit()` 形状重复 30+ 次。可抽 `_transact(fn)` 上下文管理器。 | 待重构 |
-| TD2 | Duplicated Code | `portal/routes.py:443-447` 与 `:1002-1006` | 消息计数同步逻辑(`if isinstance(history, dict): ... update_message_count(...)`)两处逐字重复。可抽 `_sync_message_count(owner, history, session_id, store)` helper。 | 待重构 |
+| TD1 | Duplicated Code | `portal/models.py` SeedData/SessionStore/AuditStore | `with self._sm() as session: ... session.commit()` 形状重复 30+ 次。可抽 `_transact(fn)` 上下文管理器。 | ✅ 已清理(抽 `_StoreBase._transact`,16 处重构) |
+| TD2 | Duplicated Code | `portal/routes.py:443-447` 与 `:1002-1006` | 消息计数同步逻辑(`if isinstance(history, dict): ... update_message_count(...)`)两处逐字重复。可抽 `_sync_message_count(owner, history, session_id, store)` helper。 | ✅ 已清理(合并到 TD8 的 `sync_message_count_from_history`) |
 | TD3 | Feature Envy | `portal/models.py` `build_seed_data` | 直接构造 `PortalUserModel`/`SharePageModel` 绕过 `SeedData` CRUD。**评估为有意为之**:固定 ID(`u_admin`/`sp_default`)保证 idempotent seed,`create_user` 用随机 ID 无法保证。 | Won't fix(有理由) |
-| TD4 | Mysterious Name | `portal/models.py` `self._sm`(38 次) | `_sm` 对 `session_maker` 过简,`_session_maker` 更诚实。 | 待重构(随 TD1 一起) |
+| TD4 | Mysterious Name | `portal/models.py` `self._sm`(38 次) | `_sm` 对 `session_maker` 过简,`_session_maker` 更诚实。 | ✅ 已清理(全局改名 `_session_maker`,39 处) |
 | TD5 | Primitive Obsession(pre-existing) | `portal/db.py` `SharePageGrantModel` | `subject_type`/`permission` 仍为 `String(16)`,虽同文件已定义 `SubjectType`/`Permission` Literal。pre-existing,非 Slice 8 引入。 | 延后(影响 schema 迁移) |
-| TD6 | Duplicated Code | `frontend/src/pages/admin/*` + `SharePageDetailPage.tsx` | `formatTime` 函数在 4+ 前端文件重复定义。可抽 `frontend/src/utils/formatTime.ts`。 | 待重构 |
-| TD7 | Duplicated Code | `frontend/src/pages/admin/*.tsx` | 6 个 admin 页同构 `useEffect` + cancelled IIFE + ApiError catch + `busyId` 乐观更新/回滚模式。可抽 `useAdminList` / `useOptimisticToggle` hook。 | 待重构 |
-| TD8 | Duplicated Code | `portal/gateway.py` `_sync_message_count_after_sse` 与 `portal/routes.py` `resume_session` | message_count 同步逻辑(`fetch_session_history_via_ragflow` + `update_message_count(len(messages))`)两处重复。可聚到 `SessionStore.sync_message_count_from_history`。 | 待重构 |
-| TD9 | Data Clumps | `portal/models.py` PortalUser + `portal/db.py` PortalUserModel + `portal/oidc.py` + `portal/routes.py` | `sso_provider` + `sso_external_id` 6 处捆绑出现。可捆成 `SSOIdentity(provider, external_id)` 小类型。 | 待重构 |
-| TD10 | Mysterious Name | `portal/routes.py` `_assert_oidc_enabled` | 名字只说「enabled」,实际还校验 4 项配置完整性(缺则 500)。改名 `_assert_oidc_ready` 或拆 `_assert_oidc_enabled` + `_assert_oidc_configured`。 | 待重构 |
-| TD11 | Middle Man | `portal/routes.py` `_oidc_config(settings)` | 仅 4 字段直传到 `OIDCConfig(...)`,路由层只用一次、无独立测试。可内联或让 `oidc.py` 直接收 `Settings`。 | 待重构(轻微) |
-| TD12 | Speculative Generality | `portal/oidc.py` `_discovery_cache` + `clear_discovery_cache()` | 进程级 dict + 钩子,但 spec 无多 IdP 场景,`SSO_PROVIDER = "oidc"` 写死。缓存键用 issuer 是过度抽象。保留无害,删亦佳。 | 待重构(轻微) |
-| TD13 | Divergent Change(deprecated API) | `portal/main.py` `@app.on_event("startup"/"shutdown")` | FastAPI 旧式 API,有 DeprecationWarning。应迁移到 lifespan context manager。 | 待重构 |
-| TD14 | Duplicated Code(安全敏感) | `portal/gateway.py` `proxy_sse_public_to_ragflow` 与 `_proxy_sse_public_core` | 公开 SSE 校验链(T_short validate / is_public / enabled / dialog_id / ownership)在两处逐行重复。任一改一侧必漏另一侧。应让 `proxy_sse_public_to_ragflow` 调用 `_proxy_sse_public_core` 而非复制。 | 待重构 |
-| TD15 | Duplicated Code / Repeated Switches | `portal/gateway.py` 4 个 `*_agent_session_via_ragflow` + `portal/routes.py` 4 处 `if ragflow_type == "agent"` | agent session 函数与 chat 版本几乎逐字相同(仅 URL 段 agentbots vs chatbots 不同)。应抽 `_ragflow_session_api(settings, resource_id, ragflow_type)` 统一分发。 | 待重构 |
+| TD6 | Duplicated Code | `frontend/src/pages/admin/*` + `SharePageDetailPage.tsx` | `formatTime` 函数在 4+ 前端文件重复定义。可抽 `frontend/src/utils/formatTime.ts`。 | ✅ 已清理(抽 `utils/formatTime.ts`,参数化 `date`/`datetime`/`seconds`) |
+| TD7 | Duplicated Code | `frontend/src/pages/admin/*.tsx` | 6 个 admin 页同构 `useEffect` + cancelled IIFE + ApiError catch + `busyId` 乐观更新/回滚模式。可抽 `useAdminList` / `useOptimisticToggle` hook。 | ✅ 已清理(抽 `hooks/useAdminList.ts` + `hooks/useOptimisticToggle.ts`) |
+| TD8 | Duplicated Code | `portal/gateway.py` `_sync_message_count_after_sse` 与 `portal/routes.py` `resume_session` | message_count 同步逻辑(`fetch_session_history_via_ragflow` + `update_message_count(len(messages))`)两处重复。可聚到 `SessionStore.sync_message_count_from_history`。 | ✅ 已清理(聚到 `SessionStore.sync_message_count_from_history`,三处调用统一) |
+| TD9 | Data Clumps | `portal/models.py` PortalUser + `portal/db.py` PortalUserModel + `portal/oidc.py` + `portal/routes.py` | `sso_provider` + `sso_external_id` 6 处捆绑出现。可捆成 `SSOIdentity(provider, external_id)` 小类型。 | ✅ 已清理(捆成 `SSOIdentity` dataclass,PortalUser 用 `sso: SSOIdentity \| None`) |
+| TD10 | Mysterious Name | `portal/routes.py` `_assert_oidc_enabled` | 名字只说「enabled」,实际还校验 4 项配置完整性(缺则 500)。改名 `_assert_oidc_ready` 或拆 `_assert_oidc_enabled` + `_assert_oidc_configured`。 | ✅ 已清理(改名 `_assert_oidc_ready`) |
+| TD11 | Middle Man | `portal/routes.py` `_oidc_config(settings)` | 仅 4 字段直传到 `OIDCConfig(...)`,路由层只用一次、无独立测试。可内联或让 `oidc.py` 直接收 `Settings`。 | ✅ 已清理(内联到调用处) |
+| TD12 | Speculative Generality | `portal/oidc.py` `_discovery_cache` + `clear_discovery_cache()` | 进程级 dict + 钩子,但 spec 无多 IdP 场景,`SSO_PROVIDER = "oidc"` 写死。缓存键用 issuer 是过度抽象。保留无害,删亦佳。 | 保留(`clear_discovery_cache` 有 8 处测试调用,删了破坏测试) |
+| TD13 | Divergent Change(deprecated API) | `portal/main.py` `@app.on_event("startup"/"shutdown")` | FastAPI 旧式 API,有 DeprecationWarning。应迁移到 lifespan context manager。 | ✅ 已清理(迁移到 `lifespan` context manager,DeprecationWarning 从 1093 降到 1) |
+| TD14 | Duplicated Code(安全敏感) | `portal/gateway.py` `proxy_sse_public_to_ragflow` 与 `_proxy_sse_public_core` | 公开 SSE 校验链(T_short validate / is_public / enabled / dialog_id / ownership)在两处逐行重复。任一改一侧必漏另一侧。应让 `proxy_sse_public_to_ragflow` 调用 `_proxy_sse_public_core` 而非复制。 | ✅ 已清理(`proxy_sse_public_to_ragflow` 调用 `_proxy_sse_public_core`,校验链统一) |
+| TD15 | Duplicated Code / Repeated Switches | `portal/gateway.py` 4 个 `*_agent_session_via_ragflow` + `portal/routes.py` 4 处 `if ragflow_type == "agent"` | agent session 函数与 chat 版本几乎逐字相同(仅 URL 段 agentbots vs chatbots 不同)。应抽 `_ragflow_session_api(settings, resource_id, ragflow_type)` 统一分发。 | ✅ 已清理(chat 函数加 `ragflow_type` 参数 + `_ragflow_bot_segment` 辅助,agent 函数变 thin wrapper;routes.py 5 个 dispatch helper 统一分发) |
 
 ## 迁移至正式 issue tracker 时的说明
 
