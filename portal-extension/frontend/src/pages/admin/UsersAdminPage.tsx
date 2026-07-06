@@ -9,42 +9,24 @@
  *
  * 硬删除前用 window.confirm 提示级联清会话(对应验收点 2:硬删除时有确认提示)。
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import type { FormEvent } from 'react';
 import { ApiError, api, type AdminUser } from '../../api/client';
-
-function formatTime(epoch: number): string {
-  if (!epoch) return '';
-  const d = new Date(epoch * 1000);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-}
+import { formatTime } from '../../utils/formatTime';
+import { useAdminList } from '../../hooks/useAdminList';
+import { useOptimisticToggle } from '../../hooks/useOptimisticToggle';
 
 export default function UsersAdminPage() {
-  const [users, setUsers] = useState<AdminUser[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [busyId, setBusyId] = useState<string | null>(null);
+  const { data: users, setData: setUsers, error, setError } = useAdminList(
+    () => api.listAdminUsers().then((r) => r.users),
+    { errorMessage: '加载用户列表失败' },
+  );
+  const { busyId, run } = useOptimisticToggle({ onError: setError });
 
   // 创建表单状态
   const [form, setForm] = useState({ username: '', email: '', password: '' });
   const [formError, setFormError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await api.listAdminUsers();
-        if (!cancelled) setUsers(res.users);
-      } catch (e) {
-        if (cancelled) return;
-        setError(e instanceof ApiError ? e.message : '加载用户列表失败');
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   const handleCreate = useCallback(
     async (e: FormEvent) => {
@@ -70,51 +52,46 @@ export default function UsersAdminPage() {
         setCreating(false);
       }
     },
-    [creating, form],
+    [creating, form, setUsers],
   );
 
   const handleToggleEnabled = useCallback(
     async (u: AdminUser) => {
-      if (busyId) return;
-      setBusyId(u.id);
       const next = !u.enabled;
-      // 乐观更新
-      setUsers((prev) =>
-        prev ? prev.map((x) => (x.id === u.id ? { ...x, enabled: next } : x)) : prev,
-      );
-      try {
-        await api.updateAdminUser(u.id, next);
-      } catch (e) {
-        // 回滚
-        setUsers((prev) =>
-          prev ? prev.map((x) => (x.id === u.id ? { ...x, enabled: u.enabled } : x)) : prev,
-        );
-        setError(e instanceof ApiError ? e.message : '更新用户失败');
-      } finally {
-        setBusyId(null);
-      }
+      await run({
+        id: u.id,
+        optimistic: () =>
+          setUsers((prev) =>
+            prev ? prev.map((x) => (x.id === u.id ? { ...x, enabled: next } : x)) : prev,
+          ),
+        rollback: () =>
+          setUsers((prev) =>
+            prev ? prev.map((x) => (x.id === u.id ? { ...x, enabled: u.enabled } : x)) : prev,
+          ),
+        action: () => api.updateAdminUser(u.id, next),
+        errorMessage: '更新用户失败',
+      });
     },
-    [busyId],
+    [run, setUsers],
   );
 
   const handleDelete = useCallback(
     async (u: AdminUser) => {
-      if (busyId) return;
       const confirmed = window.confirm(
         `确定硬删除用户「${u.username}」?\n该操作会级联删除其所有会话(不可恢复)。`,
       );
       if (!confirmed) return;
-      setBusyId(u.id);
-      try {
-        await api.deleteAdminUser(u.id);
-        setUsers((prev) => (prev ? prev.filter((x) => x.id !== u.id) : prev));
-      } catch (e) {
-        setError(e instanceof ApiError ? e.message : '删除用户失败');
-      } finally {
-        setBusyId(null);
-      }
+      // 悲观删除:成功后才 filter 列表(API 调用 + 改列表一起放进 action)
+      await run({
+        id: u.id,
+        action: async () => {
+          await api.deleteAdminUser(u.id);
+          setUsers((prev) => (prev ? prev.filter((x) => x.id !== u.id) : prev));
+        },
+        errorMessage: '删除用户失败',
+      });
     },
-    [busyId],
+    [run, setUsers],
   );
 
   return (
@@ -195,7 +172,7 @@ export default function UsersAdminPage() {
                       <span className="badge badge-danger">禁用</span>
                     )}
                   </td>
-                  <td>{formatTime(u.created_at)}</td>
+                  <td>{formatTime(u.created_at, 'date')}</td>
                   <td className="admin-actions">
                     <button
                       type="button"

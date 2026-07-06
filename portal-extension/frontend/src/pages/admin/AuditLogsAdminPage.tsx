@@ -20,13 +20,8 @@ import {
   type AdminUser,
   type AuditAction,
 } from '../../api/client';
-
-function formatTime(epoch: number): string {
-  if (!epoch) return '';
-  const d = new Date(epoch * 1000);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-}
+import { formatTime } from '../../utils/formatTime';
+import { useAdminList } from '../../hooks/useAdminList';
 
 function formatMeta(meta: Record<string, unknown> | null): string {
   if (!meta) return '';
@@ -40,7 +35,16 @@ function formatMeta(meta: Record<string, unknown> | null): string {
 export default function AuditLogsAdminPage() {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [logs, setLogs] = useState<AdminAuditLog[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const { error, setError } = useAdminList(
+    async () => {
+      const res = await api.listAdminUsers();
+      return res.users;
+    },
+    {
+      errorMessage: '加载用户列表失败',
+      onSuccess: (u) => setUsers(u),
+    },
+  );
 
   // 筛选表单
   const [filterActor, setFilterActor] = useState('');
@@ -75,26 +79,10 @@ export default function AuditLogsAdminPage() {
         setError(e instanceof ApiError ? e.message : '加载审计日志失败');
       }
     },
-    [],
+    [setError],
   );
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await api.listAdminUsers();
-        if (cancelled) return;
-        setUsers(res.users);
-      } catch (e) {
-        if (cancelled) return;
-        setError(e instanceof ApiError ? e.message : '加载用户列表失败');
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
+  // 首次加载日志(用户列表由 useAdminList 在上方加载)
   useEffect(() => {
     void loadLogs();
   }, [loadLogs]);
@@ -203,7 +191,7 @@ export default function AuditLogsAdminPage() {
             <tbody>
               {logs.map((log) => (
                 <tr key={log.id} data-testid={`audit-row-${log.id}`}>
-                  <td>{formatTime(log.at)}</td>
+                  <td>{formatTime(log.at, 'seconds')}</td>
                   <td>{userMap.get(log.actor_user_id)?.username ?? log.actor_user_id}</td>
                   <td>
                     <span className="badge badge-info">{log.action}</span>

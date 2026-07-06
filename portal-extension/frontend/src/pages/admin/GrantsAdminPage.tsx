@@ -24,6 +24,8 @@ import {
   type AdminUser,
   type SubjectType,
 } from '../../api/client';
+import { useAdminList } from '../../hooks/useAdminList';
+import { useOptimisticToggle } from '../../hooks/useOptimisticToggle';
 
 export default function GrantsAdminPage() {
   const [sharePages, setSharePages] = useState<AdminSharePage[]>([]);
@@ -31,8 +33,30 @@ export default function GrantsAdminPage() {
   const [groups, setGroups] = useState<AdminGroup[]>([]);
   const [selectedPageId, setSelectedPageId] = useState<string>('');
   const [grants, setGrants] = useState<AdminGrant[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [busyKey, setBusyKey] = useState<string | null>(null); // `${subject_type}:${subject_id}`
+  const { error, setError } = useAdminList(
+    async () => {
+      const [pagesRes, usersRes, groupsRes] = await Promise.all([
+        api.listAdminSharePages(),
+        api.listAdminUsers(),
+        api.listAdminGroups(),
+      ]);
+      return {
+        sharePages: pagesRes.share_pages,
+        users: usersRes.users,
+        groups: groupsRes.groups,
+      };
+    },
+    {
+      errorMessage: '加载分享页/用户/用户组失败',
+      onSuccess: (d) => {
+        setSharePages(d.sharePages);
+        setUsers(d.users);
+        setGroups(d.groups);
+        if (d.sharePages.length > 0) setSelectedPageId(d.sharePages[0].id);
+      },
+    },
+  );
+  const { busyId: busyKey, run } = useOptimisticToggle({ onError: setError });
 
   // 创建授权表单
   const [subjectType, setSubjectType] = useState<SubjectType>('user');
@@ -62,34 +86,7 @@ export default function GrantsAdminPage() {
     [userMap, groupMap],
   );
 
-  // 初始加载:分享页 + 用户 + 用户组(三个列表用于下拉)
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const [pagesRes, usersRes, groupsRes] = await Promise.all([
-          api.listAdminSharePages(),
-          api.listAdminUsers(),
-          api.listAdminGroups(),
-        ]);
-        if (cancelled) return;
-        setSharePages(pagesRes.share_pages);
-        setUsers(usersRes.users);
-        setGroups(groupsRes.groups);
-        if (pagesRes.share_pages.length > 0) {
-          setSelectedPageId(pagesRes.share_pages[0].id);
-        }
-      } catch (e) {
-        if (cancelled) return;
-        setError(e instanceof ApiError ? e.message : '加载分享页/用户/用户组失败');
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // 分享页切换 → 加载 grants
+  // 初始加载由 useAdminList 完成(上方);以下仅保留分享页切换 → 加载 grants
   const loadGrants = useCallback(async (pageId: string) => {
     if (!pageId) {
       setGrants(null);
@@ -103,7 +100,7 @@ export default function GrantsAdminPage() {
     } catch (e) {
       setError(e instanceof ApiError ? e.message : '加载授权列表失败');
     }
-  }, []);
+  }, [setError]);
 
   useEffect(() => {
     if (selectedPageId) void loadGrants(selectedPageId);
@@ -132,29 +129,30 @@ export default function GrantsAdminPage() {
         setCreating(false);
       }
     },
-    [creating, selectedPageId, subjectType, subjectId],
+    [creating, selectedPageId, subjectType, subjectId, setGrants],
   );
 
   const handleRevoke = useCallback(
     async (grant: AdminGrant) => {
-      if (busyKey || !selectedPageId) return;
+      if (!selectedPageId) return;
       const key = `${grant.subject_type}:${grant.subject_id}`;
-      setBusyKey(key);
-      // 乐观更新:从列表移除
-      setGrants((prev) =>
-        prev ? prev.filter((g) => !(g.subject_type === grant.subject_type && g.subject_id === grant.subject_id)) : prev,
-      );
-      try {
-        await api.revokeGrant(selectedPageId, grant.subject_type, grant.subject_id);
-      } catch (e) {
-        // 回滚
-        setGrants((prev) => (prev ? [...prev, grant] : [grant]));
-        setError(e instanceof ApiError ? e.message : '撤销授权失败');
-      } finally {
-        setBusyKey(null);
-      }
+      await run({
+        id: key,
+        optimistic: () =>
+          setGrants((prev) =>
+            prev
+              ? prev.filter(
+                  (g) =>
+                    !(g.subject_type === grant.subject_type && g.subject_id === grant.subject_id),
+                )
+              : prev,
+          ),
+        rollback: () => setGrants((prev) => (prev ? [...prev, grant] : [grant])),
+        action: () => api.revokeGrant(selectedPageId, grant.subject_type, grant.subject_id),
+        errorMessage: '撤销授权失败',
+      });
     },
-    [busyKey, selectedPageId],
+    [run, selectedPageId, setGrants],
   );
 
   // 授权对象下拉选项(随 subjectType 切换)

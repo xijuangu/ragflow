@@ -20,6 +20,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { ApiError, api, type EmbedUrlResponse, type SessionSummary } from '../api/client';
+import { formatTime } from '../utils/formatTime';
 import { useAuth } from '../auth/AuthContext';
 import AppHeader from '../components/AppHeader';
 
@@ -27,14 +28,6 @@ import AppHeader from '../components/AppHeader';
 function appendSessionId(url: string, sessionId: string): string {
   const sep = url.includes('?') ? '&' : '?';
   return `${url}${sep}session_id=${encodeURIComponent(sessionId)}`;
-}
-
-/** 把 epoch 秒格式化为本地短时间(列表显示用)。 */
-function formatTime(epoch: number): string {
-  if (!epoch) return '';
-  const d = new Date(epoch * 1000);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 export default function SharePageDetailPage() {
@@ -251,7 +244,7 @@ export default function SharePageDetailPage() {
                       >
                         <span className="session-title">{s.title || '(未命名)'}</span>
                         <span className="session-meta">
-                          {formatTime(s.last_active_at)} · {s.message_count} 条消息
+                          {formatTime(s.last_active_at, 'datetime')} · {s.message_count} 条消息
                         </span>
                       </button>
                       <div className="session-actions">
