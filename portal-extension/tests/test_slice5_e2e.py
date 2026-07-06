@@ -383,7 +383,8 @@ async def test_admin_delete_user_cleans_all_sessions_even_if_ragflow_fails(clien
     )
 
     # 验证无孤儿:session_store 中无任何 portal_user_id 指向 alice 的记录
-    alice_sessions = [s for s in app.state.session_store._sessions.values() if s.portal_user_id == alice["id"]]
+    # Slice 8:经公开 API list_all_for_user 查询(含 deleted_at 非空的记录,跨分享页)
+    alice_sessions = app.state.session_store.list_all_for_user(alice["id"])
     assert alice_sessions == [], "硬删除用户后不应残留任何会话记录(无孤儿)"
 
 
@@ -447,6 +448,7 @@ def _make_dummy_settings():
         ragflow_beta_token="fake-beta-token",
         ragflow_dialog_id="d1",
         t_short_ttl_seconds=300,
+        portal_db_url="sqlite://",  # Slice 8:dummy settings 仍需提供 DB URL 字段
     )
 
 

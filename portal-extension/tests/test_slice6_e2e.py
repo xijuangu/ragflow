@@ -66,8 +66,12 @@ async def _create_user_and_grant(client, username="alice"):
 
 
 def _audit_actions(app) -> list:
-    """辅助:返回当前 audit_store 中所有 action(按写入顺序)。"""
-    return [log.action for log in app.state.audit_store._logs]
+    """辅助:返回当前 audit_store 中所有 action。
+
+    Slice 8:经公开 API audit_store.list 查询(DB 后端,按 at 倒序);
+    测试场景下日志数远小于 limit,顺序对断言(set/in)无影响。
+    """
+    return [log.action for log in app.state.audit_store.list(limit=1000)]
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +101,7 @@ async def test_audit_login_failure_user_not_found(client, app):
     actions = _audit_actions(app)
     assert "login_failure" in actions
     # actor_user_id 用 username(用户不存在时)
-    failure_logs = [log for log in app.state.audit_store._logs if log.action == "login_failure"]
+    failure_logs = app.state.audit_store.list(action="login_failure", limit=1000)
     assert any(log.actor_user_id == "ghost" for log in failure_logs)
 
 
@@ -108,7 +112,7 @@ async def test_audit_grant_create(client, app):
     actions = _audit_actions(app)
     assert "grant_create" in actions, f"grant_create 未记审计: {actions}"
     # 校验 target_id 与 meta
-    grant_logs = [log for log in app.state.audit_store._logs if log.action == "grant_create"]
+    grant_logs = app.state.audit_store.list(action="grant_create", limit=1000)
     assert any(log.target_id == "sp_default" and log.target_type == "grant" for log in grant_logs)
     assert any(log.actor_user_id == "u_admin" for log in grant_logs)
     # meta 含 subject_id
@@ -137,7 +141,7 @@ async def test_audit_session_delete_user(client, app, monkeypatch):
     actions = _audit_actions(app)
     assert "session_delete" in actions, f"session_delete 未记审计: {actions}"
     # 校验 target_id
-    delete_logs = [log for log in app.state.audit_store._logs if log.action == "session_delete"]
+    delete_logs = app.state.audit_store.list(action="session_delete", limit=1000)
     assert any(log.target_id == fake_session_id for log in delete_logs)
 
 
@@ -172,7 +176,7 @@ async def test_audit_session_view_elevated(client, app, monkeypatch):
     actions = _audit_actions(app)
     assert "session_view_elevated" in actions, f"session_view_elevated 未记审计: {actions}"
     # 校验 target_id 与 meta
-    elevated_logs = [log for log in app.state.audit_store._logs if log.action == "session_view_elevated"]
+    elevated_logs = app.state.audit_store.list(action="session_view_elevated", limit=1000)
     assert any(log.target_id == fake_session_id and log.target_type == "session" for log in elevated_logs)
 
 
@@ -199,7 +203,7 @@ async def test_audit_user_disable(client, app):
     actions = _audit_actions(app)
     assert "user_disable" in actions, f"user_disable 未记审计: {actions}"
     # 校验 target_id
-    disable_logs = [log for log in app.state.audit_store._logs if log.action == "user_disable"]
+    disable_logs = app.state.audit_store.list(action="user_disable", limit=1000)
     assert any(log.target_id == alice["id"] and log.target_type == "user" for log in disable_logs)
 
 
@@ -555,7 +559,7 @@ async def test_admin_get_session_elevated_returns_messages_and_writes_audit(clie
     # 审计日志写入
     actions = _audit_actions(app)
     assert "session_view_elevated" in actions
-    elevated_logs = [log for log in app.state.audit_store._logs if log.action == "session_view_elevated"]
+    elevated_logs = app.state.audit_store.list(action="session_view_elevated", limit=1000)
     assert any(log.target_id == fake_session_id for log in elevated_logs)
 
 
@@ -820,8 +824,8 @@ async def test_normal_user_operations_not_audited(client, app, monkeypatch):
     """普通用户的日常操作(列自己的会话、继续对话)不写审计日志(PR D7b)。"""
     fake_session_id = "slice6-no-audit-001"
     await _precreate_session(client, monkeypatch, fake_session_id)
-    # 记录当前审计日志数量
-    count_before = len(app.state.audit_store._logs)
+    # 记录当前审计日志数量(Slice 8:经公开 API list 查询,DB 后端)
+    count_before = len(app.state.audit_store.list(limit=10000))
     # 普通操作:列自己的会话(不应写审计)
     resp = await client.get("/share-pages/sp_default/sessions")
     assert resp.status_code == 200
@@ -833,7 +837,7 @@ async def test_normal_user_operations_not_audited(client, app, monkeypatch):
     resp = await client.get(f"/share-pages/sp_default/sessions/{fake_session_id}")
     assert resp.status_code == 200
     # 审计日志数量不应增加(普通操作不记审计)
-    count_after = len(app.state.audit_store._logs)
+    count_after = len(app.state.audit_store.list(limit=10000))
     assert count_after == count_before, f"普通用户操作不应写审计日志: before={count_before} after={count_after}"
 
 

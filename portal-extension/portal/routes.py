@@ -252,7 +252,8 @@ def _check_share_page_access(seed, share_page_id: str, user) -> SharePage:
     校验链步骤 1(get_current_user 已做)+ 步骤 2(grant 存在性,Slice 4 升级
     has_use_grant 支持 user + group)。撤销授权后此校验失败 → 403。
     """
-    share_page = seed.share_pages_by_id.get(share_page_id)
+    # Slice 8:经 SeedData 公开 API 查分享页(原直接访问 share_pages_by_id dict,现 DB 后端)
+    share_page = seed.get_share_page(share_page_id)
     if not share_page or not share_page.enabled:
         raise HTTPException(status_code=404, detail="分享页不存在或已禁用")
     if not seed.has_use_grant(share_page.id, user.id):
@@ -419,10 +420,11 @@ async def resume_session(share_page_id: str, session_id: str, request: Request, 
         "取回会话失败",
     )
     # 恢复会话时用 len(messages) 更新 message_count(简化实现:字段存在,恢复后准确)
+    # Slice 8:DB 后端需经公开 API update_message_count 持久化(原直接改 dataclass 属性不生效)
     if isinstance(history, dict):
         messages = history.get("messages", [])
         if owner.message_count != len(messages):
-            owner.message_count = len(messages)
+            request.app.state.session_store.update_message_count(session_id, len(messages))
     # 补充门户侧标题(chat_session_owner.title 为列表显示主源)
     if isinstance(history, dict):
         history = {**history, "title": owner.title}
@@ -655,8 +657,10 @@ async def admin_list_groups(request: Request, user=Depends(require_admin)):
     groups = []
     for g in seed.list_groups():
         d = _group_to_dict(g)
-        d["member_count"] = len(seed.group_members.get(g.id, set()))
-        d["members"] = list(seed.group_members.get(g.id, set()))
+        # Slice 8:经 SeedData 公开 API 取成员(原直接访问 seed.group_members dict,现 DB 后端)
+        members = seed.list_group_members(g.id)
+        d["member_count"] = len(members)
+        d["members"] = list(members)
         groups.append(d)
     return {"groups": groups}
 
@@ -847,8 +851,8 @@ async def revoke_grant(
     if subject_type not in ("user", "group"):
         raise HTTPException(status_code=400, detail="subject_type 必须为 user 或 group")
     seed = request.app.state.seed
-    # 分享页必须存在
-    if share_page_id not in seed.share_pages_by_id:
+    # 分享页必须存在(Slice 8:经 SeedData 公开 API 查,原直接访问 share_pages_by_id dict)
+    if seed.get_share_page(share_page_id) is None:
         raise HTTPException(status_code=404, detail="分享页不存在")
     # 删除 grant(不存在 → 404)
     if not seed.revoke_grant(share_page_id, subject_type, subject_id):
@@ -975,10 +979,11 @@ async def admin_get_session(
         "取回会话失败",
     )
     # 恢复会话时用 len(messages) 更新 message_count(简化实现:字段存在,恢复后准确)
+    # Slice 8:DB 后端需经公开 API update_message_count 持久化(原直接改 dataclass 属性不生效)
     if isinstance(history, dict):
         messages = history.get("messages", [])
         if owner.message_count != len(messages):
-            owner.message_count = len(messages)
+            request.app.state.session_store.update_message_count(session_id, len(messages))
     # 合并元数据与正文
     return {
         **metadata,

@@ -47,8 +47,8 @@ async def get_current_user(request: Request) -> PortalUser:
     user_id = request.session.get("user_id")
     if not user_id:
         raise HTTPException(status_code=403, detail="未登录")
-    users_by_id = request.app.state.seed.users_by_id
-    user = users_by_id.get(user_id)
+    # Slice 8:经 SeedData 公开 API 查用户(原直接访问 users_by_id dict,现 DB 后端)
+    user = request.app.state.seed.get_user(user_id)
     if not user or not user.enabled:
         # 会话存在但用户已禁用/删除 → 清除会话并拒绝
         request.session.clear()

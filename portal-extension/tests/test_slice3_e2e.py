@@ -341,9 +341,17 @@ async def test_chain_step4_dialog_id_mismatch_rejected(client, app, monkeypatch)
     t_short, dialog_id, _ = await _login_and_precreate(client, monkeypatch, fake_session_id)
 
     # 手动篡改归属记录的 ragflow_resource_id(模拟 dialog_id 不一致)
+    # Slice 8:DB 后端 get() 返回独立 dataclass 实例,直接改属性不会持久化;
+    # 改用「删除 + 用篡改的 dialog_id 重新 bind」经公开 API 写入 DB。
     owner = app.state.session_store.get(fake_session_id)
     assert owner is not None
-    owner.ragflow_resource_id = "a-totally-different-dialog-id"
+    app.state.session_store.delete(fake_session_id)
+    app.state.session_store.bind(
+        session_id=fake_session_id,
+        share_page_id=owner.share_page_id,
+        portal_user_id=owner.portal_user_id,
+        ragflow_resource_id="a-totally-different-dialog-id",
+    )
 
     # 调 SSE:session 存在 + 归属当前用户,但 dialog_id 不一致 → 403
     resp = await client.post(

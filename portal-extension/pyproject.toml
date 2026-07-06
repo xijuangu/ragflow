@@ -14,6 +14,9 @@ dependencies = [
     "bcrypt>=4.0",
     "itsdangerous>=2.1",
     "python-multipart>=0.0.9",
+    # Slice 8:DB 持久化(SQLAlchemy 2.x ORM,引擎可切 SQLite/MySQL)
+    "sqlalchemy>=2.0",
+    "pymysql>=1.1",  # 生产 MySQL 驱动(sync);单元测试用 SQLite 无需驱动
 ]
 
 [project.optional-dependencies]

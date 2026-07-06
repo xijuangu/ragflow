@@ -10,6 +10,8 @@
   RAGFLOW_BETA_TOKEN      RAGFlow api_token.beta 列的值(网关持有,绝不返回浏览器)
   RAGFLOW_DIALOG_ID       硬编码分享页关联的 RAGFlow Chat dialog_id
   T_SHORT_TTL_SECONDS     短期嵌入令牌有效期(默认 300 = 5 分钟)
+  PORTAL_DB_URL           Slice 8 DB 连接 URL(默认 sqlite:// 即 in-memory;
+                          生产用 mysql+pymysql://user:pass@host:3306/portal)
 """
 
 import os
@@ -29,6 +31,7 @@ class Settings:
     ragflow_beta_token: str
     ragflow_dialog_id: str
     t_short_ttl_seconds: int
+    portal_db_url: str  # Slice 8:DB 连接 URL(SQLite/MySQL 由 URL scheme 决定)
 
 
 def load_settings() -> Settings:
@@ -43,4 +46,6 @@ def load_settings() -> Settings:
         ragflow_beta_token=os.environ.get("RAGFLOW_BETA_TOKEN", ""),
         ragflow_dialog_id=os.environ.get("RAGFLOW_DIALOG_ID", ""),
         t_short_ttl_seconds=int(os.environ.get("T_SHORT_TTL_SECONDS", "300")),
+        # Slice 8:默认 sqlite://(in-memory),生产用 mysql+pymysql://...
+        portal_db_url=os.environ.get("PORTAL_DB_URL", "sqlite://"),
     )
