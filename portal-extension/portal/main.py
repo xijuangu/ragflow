@@ -13,8 +13,15 @@ Slice 8:DB 持久化迁移(内存存储 → SQLAlchemy)。
   - build_seed_data 从 DB 读 seed,不存在则写入(idempotent)。
   - TokenStore 保留内存(T_short 5min 过期 + 可撤销,重启失效可接受,
     用户重新登录获取新 T_short;见 gateway.py 文档说明)。
+
+Slice 12:双删重试定时任务(asyncio.create_task + asyncio.sleep 循环)。
+  - startup hook 启动 ``_retry_delete_loop`` 后台 task。
+  - shutdown hook 取消 task(优雅退出,无残留)。
+  - 间隔走 ``settings.retry_delete_interval_seconds``(默认 300s,<=0 禁用)。
+  - 选型理由见 ``portal/tasks.py`` 模块文档。
 """
 
+import logging
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -28,6 +35,9 @@ from portal.db import create_session_maker, init_db
 from portal.gateway import TokenStore
 from portal.models import AuditStore, SessionStore, build_seed_data
 from portal.routes import router
+from portal.tasks import _retry_delete_loop
+
+logger = logging.getLogger(__name__)
 
 
 def _create_engine_from_url(db_url: str):
@@ -88,7 +98,55 @@ def create_app() -> FastAPI:
     _frontend_dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
     if _frontend_dist.is_dir():
         app.mount("/", StaticFiles(directory=str(_frontend_dist), html=True), name="frontend")
+
+    # Slice 12:注册 startup/shutdown hook 启动/取消双删重试定时任务
+    @app.on_event("startup")
+    async def _startup_retry_task():
+        start_retry_delete_task(app)
+
+    @app.on_event("shutdown")
+    async def _shutdown_retry_task():
+        await stop_retry_delete_task(app)
+
     return app
+
+
+def start_retry_delete_task(app: FastAPI) -> None:
+    """启动双删重试定时任务(Slice 12)。
+
+    在 FastAPI startup hook 中调用。若 ``settings.retry_delete_interval_seconds <= 0``
+    则不启动(禁用定时任务,管理员仍可手动触发 retry-delete 端点)。
+    task 引用存到 ``app.state.retry_delete_task`` 供 shutdown 取消。
+    """
+    import asyncio
+
+    settings = app.state.settings
+    interval = settings.retry_delete_interval_seconds
+    if interval <= 0:
+        logger.info("双删重试定时任务已禁用(retry_delete_interval_seconds=%s)<=0", interval)
+        return
+    task = asyncio.create_task(_retry_delete_loop(settings, app.state.session_store, interval))
+    app.state.retry_delete_task = task
+    logger.info("双删重试定时任务已启动,间隔 %s 秒", interval)
+
+
+async def stop_retry_delete_task(app: FastAPI) -> None:
+    """取消双删重试定时任务(Slice 12,在 FastAPI shutdown hook 中调用)。
+
+    取消 task 后等待其优雅退出(``_retry_delete_loop`` 捕获 CancelledError 退出循环)。
+    若 task 已完成(自然结束或未启动),则跳过。
+    """
+    task = getattr(app.state, "retry_delete_task", None)
+    if task is None:
+        return
+    task.cancel()
+    try:
+        await task
+    except BaseException:
+        # CancelledError(Python 3.8+ 是 BaseException 子类)或其他异常都不影响 shutdown
+        pass
+    app.state.retry_delete_task = None
+    logger.info("双删重试定时任务已停止")
 
 
 # uvicorn portal.main:app 直接引用的模块级实例

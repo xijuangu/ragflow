@@ -28,6 +28,7 @@ Slice 5 扩展(原型 H7/H8 验证结论 — 会话重命名/删除双删):
 """
 
 import json
+import logging
 import secrets
 import time
 from dataclasses import dataclass
@@ -38,6 +39,8 @@ from fastapi import HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from portal.auth import get_current_user
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -313,6 +316,30 @@ async def delete_session_via_ragflow(settings, dialog_id: str, session_id: str) 
             raise _ragflow_http_error(resp, "RAGFlow 删除会话失败")
 
 
+async def _sync_message_count_after_sse(settings, session_store, session_id: str, dialog_id: str) -> None:
+    """Slice 12:SSE 流成功后调 GET history 取最新消息数,更新 message_count。
+
+    与 ``resume_session``(routes.py)中的 message_count 同步逻辑一致,保证
+    SSE 代理后 message_count 不再滞后(对应 ISSUES.md Issue 12 验收点 4-5)。
+
+    失败处理:GET history 失败(网络抖动/RAGFlow 5xx)只记 ``logger.warning``,
+    不抛异常(流已成功,不能因后续操作失败破坏已完成的 SSE 响应);
+    message_count 保持原值,下次 SSE 成功或 resume_session 时再同步。
+    """
+    try:
+        history = await fetch_session_history_via_ragflow(settings, dialog_id, session_id)
+    except Exception as e:
+        logger.warning(
+            "SSE 流成功后调 GET history 失败(message_count 保持原值),session_id=%s error=%s",
+            session_id,
+            e,
+        )
+        return
+    if isinstance(history, dict):
+        messages = history.get("messages", [])
+        session_store.update_message_count(session_id, len(messages))
+
+
 async def proxy_sse_to_ragflow(request: Request, dialog_id: str):
     """SSE 代理:校验同源 cookie + T_short + grant + session_id 归属 → 用 beta Token 调 RAGFlow bot_api → 流式回传。
 
@@ -393,7 +420,10 @@ async def proxy_sse_to_ragflow(request: Request, dialog_id: str):
             yield 'data: {"error": "上游服务不可用"}\n\n'.encode("utf-8")
         finally:
             # Slice 2:仅在流成功完成后更新 last_active_at(失败流不更新,避免误推活跃时间)
+            # Slice 12:同一时机更新 message_count(调 GET history 取最新消息数,
+            #   与 resume_session 同逻辑保证一致;GET history 失败只 log warning 不破坏流)
             if success and request_session_id and session_store is not None:
                 session_store.update_last_active(request_session_id)
+                await _sync_message_count_after_sse(settings, session_store, request_session_id, dialog_id)
 
     return StreamingResponse(stream_generator(), media_type="text/event-stream")

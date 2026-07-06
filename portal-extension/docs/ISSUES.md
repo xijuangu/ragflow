@@ -477,6 +477,15 @@ audit_log(id, actor_user_id, action, target_type, target_id, at, meta_json)
 
 ## Issue 12 — Slice 12: 双删重试定时任务 + message_count SSE 实时更新
 
+> **状态:✅ 已完成(slice12-ops-implementation 分支)**
+> - 重试任务:`portal/tasks.py` 的 `retry_delete_pending_sessions` + `_retry_delete_loop`,
+>   `main.py` 的 startup/shutdown hook(`start_retry_delete_task` / `stop_retry_delete_task`)。
+>   选型 `asyncio.create_task` + `asyncio.sleep`(无新依赖,生命周期清晰)。
+> - SSE message_count:`gateway.py` 的 `_sync_message_count_after_sse`,流成功后调 GET history
+>   取最新 messages 数,与 `last_active_at` 同时机更新(与 `resume_session` 同逻辑)。
+> - 配置:`RETRY_DELETE_INTERVAL_SECONDS`(默认 300s,<=0 禁用,管理员仍可手动触发 retry-delete)。
+> - 测试:新增 16 个(11 retry task + 5 SSE message_count),全套 223 passed, 5 skipped。
+
 ### Parent
 
 HANDOFF.md 后续待办"建议④ 后台重试任务"与"建议⑤ SSE 代理 message_count 更新"。

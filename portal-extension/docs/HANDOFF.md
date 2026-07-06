@@ -150,8 +150,11 @@ portal-extension/
 
 ### 建议(迭代增强)
 3. **前端实现** — 当前只有后端 API,需实现门户前端(登录页、分享页 iframe 加载、我的会话列表、管理后台)。
-4. **后台重试任务** — `list_pending_deletion()` 已提供查询,需加定时任务或管理员手动触发端点(Slice 6 已加 retry-delete 端点)。
-5. **SSE 代理 message_count 更新** — 当前 message_count 在恢复会话时更新,SSE 代理后不更新(可能滞后)。可解析 SSE 流实时更新。
+4. **后台重试任务** — ✅ Slice 12 已完成。`list_pending_deletion()` + 定时任务(`portal/tasks.py` 的 `retry_delete_pending_sessions`)+ Slice 6 的管理员手动 retry-delete 端点。
+   - 选型:`asyncio.create_task` + `asyncio.sleep` 循环(FastAPI startup hook 启动,shutdown 取消),无新依赖。
+   - 配置:`RETRY_DELETE_INTERVAL_SECONDS`(默认 300s,<=0 禁用定时任务,管理员仍可手动触发)。
+   - 理由:FastAPI 已是 async 框架,5 分钟级别精度不需要 APScheduler 的高级调度能力;生命周期清晰(startup/shutdown)。
+5. **SSE 代理 message_count 更新** — ✅ Slice 12 已完成。SSE 流成功后调 `fetch_session_history_via_ragflow` 取最新 messages 数,与 `last_active_at` 同时机更新 `message_count`(与 `resume_session` 同逻辑保证一致);失败流不更新;GET history 失败只 log warning 不破坏流。
 6. **多租户扩展** — D2 决定一期单租户不预留 org_id,未来需要时加迁移。
 
 ### 可选(优化)

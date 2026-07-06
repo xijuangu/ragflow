@@ -57,6 +57,8 @@ portal-extension/
 | `RAGFLOW_BETA_TOKEN` | RAGFlow `api_token.beta` 列值(网关持有) | 32 位字符串 |
 | `RAGFLOW_DIALOG_ID` | 硬编码分享页关联的 dialog_id | `b4f88...` |
 | `T_SHORT_TTL_SECONDS` | T_short 有效期(秒) | `300` |
+| `PORTAL_DB_URL` | DB 连接 URL(SQLite/MySQL;默认 `sqlite://` in-memory) | `mysql+pymysql://user:pass@host:3306/portal` |
+| `RETRY_DELETE_INTERVAL_SECONDS` | Slice 12 双删重试定时任务间隔(秒;默认 `300`;`<=0` 禁用,管理员仍可手动触发) | `300` |
 
 ## 一条命令运行
 

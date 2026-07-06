@@ -12,6 +12,8 @@
   T_SHORT_TTL_SECONDS     短期嵌入令牌有效期(默认 300 = 5 分钟)
   PORTAL_DB_URL           Slice 8 DB 连接 URL(默认 sqlite:// 即 in-memory;
                           生产用 mysql+pymysql://user:pass@host:3306/portal)
+  RETRY_DELETE_INTERVAL_SECONDS  Slice 12 双删重试定时任务间隔(默认 300 = 5 分钟);
+                                 设为 0 或负数禁用定时任务(管理员仍可手动触发 retry-delete)
 """
 
 import os
@@ -32,6 +34,8 @@ class Settings:
     ragflow_dialog_id: str
     t_short_ttl_seconds: int
     portal_db_url: str  # Slice 8:DB 连接 URL(SQLite/MySQL 由 URL scheme 决定)
+    # Slice 12:双删重试定时任务间隔(秒);<=0 禁用定时任务(管理员仍可手动触发)
+    retry_delete_interval_seconds: int
 
 
 def load_settings() -> Settings:
@@ -48,4 +52,6 @@ def load_settings() -> Settings:
         t_short_ttl_seconds=int(os.environ.get("T_SHORT_TTL_SECONDS", "300")),
         # Slice 8:默认 sqlite://(in-memory),生产用 mysql+pymysql://...
         portal_db_url=os.environ.get("PORTAL_DB_URL", "sqlite://"),
+        # Slice 12:默认 300 秒(5 分钟);<=0 禁用定时任务(管理员仍可手动触发 retry-delete)
+        retry_delete_interval_seconds=int(os.environ.get("RETRY_DELETE_INTERVAL_SECONDS", "300")),
     )
