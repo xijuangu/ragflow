@@ -449,6 +449,7 @@ def _make_dummy_settings():
         ragflow_dialog_id="d1",
         t_short_ttl_seconds=300,
         portal_db_url="sqlite://",  # Slice 8:dummy settings 仍需提供 DB URL 字段
+        retry_delete_interval_seconds=300,  # Slice 12:dummy settings 仍需提供重试间隔字段
     )
 
 
