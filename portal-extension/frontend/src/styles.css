@@ -158,9 +158,40 @@ a:hover {
   border-color: var(--border);
 }
 
+.btn-secondary {
+  background: #f9fafb;
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: #f3f4f6;
+}
+
 .btn-block {
   width: 100%;
 }
+
+.login-divider {
+  text-align: center;
+  color: var(--text-muted, #6b7280);
+  font-size: 13px;
+  margin: 16px 0;
+  position: relative;
+}
+
+.login-divider::before,
+.login-divider::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  width: 40%;
+  height: 1px;
+  background: var(--border);
+}
+
+.login-divider::before { left: 0; }
+.login-divider::after { right: 0; }
 
 .alert-error {
   background: var(--danger-bg);

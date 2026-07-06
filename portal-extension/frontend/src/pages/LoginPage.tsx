@@ -80,6 +80,18 @@ export default function LoginPage() {
         <button type="submit" className="btn btn-primary btn-block" disabled={submitting}>
           {submitting ? '登录中…' : '登录'}
         </button>
+
+        <div className="login-divider">或</div>
+        {/* Slice 14:SSO 登录按钮 — 跳转后端 /sso/login 由 IdP 处理回调。
+            TODO: 可通过后端 /me 或单独接口暴露 OIDC_ENABLED 状态,前端按需隐藏按钮。
+            当前简化处理:始终展示,后端未启用时 /sso/login 返回 404。 */}
+        <button
+          type="button"
+          className="btn btn-secondary btn-block"
+          onClick={() => { window.location.href = '/sso/login'; }}
+        >
+          SSO 登录
+        </button>
       </form>
     </div>
   );
