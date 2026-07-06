@@ -31,6 +31,7 @@ import json
 import logging
 import secrets
 import time
+from collections import deque
 from dataclasses import dataclass
 from urllib.parse import urlencode
 
@@ -45,13 +46,20 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TokenRecord:
-    """短期嵌入令牌记录(内存存储,对应 ISSUES.md 的 T_short 表)。"""
+    """短期嵌入令牌记录(内存存储,对应 ISSUES.md 的 T_short 表)。
+
+    Slice 15:加 scope 字段区分标准令牌与公开令牌。
+      - scope='standard':标准令牌,需 cookie + grant + session 归属校验;
+      - scope='public':公开令牌,免 cookie/grant 校验,但每次校验 share_page.is_public=true
+        (关闭 is_public 时,即便令牌未过期也立即 403)。
+    """
 
     token: str
     portal_user_id: str
     share_page_id: str
     expires_at: float  # unix 时间戳
     revoked: bool = False
+    scope: str = "standard"  # Slice 15:'standard'(默认)或 'public'(公开分享页)
 
 
 class TokenStore:
@@ -74,8 +82,13 @@ class TokenStore:
     def __init__(self):
         self._tokens: dict = {}
 
-    def issue(self, portal_user_id: str, share_page_id: str, ttl_seconds: int) -> str:
-        """签发短期 T_short:随机字符串,绑定用户与分享页,设过期时间。"""
+    def issue(self, portal_user_id: str, share_page_id: str, ttl_seconds: int, scope: str = "standard") -> str:
+        """签发短期 T_short:随机字符串,绑定用户与分享页,设过期时间。
+
+        Slice 15:scope 参数区分标准令牌('standard')与公开令牌('public')。
+        公开令牌用于 /public/<id>/embed-url 签发,免 cookie/grant 校验,
+        但 proxy_sse_public_to_ragflow 每次校验 share_page.is_public=true。
+        """
         token = secrets.token_urlsafe(32)
         self._tokens[token] = TokenRecord(
             token=token,
@@ -83,6 +96,7 @@ class TokenStore:
             share_page_id=share_page_id,
             expires_at=time.time() + ttl_seconds,
             revoked=False,
+            scope=scope,
         )
         return token
 
@@ -128,6 +142,67 @@ class TokenStore:
                 record.revoked = True
                 count += 1
         return count
+
+    def revoke_tokens_for_share_page(self, share_page_id: str) -> int:
+        """Slice 15:吊销某分享页的所有 T_short(关闭 is_public 时调用)。
+
+        关闭 is_public 后,所有已签发的公开 T_short 立即失效(避免已发出的令牌
+        在 5min TTL 内继续访问已关闭公开的分享页)。标准令牌不受影响(标准令牌
+        仍需 cookie + grant,关闭 is_public 不影响登录用户的访问)。
+
+        实际只吊销 scope='public' 的令牌(标准令牌的失效由 grant 撤销负责)。
+        返回被吊销的令牌数量。
+        """
+        count = 0
+        for record in self._tokens.values():
+            if record.share_page_id == share_page_id and record.scope == "public" and not record.revoked:
+                record.revoked = True
+                count += 1
+        return count
+
+
+class IPRateLimiter:
+    """Slice 15:基于 IP 的内存滑动窗口限流器。
+
+    每个客户端 IP 维护一个请求时间戳队列(双端队列),每次请求:
+      1. 清除队列中超过 60 秒的时间戳(滑出窗口);
+      2. 若队列长度 >= limit,拒绝(返回 False);
+      3. 否则追加当前时间戳(返回 True)。
+
+    内存存储,进程重启清零(可接受 — 限流是防滥用保护,不是业务事实)。
+    limit <= 0 表示禁用限流(所有请求都通过)。
+    """
+
+    def __init__(self, limit_per_min: int):
+        self._limit = limit_per_min
+        self._hits: dict[str, deque] = {}
+
+    def allow(self, client_ip: str) -> bool:
+        """检查该 IP 是否允许通过;True=允许,False=超限。"""
+        if self._limit <= 0:
+            return True
+        now = time.time()
+        window_start = now - 60.0
+        queue = self._hits.get(client_ip)
+        if queue is None:
+            queue = deque()
+            self._hits[client_ip] = queue
+        # 清除滑出窗口的时间戳
+        while queue and queue[0] < window_start:
+            queue.popleft()
+        if len(queue) >= self._limit:
+            return False
+        queue.append(now)
+        return True
+
+
+def _get_client_ip(request: Request) -> str:
+    """获取客户端 IP(优先 X-Forwarded-For,回退 request.client.host)。"""
+    forwarded = request.headers.get("X-Forwarded-For", "").strip()
+    if forwarded:
+        # 取第一个 IP(最左侧 = 最原始客户端)
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
 
 
 def build_iframe_url(ragflow_host: str, dialog_id: str, t_short: str, session_id: str = "") -> str:
@@ -363,45 +438,105 @@ async def proxy_sse_to_ragflow(request: Request, dialog_id: str):
     grant 之前,撤销后 T_short 已吊销会先返回 401,与 403 验收点矛盾。故 grant 校验
     先于 T_short 有效性校验,保证撤销后走 grant 分支 → 403。直接吊销 T_short(grant
     仍在)则走 T_short 分支 → 401。
+
+    Slice 15 扩展:公开 T_short(scope='public')走公开校验链 —
+      跳过 cookie + grant 校验,改为校验 share_page.is_public=true(每次请求都查 DB,
+      关闭 is_public 立即 403),session 归属校验改为 u_anonymous。
+      这是为了 iframe 兼容:iframe 内 RAGFlow 前端固定调 /api/v1/chatbots/{dialog}/completions,
+      公开分享页的 iframe 用公开 T_short,需走此标准路径(不能强制 cookie)。
     """
     settings = request.app.state.settings
     token_store = request.app.state.token_store
-    # 校验链步骤 0:同源 cookie(spec 步骤 1)— 无 cookie → 403(即使带有效 T_short)
-    # iframe 同源加载时浏览器自动携带门户 cookie;此处复用 get_current_user 校验登录态。
-    await get_current_user(request)
-    # 提取 T_short(grant 校验的前置:需从 T_short 解出 portal_user_id / share_page_id)
+    # 提取 T_short(先于 cookie 校验,用于判断走标准链还是公开链)
     t_short = extract_t_short(request)
     if not t_short:
+        # 无 T_short:走标准链(需 cookie,否则 get_current_user 抛 403)
+        # 继续走标准校验流程,让 get_current_user 处理 403
+        await get_current_user(request)
         raise HTTPException(status_code=401, detail="缺少 Authorization 令牌")
-    # 先查记录(不校验有效性),用于 grant 校验(步骤 1)需获取 portal_user_id
-    # 顺序很重要:grant 校验在 T_short 有效性校验之前,这样「撤销授权」(删 grant +
-    # 吊销 T_short)→ 403(grant 不存在),而「直接吊销 T_short」(grant 仍在)→ 401
+    # 查记录(不校验有效性),用于判断 scope
     record = token_store.get_record(t_short)
     if record is None:
+        # 令牌不存在:走标准链(让 get_current_user 处理 cookie,再返回 401)
+        # 但为了不改变标准链的错误顺序,直接返回 401
+        await get_current_user(request)
         raise HTTPException(status_code=401, detail="令牌无效或已过期")
+
+    # Slice 15:公开 T_short 走公开校验链(iframe 兼容 — 公开分享页的 iframe 调标准路径)
+    if record.scope == "public":
+        return await _proxy_sse_public_core(request, dialog_id, t_short, record)
+
+    # 标准校验链(scope='standard')
+    # 校验链步骤 0:同源 cookie(spec 步骤 1)— 无 cookie → 403(即使带有效 T_short)
+    await get_current_user(request)
     # 校验链步骤 1:grant 存在(spec 步骤 2 — 撤销授权后立即失效的关键校验)
     seed = request.app.state.seed
     _assert_grant_exists(seed, record.portal_user_id, record.share_page_id)
     # 校验链步骤 2:T_short 有效性(revoked / 过期 → 401)
-    # 此时 grant 已通过(若 grant 不存在已在步骤 1 返回 403)
     record = token_store.validate(t_short)
     if record is None:
         raise HTTPException(status_code=401, detail="令牌无效或已过期")
     # 校验 T_short 绑定的分享页对应的 dialog_id 与请求的 dialog_id 一致
-    # Slice 8:经 SeedData 公开 API 查分享页(原直接访问 share_pages_by_id dict,现 DB 后端)
     share_page = seed.get_share_page(record.share_page_id)
     if not share_page or share_page.ragflow_resource_id != dialog_id:
         raise HTTPException(status_code=401, detail="令牌与目标资源不匹配")
     # 读取请求体(原样转发给 RAGFlow)
     body = await request.body()
-    # Slice 2:从请求体解析 session_id(用于归属校验与更新 last_active_at)
     request_session_id = _parse_session_id_from_body(body)
     session_store = getattr(request.app.state, "session_store", None)
-    # 归属隔离:若请求体含 session_id,校验其归属当前 T_short 持有用户(校验链步骤 3+4)
-    # 不带 session_id(首次对话)时不校验;带 session_id 必须归属当前用户,否则 403。
+    # 归属隔离:若请求体含 session_id,校验其归属当前 T_short 持有用户
     if request_session_id and session_store is not None:
         _assert_session_ownership(session_store, request_session_id, record.portal_user_id, dialog_id)
-    # 用 beta Token 调 RAGFlow bot_api,流式转发(beta Token 只在此处使用,不返回浏览器)
+    return _build_sse_streaming_response(settings, body, dialog_id, request_session_id, session_store)
+
+
+async def _proxy_sse_public_core(request: Request, dialog_id: str, t_short: str, record):
+    """Slice 15:公开 T_short 的 SSE 代理核心校验(标准路径 + 公开端点共用)。
+
+    公开校验链(每次请求都执行,任一失败 → 403/401):
+      1. T_short 有效性(revoked / 过期 → 401);
+      2. share_page.is_public == True(关闭 is_public → 403,即使 T_short 仍有效);
+      3. share_page.ragflow_resource_id == 请求的 dialog_id;
+      4. 若请求体含 session_id:归属 u_anonymous(公开会话锚点)。
+
+    此函数不处理限流与审计(由调用方决定是否加),仅做校验 + SSE 代理。
+    """
+    settings = request.app.state.settings
+    token_store = request.app.state.token_store
+    seed = request.app.state.seed
+    # 步骤 1:T_short 有效性(revoked / 过期 → 401)
+    record = token_store.validate(t_short)
+    if record is None:
+        raise HTTPException(status_code=401, detail="令牌无效或已过期")
+    # 步骤 2:share_page 存在且 is_public=true(关闭 is_public → 403)
+    share_page = seed.get_share_page(record.share_page_id)
+    if not share_page:
+        raise HTTPException(status_code=403, detail="分享页不存在")
+    if not share_page.is_public:
+        raise HTTPException(status_code=403, detail="公开分享已关闭")
+    if not share_page.enabled:
+        raise HTTPException(status_code=403, detail="分享页已禁用")
+    # 步骤 3:dialog_id 一致
+    if share_page.ragflow_resource_id != dialog_id:
+        raise HTTPException(status_code=401, detail="令牌与目标资源不匹配")
+    # 读取请求体
+    body = await request.body()
+    request_session_id = _parse_session_id_from_body(body)
+    session_store = getattr(request.app.state, "session_store", None)
+    # 步骤 4:session 归属 u_anonymous(公开会话锚点)
+    if request_session_id and session_store is not None:
+        _assert_session_ownership(session_store, request_session_id, record.portal_user_id, dialog_id)
+    return _build_sse_streaming_response(settings, body, dialog_id, request_session_id, session_store)
+
+
+def _build_sse_streaming_response(
+    settings, body: bytes, dialog_id: str, request_session_id: str, session_store
+) -> StreamingResponse:
+    """构造 SSE 流式响应(标准路径与公开路径共用)。
+
+    用 beta Token 调 RAGFlow bot_api,流式转发(beta Token 只在此处使用,不返回浏览器)。
+    流成功完成后更新 last_active_at 与 message_count(与 Slice 12 一致)。
+    """
     upstream_url = f"{settings.ragflow_host.rstrip('/')}/api/v1/chatbots/{dialog_id}/completions"
     upstream_headers = _build_upstream_headers(settings.ragflow_beta_token, content_type="application/json")
 
@@ -427,3 +562,91 @@ async def proxy_sse_to_ragflow(request: Request, dialog_id: str):
                 await _sync_message_count_after_sse(settings, session_store, request_session_id, dialog_id)
 
     return StreamingResponse(stream_generator(), media_type="text/event-stream")
+
+
+async def proxy_sse_public_to_ragflow(request: Request, share_page_id: str, session_id: str):
+    """Slice 15:公开 SSE 代理端点 POST /public/<id>/sessions/<sid>/chat。
+
+    与标准 proxy_sse_to_ragflow 的区别:
+      1. 限流:按 IP 限流(每 IP 每分钟 N 次,超限 → 429);
+      2. 审计:写 public_chat 审计(actor=u_anonymous,target_type=session,可配置关闭);
+      3. session_id 来自 URL(不是 body),但仍支持 body 中带 session_id(RAGFlow 前端行为);
+      4. 校验链:同 _proxy_sse_public_core(T_short 有效性 + is_public + dialog_id + session 归属)。
+
+    此端点是公开分享页的显式对话端点;iframe 内 RAGFlow 前端调标准路径
+    /api/v1/chatbots/{dialog}/completions 时由 proxy_sse_to_ragflow 处理(公开 T_short 走公开链)。
+    """
+    # 限流检查(最先执行,超限直接 429,不做任何校验)
+    rate_limiter = getattr(request.app.state, "rate_limiter", None)
+    if rate_limiter is not None:
+        client_ip = _get_client_ip(request)
+        if not rate_limiter.allow(client_ip):
+            raise HTTPException(status_code=429, detail="请求过于频繁,请稍后再试")
+
+    settings = request.app.state.settings
+    token_store = request.app.state.token_store
+    seed = request.app.state.seed
+    # 提取 T_short → 401 if missing
+    t_short = extract_t_short(request)
+    if not t_short:
+        raise HTTPException(status_code=401, detail="缺少 Authorization 令牌")
+    record = token_store.get_record(t_short)
+    if record is None:
+        raise HTTPException(status_code=401, detail="令牌无效或已过期")
+    # 校验 T_short scope 必须是 public(公开端点不接受标准 T_short)
+    if record.scope != "public":
+        raise HTTPException(status_code=401, detail="令牌类型不匹配")
+    # 校验 share_page_id 一致(T_short 绑定的分享页必须与 URL 中的 share_page_id 一致)
+    if record.share_page_id != share_page_id:
+        raise HTTPException(status_code=401, detail="令牌与目标分享页不匹配")
+    # 调用共用核心校验(T_short 有效性 + is_public + dialog_id + session 归属)
+    # 需要先获取 share_page 的 dialog_id 用于 _proxy_sse_public_core 的 dialog_id 校验
+    share_page = seed.get_share_page(share_page_id)
+    if not share_page:
+        raise HTTPException(status_code=404, detail="分享页不存在")
+    dialog_id = share_page.ragflow_resource_id
+
+    # 写审计日志(校验通过后、SSE 流之前;PUBLIC_AUDIT_ENABLED=false 时跳过)
+    audit_store = getattr(request.app.state, "audit_store", None)
+    if audit_store is not None and getattr(settings, "public_audit_enabled", True):
+        audit_store.record(
+            actor_user_id="u_anonymous",
+            action="public_chat",
+            target_type="session",
+            target_id=session_id,
+            meta={"share_page_id": share_page_id, "dialog_id": dialog_id},
+        )
+
+    # 调用共用核心(T_short 有效性 + is_public + dialog_id + session 归属 + SSE 流)
+    # 注意:_proxy_sse_public_core 会再次读 body 与校验,这里把 session_id 注入 body 以保证
+    # _parse_session_id_from_body 能解出(URL 中的 session_id 与 body 中的一致)。
+    body = await request.body()
+    # 若 body 中无 session_id,构造含 session_id 的 body(URL session_id 优先级保证)
+    body_session_id = _parse_session_id_from_body(body)
+    if not body_session_id and body:
+        try:
+            body_data = json.loads(body)
+            body_data["session_id"] = session_id
+            body = json.dumps(body_data).encode("utf-8")
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            pass  # body 非 JSON,原样转发
+    elif not body:
+        # 空 body:构造最小 body 含 session_id
+        body = json.dumps({"session_id": session_id, "stream": True}).encode("utf-8")
+
+    # 直接走核心校验(不再重复提取 T_short,用已有 record)
+    # 但 _proxy_sse_public_core 会重新 extract + get_record,为避免重复,内联核心校验
+    record = token_store.validate(t_short)
+    if record is None:
+        raise HTTPException(status_code=401, detail="令牌无效或已过期")
+    if not share_page.is_public:
+        raise HTTPException(status_code=403, detail="公开分享已关闭")
+    if not share_page.enabled:
+        raise HTTPException(status_code=403, detail="分享页已禁用")
+    if share_page.ragflow_resource_id != dialog_id:
+        raise HTTPException(status_code=401, detail="令牌与目标资源不匹配")
+    request_session_id = _parse_session_id_from_body(body) or session_id
+    session_store = getattr(request.app.state, "session_store", None)
+    if request_session_id and session_store is not None:
+        _assert_session_ownership(session_store, request_session_id, record.portal_user_id, dialog_id)
+    return _build_sse_streaming_response(settings, body, dialog_id, request_session_id, session_store)

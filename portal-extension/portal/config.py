@@ -22,6 +22,8 @@
   SSO_AUTO_CREATE         SSO 用户首次登录是否自动创建本地用户(默认 true)
   PORTAL_DEFAULT_ORG_ID   Slice 13 多租户默认 org_id(默认 'default';
                           迁移时现有数据归入此 org;新建用户/组/分享页默认此 org)
+  PUBLIC_RATE_LIMIT_PER_MIN  Slice 15 公开分享页每 IP 每分钟请求上限(默认 10;<=0 禁用限流)
+  PUBLIC_AUDIT_ENABLED    Slice 15 公开访问审计开关(默认 true;false 时不写 public_chat 审计)
 """
 
 import os
@@ -53,6 +55,11 @@ class Settings:
     sso_auto_create: bool = True
     # Slice 13:多租户默认 org_id(迁移与新建数据的默认 org)
     portal_default_org_id: str = "default"
+    # Slice 15:公开分享页限流与审计配置
+    # 每 IP 每分钟请求上限(默认 10);<=0 禁用限流(用于测试或低风险场景)
+    public_rate_limit_per_min: int = 10
+    # 公开访问审计开关(默认 true 写 public_chat 审计;false 时跳过,节省内存)
+    public_audit_enabled: bool = True
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -88,4 +95,7 @@ def load_settings() -> Settings:
         sso_auto_create=_env_bool("SSO_AUTO_CREATE", True),
         # Slice 13:默认 org_id(可经 PORTAL_DEFAULT_ORG_ID 配置,默认 'default')
         portal_default_org_id=os.environ.get("PORTAL_DEFAULT_ORG_ID", "default"),
+        # Slice 15:公开分享页限流与审计配置
+        public_rate_limit_per_min=int(os.environ.get("PUBLIC_RATE_LIMIT_PER_MIN", "10")),
+        public_audit_enabled=_env_bool("PUBLIC_AUDIT_ENABLED", True),
     )

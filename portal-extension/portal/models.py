@@ -58,6 +58,7 @@ RagflowType = Literal["chat", "agent"]
 EmbedType = Literal["fullscreen", "widget"]
 SubjectType = Literal["user", "group"]
 # Slice 6 审计日志枚举(PR D7b:仅覆盖敏感操作,8 类)
+# Slice 15 加 public_chat(公开访问审计,可选开关 PUBLIC_AUDIT_ENABLED)
 AuditAction = Literal[
     "login_success",
     "login_failure",
@@ -67,6 +68,7 @@ AuditAction = Literal[
     "session_view_elevated",
     "user_enable",
     "user_disable",
+    "public_chat",
 ]
 AuditTargetType = Literal["user", "share_page", "session", "grant"]
 
@@ -123,6 +125,7 @@ class SharePage:
 
     ragflow_type / embed_type 一期固定值(D9),不开放选择器。
     Slice 13 加 org_id(默认 'default'),分享页按 org 隔离。
+    Slice 15:加 is_public 字段(默认 False),公开分享页免登录访问 + IP 限流。
     """
 
     id: str
@@ -134,6 +137,8 @@ class SharePage:
     created_at: float = field(default_factory=time.time)
     # Slice 13:多租户 org_id
     org_id: str = "default"
+    # Slice 15:公开分享(免登录访问 + IP 限流),默认 False
+    is_public: bool = False
 
 
 @dataclass
@@ -216,6 +221,7 @@ def _share_page_from_orm(row: SharePageModel) -> SharePage:
         enabled=row.enabled,
         created_at=row.created_at,
         org_id=row.org_id,
+        is_public=row.is_public,
     )
 
 
@@ -926,6 +932,20 @@ class SeedData:
             session.commit()
             return True
 
+    def set_share_page_public(self, share_page_id: str, is_public: bool) -> bool:
+        """Slice 15:设置分享页公开/私有;返回 True 表示找到并更新。
+
+        公开分享页(is_public=true)允许免登录访问 + IP 限流;
+        关闭后,已签发的公开 T_short 立即失效(网关每次校验 is_public 状态)。
+        """
+        with self._sm() as session:
+            row = session.get(SharePageModel, share_page_id)
+            if row is None:
+                return False
+            row.is_public = is_public
+            session.commit()
+            return True
+
     # -----------------------------------------------------------------
     # 授权 CRUD
     # -----------------------------------------------------------------
@@ -1113,6 +1133,23 @@ def build_seed_data(settings: Settings, session_maker: sessionmaker) -> SeedData
                     enabled=user2.enabled,
                     created_at=user2.created_at,
                     org_id=user2.org_id,
+                )
+            )
+            session.commit()
+    # Slice 15:匿名用户(公开分享页会话归属)— idempotent:已存在则跳过
+    # 用途:公开分享页(is_public=true)预创建 session 时,portal_user_id 绑定到 u_anonymous,
+    # 使公开会话不归属任何具体登录用户,且可被管理员通过 user_id=u_anonymous 过滤查询。
+    if seed.get_user("u_anonymous") is None:
+        with session_maker() as session:
+            session.add(
+                PortalUserModel(
+                    id="u_anonymous",
+                    username="anonymous",
+                    password_hash="",  # 匿名用户无密码,不可登录
+                    email="anonymous@portal.local",
+                    is_admin=False,
+                    enabled=True,
+                    created_at=time.time(),
                 )
             )
             session.commit()
