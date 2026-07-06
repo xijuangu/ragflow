@@ -1,12 +1,13 @@
 # RAGFlow 权限门户改造 — Issue 列表
 
-> 由 `to-issues` 从 PRD 拆分,7 个 vertical slices(tracer bullets),每个端到端可验证。
+> 由 `to-issues` 从 PRD 拆分,16 个 vertical slices(tracer bullets),每个端到端可验证。
 > 本地无 issue tracker,以本地文件记录;迁移至正式 tracker 时每节对应一个 issue,标 `ready-for-agent`。
-> 实施顺序:核心链路优先(Slice 1→2→3)→ 功能扩展(4→5→6)→ 测试固化(7)。
+> Phase 1(Slice 1-7)已完成并部署;Phase 2(Slice 8-16)为待办,按依赖顺序实施。
 
 ## 依赖图
 
 ```
+Phase 1(已完成,Issue 1-7):
 Slice 1 (骨架/Tracer Bullet 1)
   ├─> Slice 2 (session 捕获/恢复)
   │     ├─> Slice 3 (继续/隔离/撤销)
@@ -14,6 +15,17 @@ Slice 1 (骨架/Tracer Bullet 1)
   └─> Slice 4 (CRUD) ──> Slice 6 (管理员/审计) <─ Slice 5 完成
                                               Slice 4 完成
 Slice 7 (测试固化) <─ Slice 1-6 全部
+
+Phase 2(待办,Issue 8-16):
+Slice 8 (DB 持久化)
+  ├─> Slice 12 (运维增强:重试+message_count)
+  ├─> Slice 13 (多租户扩展)
+  └─> Slice 15 (公开分享)
+Slice 9 (前端登录+iframe 骨架)
+  ├─> Slice 10 (前端我的会话)
+  ├─> Slice 11 (前端管理后台)
+  └─> Slice 16 (悬浮/Agent)
+Slice 14 (OAuth/SSO) — 独立,无阻塞
 ```
 
 ---
@@ -316,10 +328,321 @@ share_page_grant.subject_type ∈ {user, group}(字段已预留,本 slice 启用
 
 ---
 
+## Issue 8 — Slice 8: DB 持久化迁移(内存存储 → MySQL)
+
+### Parent
+
+承接 Phase 1(Issue 1-7 已完成并部署)。关联 PRD 数据模型;HANDOFF.md 后续待办"必须② DB 化"。
+
+### What to build
+
+把当前内存存储(SeedData / SessionStore / AuditStore / TokenStore)迁移到 MySQL 持久化,解决进程重启数据丢失问题。7 张表 schema 已在 PRD 数据模型就绪:
+
+```
+portal_user(id, username, password_hash, email, is_admin, enabled, created_at)
+portal_group(id, name, created_at)
+portal_group_member(group_id, user_id, added_at)
+share_page(id, name, ragflow_type, ragflow_resource_id, embed_type, enabled, created_at)
+share_page_grant(share_page_id, subject_type, subject_id, permission)
+chat_session_owner(session_id, share_page_id, portal_user_id, ragflow_resource_id,
+                   title, created_at, last_active_at, deleted_at, message_count)
+audit_log(id, actor_user_id, action, target_type, target_id, at, meta_json)
+```
+
+端到端行为:
+- 建表迁移脚本(可复用 RAGFlow 现有 MySQL 实例,新建 `portal_*` 库或独立库)。
+- 把 4 个内存存储类替换为 DB 访问层(保持现有 API 接口不变,routes/gateway 不改)。
+- 启动时 seed 数据(admin/user2/默认分享页/grant)从 DB 读取,不存在则初始化写入。
+- `T_short` 令牌表也持久化(或保留内存但接受重启失效,二选一由实现决定)。
+- 现有 178 单元测试 + 5 integration 测试全部通过(测试用独立 DB 或事务回滚隔离)。
+
+### Acceptance criteria
+
+- [ ] 7 张表 schema 落地,迁移脚本可重复执行(idempotent)。
+- [ ] 进程重启后用户/会话/授权/审计数据不丢失(验证:登录 → 重启 → 仍登录,会话仍在)。
+- [ ] 现有 178 单元测试全部通过(测试隔离,不污染生产数据)。
+- [ ] 现有 5 integration 测试在真实 MySQL + 真实 RAGFlow 下全部通过。
+- [ ] `T_short` 行为明确(持久化或重启失效,文档说明)。
+- [ ] ruff 干净,无新依赖引入(MySQL 驱动除外,如 sqlalchemy + pymysql 或 asyncmy)。
+
+### Blocked by
+
+无 — 可立即开始(Issue 1-7 已完成)。
+
+---
+
+## Issue 9 — Slice 9: 前端登录页 + 分享页 iframe 加载(前端 Tracer Bullet)
+
+### Parent
+
+关联 PRD user stories 1-6、31-33。HANDOFF.md 后续待办"建议③ 前端实现(骨架)"。
+
+### What to build
+
+构建门户前端最小骨架,打通「登录页 → 登录成功 → 跳转分享页 → iframe 加载 → 对话可见」端到端链路。后端 API 已就绪(Slice 1-7),本 slice 只做前端。
+
+端到端行为:
+- 登录页(`/login`):用户名/密码表单,调 POST `/login`,成功后跳转分享页列表。
+- 分享页列表页:调 GET `/share-pages` 列出用户被授权的分享页,点击进入分享页详情。
+- 分享页详情页:调 GET `/share-pages/<id>/embed-url` 拿 iframe URL,渲染 `<iframe>` 加载,iframe 内 RAGFlow 原生对话可用。
+- iframe 同源加载,门户 cookie 自动携带,X-Frame-Options: SAMEORIGIN 生效。
+- 登出端点 + 登出后回登录页。
+- 一期可最小化样式(无设计稿,可用现有 RAGFlow 前端栈 React/UmiJS 或独立轻量栈如 Vite+React)。
+
+### Acceptance criteria
+
+- [ ] 用户能用浏览器打开登录页,输入 admin 凭据登录成功,跳转分享页列表。
+- [ ] 列表页显示用户被授权的分享页(至少 sp_default)。
+- [ ] 点击分享页进入详情页,iframe 加载 RAGFlow 对话界面,能输入问题并收到流式回答。
+- [ ] iframe URL 不含真实 beta Token(浏览器 DevTools 可验证)。
+- [ ] 未登录用户直接访问分享页详情页 → 跳转登录页。
+- [ ] 登出后回登录页,再访问分享页 → 跳转登录页。
+- [ ] 浏览器 DevTools 看到 X-Frame-Options: SAMEORIGIN 响应头。
+
+### Blocked by
+
+无 — 后端 API 已就绪,前端可独立开发。
+
+---
+
+## Issue 10 — Slice 10: 前端我的会话列表 + 重新打开
+
+### Parent
+
+关联 PRD user stories 22-25、29-30。承接 Slice 9 前端骨架。HANDOFF.md 后续待办"建议③ 前端实现(会话)"。
+
+### What to build
+
+让用户在前端管理自己的历史会话:列表、重新打开、继续对话、重命名、删除。
+
+端到端行为:
+- 分享页详情页加「我的会话」侧栏或 tab:调 GET `/share-pages/<id>/sessions` 列出当前用户在该分享页下的会话(标题、最后活跃时间、消息数)。
+- 点击会话 → 调 GET `/share-pages/<id>/sessions/<sid>` 取回历史 → iframe 带 session_id 加载 → RAGFlow 恢复历史消息与引用。
+- 会话操作:重命名(调 PATCH)、删除(调 DELETE),删除后列表实时更新。
+- 新建会话按钮:调 POST `/share-pages/<id>/sessions` 预创建 → iframe 加载新 session_id。
+- 用户只能看到/操作自己的会话(后端已隔离,前端不需额外校验)。
+
+### Acceptance criteria
+
+- [ ] 用户在分享页详情页能看到「我的会话」列表(标题、时间、消息数)。
+- [ ] 点击历史会话能重新打开,iframe 内恢复历史消息正文 + 引用片段 + 引用标记。
+- [ ] 重新打开后能继续提问,流式回答正常,消息追加到同一会话。
+- [ ] 用户能重命名会话,列表标题实时更新。
+- [ ] 用户能删除会话,列表实时移除,再次刷新不出现。
+- [ ] 新建会话按钮能预创建并加载空会话。
+- [ ] 用户看不到他人会话(后端隔离生效,前端列表只有自己的)。
+
+### Blocked by
+
+- Issue 9(Slice 9 前端骨架)
+
+---
+
+## Issue 11 — Slice 11: 前端管理后台
+
+### Parent
+
+关联 PRD user stories 4-11、12-21、34-43(管理员 CRUD + 会话搜索 + 审计)。承接 Slice 9 前端骨架。HANDOFF.md 后续待办"建议③ 前端实现(后台)"。
+
+### What to build
+
+管理员后台前端,覆盖用户/组/分享页/授权 CRUD + 会话搜索 + 审计日志查看。
+
+端到端行为:
+- 管理后台入口(仅 is_admin 用户可见):用户管理、用户组管理、分享页管理、授权管理、会话搜索、审计日志六个 tab。
+- 用户管理:列表、创建(用户名/邮箱/初始密码)、启用/禁用、硬删除(确认弹窗提示级联清会话)。
+- 用户组管理:列表、创建、添加/移除成员。
+- 分享页管理:列表、创建(关联 RAGFlow dialog_id)、启用/禁用。
+- 授权管理:选择分享页 → 列出 grant → 授权给用户/组、撤销授权。
+- 会话搜索:按用户/分享页/时间/关键词筛选 → 列表(元数据);点击「查看正文」二次确认 → 调 elevated 端点 → 弹窗显示消息正文。
+- 审计日志:按时间/action/actor 筛选 → 列表(8 类敏感操作)。
+- 普通用户访问管理后台 → 403 提示或跳转。
+
+### Acceptance criteria
+
+- [ ] 管理员能看到管理后台入口,普通用户看不到且直接访问 URL → 403。
+- [ ] 管理员能创建/禁用/启用/硬删除用户,硬删除时有确认提示。
+- [ ] 管理员能创建用户组、添加/移除成员。
+- [ ] 管理员能创建分享页(填 dialog_id)、启用/禁用。
+- [ ] 管理员能把分享页授权给用户或组,能撤销授权。
+- [ ] 管理员能按多维度搜索会话,默认只看元数据,查正文需二次确认且写审计。
+- [ ] 管理员能查看审计日志,按 action/时间筛选。
+- [ ] 8 类敏感操作在 UI 上都有触发入口且能在审计日志看到记录。
+
+### Blocked by
+
+- Issue 9(Slice 9 前端骨架)
+
+---
+
+## Issue 12 — Slice 12: 双删重试定时任务 + message_count SSE 实时更新
+
+### Parent
+
+HANDOFF.md 后续待办"建议④ 后台重试任务"与"建议⑤ SSE 代理 message_count 更新"。
+
+### What to build
+
+补两个运维增强:(1) 双删失败的后台重试任务;(2) SSE 代理时实时更新 message_count。
+
+端到端行为:
+- **重试任务**:Slice 5 标记 `deleted_at` 的会话由后台定时任务重试调 RAGFlow DELETE,成功后硬删门户侧记录。提供两种触发方式:定时任务(如每 5 分钟) + 管理员手动触发端点(Slice 6 已加 retry-delete 端点,本 slice 补定时调度)。
+- **message_count 更新**:当前 message_count 仅在恢复会话(GET history)时更新,SSE 代理后不更新导致滞后。本 slice 解析 SSE 流,在流成功完成后按新消息数更新 message_count(与 last_active_at 同一时机更新)。
+- 定时任务实现可选:APScheduler / 独立 worker / cron 调 API,由实现决定,需文档说明。
+
+### Acceptance criteria
+
+- [ ] 双删失败的会话(`deleted_at` 非空)被定时任务重试,RAGFlow 成功后门户侧硬删除(无残留)。
+- [ ] 管理员手动触发 retry-delete 端点仍可用(Slice 6 已实现,本 slice 不破坏)。
+- [ ] 定时任务可配置间隔,默认 5 分钟,文档说明配置方式。
+- [ ] SSE 代理成功后 message_count 按新消息数更新(不再仅靠 GET history 更新)。
+- [ ] message_count 更新与 last_active_at 更新在同一时机(流成功完成后)。
+- [ ] 失败流(上游不可达)不更新 message_count(与 last_active_at 一致)。
+- [ ] 现有测试全部通过,新增重试任务与 message_count 更新的测试用例。
+
+### Blocked by
+
+- Issue 8(Slice 8 DB 持久化 — 重试任务需查询 `deleted_at` 字段)
+
+---
+
+## Issue 13 — Slice 13: 多租户扩展(org_id)
+
+### Parent
+
+PRD D2 决定一期单租户不预留 org_id。HANDOFF.md 后续待办"可选⑥ 多租户扩展"。
+
+### What to build
+
+在现有单租户架构上加 org_id 维度,实现多租户隔离。
+
+端到端行为:
+- `portal_user` / `portal_group` / `share_page` / `chat_session_owner` / `audit_log` 加 `org_id` 字段。
+- `portal_user` 加 `org_id` + 角色(`org_admin` 介于普通用户与平台管理员之间)。
+- 网关校验链加 org_id 隔离:用户只能访问同 org 的分享页与会话。
+- 平台管理员跨 org 管理所有数据;org_admin 只管本 org。
+- 迁移脚本:现有数据归入默认 org(org_id='default')。
+- 配置 RAGFlow 多 dialog_id 时按 org 区分(每个 org 关联不同 dialog)。
+
+### Acceptance criteria
+
+- [ ] 所有 7 张表加 org_id 字段,迁移脚本把现有数据归入默认 org。
+- [ ] 用户只能看到同 org 的分享页与会话(跨 org 访问 → 403)。
+- [ ] org_admin 能管理本 org 用户/组/分享页/授权,不能跨 org。
+- [ ] 平台管理员能跨 org 管理,能看到 org 维度列表。
+- [ ] 审计日志含 org_id 维度,可按 org 筛选。
+- [ ] 现有测试适配 org_id 后全部通过。
+
+### Blocked by
+
+- Issue 8(Slice 8 DB 持久化 — 加字段需 DB 化完成)
+
+---
+
+## Issue 14 — Slice 14: OAuth/SSO 登录
+
+### Parent
+
+PRD D1 决定一期自建账号。HANDOFF.md 后续待办"可选⑦ OAuth/SSO"。
+
+### What to build
+
+在自建账号体系上叠加 OAuth/SSO 登录(OIDC / LDAP / 飞书 SSO 三选一或多个)。
+
+端到端行为:
+- 门户登录页加「SSO 登录」按钮(可选多个 provider)。
+- 用户点 SSO → 跳转 IdP → 回调 → 门户用 IdP 返回的唯一标识匹配本地用户(不存在则自动创建,需配置策略)。
+- SSO 用户与自建账号用户共用 `portal_user` 表,加 `sso_provider` + `sso_external_id` 字段。
+- 管理员可配置 SSO provider(OIDC issuer / LDAP server / 飞书 app_id)。
+- SSO 登录成功也写 `login_success` 审计日志。
+
+### Acceptance criteria
+
+- [ ] 至少实现一种 SSO(OIDC 或 LDAP 或飞书)端到端可登录。
+- [ ] SSO 用户首次登录自动创建本地用户记录(可配置是否允许自动创建)。
+- [ ] SSO 用户与自建账号用户权限模型一致(授权/会话/审计无差异)。
+- [ ] SSO 登录成功写 `login_success` 审计日志(meta 含 provider)。
+- [ ] 管理员能配置 SSO provider 参数。
+- [ ] SSO 失败(IdP 不可达 / 用户不存在且不允许自动创建)有明确错误提示。
+
+### Blocked by
+
+无 — 可与 Slice 8 并行(但 SSO 用户字段需 DB 持久化,建议 Slice 8 之后)。
+
+---
+
+## Issue 15 — Slice 15: 公开分享(is_public + 限流)
+
+### Parent
+
+PRD D3 决定一期仅登录用户。HANDOFF.md 后续待办"可选⑧ 公开分享"。
+
+### What to build
+
+允许分享页标记为公开,免登录访问,加限流防滥用。
+
+端到端行为:
+- `share_page` 加 `is_public` 字段(默认 false)。
+- 公开分享页有独立 URL(如 `/public/<share_page_id>`),无需登录直接加载 iframe。
+- 公开分享页的 T_short 签发不校验 grant,但仍走网关代理(限流 + 审计)。
+- 限流:按 IP 限流(如每 IP 每分钟 10 次对话),超限 → 429。
+- 公开分享页的会话归属「匿名用户」(session_id 不绑定 portal_user_id,或绑定到特殊 anonymous 用户)。
+- 管理员可切换分享页 is_public,关闭后公开 URL 立即失效。
+
+### Acceptance criteria
+
+- [ ] 管理员能把分享页标记为 is_public=true,公开 URL 可免登录访问。
+- [ ] 公开分享页能正常对话(iframe 加载 + SSE 代理工作)。
+- [ ] 公开分享页按 IP 限流,超限返回 429。
+- [ ] 管理员关闭 is_public 后,公开 URL 立即返回 403。
+- [ ] 公开会话不绑定到具体 portal_user(匿名或特殊用户)。
+- [ ] 公开分享页的会话不进入普通用户的「我的会话」列表。
+- [ ] 公开访问也写审计(可选,由实现决定)。
+
+### Blocked by
+
+- Issue 8(Slice 8 DB 持久化 — `is_public` 字段需 DB 化)
+
+---
+
+## Issue 16 — Slice 16: 悬浮组件 / Agent 支持
+
+### Parent
+
+PRD D9 决定一期仅全屏 Chat,字段已预留(`embed_type` / `ragflow_type`)。HANDOFF.md 后续待办"可选⑨ 悬浮组件/Agent"。
+
+### What to build
+
+扩展 `embed_type` 支持 widget(悬浮组件) + `ragflow_type` 支持 agent(RAGFlow Agent iframe)。
+
+端到端行为:
+- `embed_type=widget`:门户返回悬浮组件 JS snippet(而非全屏 iframe),嵌入到任意页面右下角,点击展开对话窗。
+- `ragflow_type=agent`:网关构造 RAGFlow Agent iframe URL(`/agent/share?...`),SSE 代理走 RAGFlow agentbot 端点(已有 `/agentbots/<id>/completions`)。
+- 网关校验链对 agent 类型同样生效(grant + T_short + 归属)。
+- 管理员创建分享页时可选 embed_type 与 ragflow_type(一期固定值改为可选)。
+- 悬浮组件与 Agent 的会话也进 `chat_session_owner`,用户可管理。
+
+### Acceptance criteria
+
+- [ ] 管理员能创建 `embed_type=widget` 的分享页,前端生成可嵌入的 JS snippet。
+- [ ] 悬浮组件在任意页面右下角加载,点击展开对话窗,能正常对话。
+- [ ] 管理员能创建 `ragflow_type=agent` 的分享页,iframe 加载 RAGFlow Agent 界面。
+- [ ] Agent 分享页的 SSE 代理走 agentbot 端点,流式响应正常。
+- [ ] 网关校验链对 widget 与 agent 类型都生效。
+- [ ] widget 与 agent 的会话进入「我的会话」列表,可重命名/删除/重新打开。
+- [ ] X-Frame-Options 策略对 widget 场景适配(跨域嵌入需调整 CSP/frame-ancestors)。
+
+### Blocked by
+
+- Issue 9(Slice 9 前端骨架 — widget 需前端组件)
+
+---
+
 ## 迁移至正式 issue tracker 时的说明
 
 - 每个 Issue 节对应一个 issue,标题用「Slice N: <描述>」。
 - `ready-for-agent` 标签打在每个 issue 上。
-- 发布顺序按依赖:Issue 1 → 2 → 3 → 4 → 5 → 6 → 7(后续可并行 4 与 2-3)。
+- Phase 1(Issue 1-7)已完成,迁移时标 `done` 或归档。
+- Phase 2 发布顺序按依赖:Issue 8 → (9 并行) → (10/11 并行,依赖 9) → 12(依赖 8);可选项 13(依赖 8)/14(独立)/15(依赖 8)/16(依赖 9)按需发布。
 - `Blocked by` 字段填上游 issue 编号。
 - Issue body 直接复用本文档对应章节。
