@@ -69,10 +69,20 @@ def create_app() -> FastAPI:
 
     # PRD D10:同源嵌入 — 所有响应加 X-Frame-Options: SAMEORIGIN,
     # 阻止分享页被任意外部站点 iframe 规避门户登录态。
+    # Slice 16:widget 场景需跨域嵌入,对 /widget/* 路径改用 CSP frame-ancestors
+    # 允许跨域(由 WIDGET_FRAME_ANCESTORS 配置,默认 *),并跳过 X-Frame-Options
+    # (X-Frame-Options 与 CSP frame-ancestors 同时存在时浏览器行为不一致,
+    # 故 widget 路径只发 CSP 不发 XFO;其他路径保持 XFO: SAMEORIGIN)。
     @app.middleware("http")
     async def enforce_sameorigin_frame(request: Request, call_next):
         response = await call_next(request)
-        response.headers["X-Frame-Options"] = "SAMEORIGIN"
+        path = request.url.path
+        if path.startswith("/widget/"):
+            # widget 页面:CSP frame-ancestors 允许跨域嵌入,不设 X-Frame-Options
+            response.headers["Content-Security-Policy"] = f"frame-ancestors {settings.widget_frame_ancestors};"
+        else:
+            # 其他页面:保持 X-Frame-Options: SAMEORIGIN(D10 同源嵌入)
+            response.headers["X-Frame-Options"] = "SAMEORIGIN"
         return response
 
     # Slice 8:创建 DB engine + 初始化表 + session_maker

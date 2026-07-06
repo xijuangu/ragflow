@@ -1,5 +1,5 @@
 /**
- * 分享页详情页 — iframe 对话 + 「我的会话」侧栏(Slice 10)。
+ * 分享页详情页 — iframe 对话 + 「我的会话」侧栏(Slice 10 + Slice 16 扩展)。
  *
  * Slice 9:调 GET /share-pages/:id/embed-url 获取 iframe URL,渲染 iframe。
  *   - iframe URL 含 T_short(短期嵌入令牌),不含真实 beta Token。
@@ -13,6 +13,9 @@
  *   - 重命名:PATCH(同步:RAGFlow 成功才更新门户 title)→ 乐观更新本地列表。
  *   - 删除:DELETE(双删)→ confirm → 乐观移除本地列表。
  *   - 用户只看到自己的会话(后端 list_sessions 按 portal_user_id 隔离)。
+ *
+ * Slice 16:widget 类型展示 snippet(可复制 iframe HTML)而非 iframe;
+ *   agent 类型 iframe URL 走 /agent/share 路径(由后端构造,前端透明)。
  */
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
@@ -38,10 +41,15 @@ export default function SharePageDetailPage() {
   const { id } = useParams<{ id: string }>();
   const { user, logout } = useAuth();
 
-  // iframe 状态
+  // iframe / widget 状态
   const [iframeUrl, setIframeUrl] = useState<string | null>(null);
   const [iframeNonce, setIframeNonce] = useState(0); // 强制 iframe 重载(同 URL 也重载)
   const [embedError, setEmbedError] = useState<string | null>(null);
+  // Slice 16:widget 类型展示 snippet 而非 iframe
+  const [snippet, setSnippet] = useState<string | null>(null);
+  const [widgetUrl, setWidgetUrl] = useState<string | null>(null);
+  const [isWidget, setIsWidget] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   // 会话列表状态
   const [sessions, setSessions] = useState<SessionSummary[] | null>(null);
@@ -57,8 +65,18 @@ export default function SharePageDetailPage() {
     (async () => {
       try {
         const res = await api.getEmbedUrl(id);
-        if (!cancelled) {
-          setIframeUrl(res.iframe_url);
+        if (cancelled) return;
+        // Slice 16:widget 类型返回 widget_url + snippet(无 iframe_url)
+        if (res.embed_type === 'widget' || res.snippet) {
+          setIsWidget(true);
+          setSnippet(res.snippet ?? null);
+          setWidgetUrl(res.widget_url ?? null);
+          setIframeUrl(null);
+        } else {
+          setIsWidget(false);
+          setIframeUrl(res.iframe_url ?? null);
+          setSnippet(null);
+          setWidgetUrl(null);
           setIframeNonce((n) => n + 1);
         }
       } catch (e) {
@@ -82,34 +100,40 @@ export default function SharePageDetailPage() {
     };
   }, [id]);
 
-  /** 重新打开历史会话:调 embed-url 拿新 T_short,追加 session_id,重载 iframe。 */
+  /** 重新打开历史会话:调 embed-url 拿新 T_short,追加 session_id,重载 iframe。
+   *  Slice 16:widget 类型无 iframe_url,不重载(widget snippet 是静态嵌入代码)。 */
   const handleReopen = useCallback(
     async (sessionId: string) => {
-      if (!id || sessionBusy) return;
+      if (!id || sessionBusy || isWidget) return;
       setSessionBusy(true);
       setActiveSessionId(sessionId);
       try {
         const res: EmbedUrlResponse = await api.getEmbedUrl(id);
-        setIframeUrl(appendSessionId(res.iframe_url, sessionId));
-        setIframeNonce((n) => n + 1);
+        if (res.iframe_url) {
+          setIframeUrl(appendSessionId(res.iframe_url, sessionId));
+          setIframeNonce((n) => n + 1);
+        }
       } catch (e) {
         setEmbedError(e instanceof ApiError ? e.message : '重新打开会话失败');
       } finally {
         setSessionBusy(false);
       }
     },
-    [id, sessionBusy],
+    [id, sessionBusy, isWidget],
   );
 
-  /** 新建会话:POST 预创建,用返回的 iframe_url(已含 session_id)重载 iframe。 */
+  /** 新建会话:POST 预创建,用返回的 iframe_url(已含 session_id)重载 iframe。
+   *  Slice 16:widget 类型仍可新建会话(会话进入「我的会话」列表),但 iframe 不重载。 */
   const handleNewSession = useCallback(async () => {
     if (!id || sessionBusy) return;
     setSessionBusy(true);
     try {
       const res = await api.precreateSession(id);
       setActiveSessionId(res.session_id);
-      setIframeUrl(res.iframe_url);
-      setIframeNonce((n) => n + 1);
+      if (!isWidget && res.iframe_url) {
+        setIframeUrl(res.iframe_url);
+        setIframeNonce((n) => n + 1);
+      }
       // 预创建后会话已绑定当前用户,刷新列表使其出现
       try {
         const list = await api.listSessions(id);
@@ -122,7 +146,7 @@ export default function SharePageDetailPage() {
     } finally {
       setSessionBusy(false);
     }
-  }, [id, sessionBusy]);
+  }, [id, sessionBusy, isWidget]);
 
   /** 重命名会话:prompt 输入新标题 → PATCH → 乐观更新本地列表标题。 */
   const handleRename = useCallback(
@@ -162,6 +186,19 @@ export default function SharePageDetailPage() {
     [id, activeSessionId],
   );
 
+  /** Slice 16:复制 snippet 到剪贴板。 */
+  const handleCopySnippet = useCallback(async () => {
+    if (!snippet) return;
+    try {
+      await navigator.clipboard.writeText(snippet);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // 剪贴板 API 不可用(如非 HTTPS),降级提示用户手动复制
+      setSessionsError('剪贴板不可用,请手动选择文本复制');
+    }
+  }, [snippet]);
+
   return (
     <div className="app-layout">
       <AppHeader username={user?.username} onLogout={logout} isAdmin={user?.is_admin ?? false} />
@@ -169,7 +206,7 @@ export default function SharePageDetailPage() {
         <div className="back-link">
           <Link to="/share-pages">← 返回列表</Link>
         </div>
-        <h2 className="page-title">分享页对话</h2>
+        <h2 className="page-title">{isWidget ? '悬浮组件嵌入' : '分享页对话'}</h2>
 
         {embedError && <div className="alert-error">{embedError}</div>}
 
@@ -209,7 +246,7 @@ export default function SharePageDetailPage() {
                         type="button"
                         className="session-main"
                         onClick={() => handleReopen(s.session_id)}
-                        disabled={sessionBusy}
+                        disabled={sessionBusy || isWidget}
                         title={s.title || '(未命名)'}
                       >
                         <span className="session-title">{s.title || '(未命名)'}</span>
@@ -243,7 +280,30 @@ export default function SharePageDetailPage() {
           </aside>
 
           <div className="iframe-container">
-            {iframeUrl && (
+            {/* Slice 16:widget 类型展示 snippet 与复制按钮(替代 iframe) */}
+            {isWidget && snippet && (
+              <div className="widget-snippet-panel" data-testid="widget-snippet-panel">
+                <h3>悬浮组件嵌入代码</h3>
+                <p className="snippet-hint">
+                  将以下 HTML 代码复制粘贴到任意页面即可加载悬浮组件。widget URL:
+                  <code className="mono">{widgetUrl}</code>
+                </p>
+                <div className="snippet-actions">
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-sm"
+                    onClick={handleCopySnippet}
+                  >
+                    {copied ? '已复制 ✓' : '复制 snippet'}
+                  </button>
+                </div>
+                <pre className="snippet-code" data-testid="widget-snippet-code">
+                  <code>{snippet}</code>
+                </pre>
+              </div>
+            )}
+            {/* fullscreen 类型:渲染 iframe(chat 走 /chat/share,agent 走 /agent/share) */}
+            {!isWidget && iframeUrl && (
               <iframe
                 key={iframeNonce}
                 src={iframeUrl}

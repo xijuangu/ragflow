@@ -97,7 +97,7 @@ describe('SharePagesAdminPage', () => {
     await screen.findByText('默认分享页');
 
     await user.type(screen.getByLabelText('分享页名称'), '新分享页');
-    await user.type(screen.getByLabelText('RAGFlow dialog_id'), 'dialog-new');
+    await user.type(screen.getByLabelText('RAGFlow 资源 ID'), 'dialog-new');
     await user.click(screen.getByRole('button', { name: '创建分享页' }));
 
     expect(await screen.findByText('新分享页')).toBeInTheDocument();

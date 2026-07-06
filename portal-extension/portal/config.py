@@ -49,6 +49,10 @@ class Settings:
     oidc_client_secret: str = ""
     oidc_redirect_uri: str = ""
     sso_auto_create: bool = True
+    # Slice 16:widget 跨域嵌入允许的 frame-ancestors 来源(默认 * 允许任意域;
+    # 生产建议配置为具体域名列表,如 https://example.com https://app.example.com)。
+    # 仅对 /widget/* 路径生效,其他路径保持 X-Frame-Options: SAMEORIGIN(D10)。
+    widget_frame_ancestors: str = "*"
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -82,4 +86,6 @@ def load_settings() -> Settings:
         oidc_client_secret=os.environ.get("OIDC_CLIENT_SECRET", ""),
         oidc_redirect_uri=os.environ.get("OIDC_REDIRECT_URI", ""),
         sso_auto_create=_env_bool("SSO_AUTO_CREATE", True),
+        # Slice 16:widget 跨域嵌入 frame-ancestors(默认 * 允许任意域,生产建议配置具体域名)
+        widget_frame_ancestors=os.environ.get("WIDGET_FRAME_ANCESTORS", "*"),
     )

@@ -33,14 +33,30 @@ from pydantic import BaseModel
 
 from portal.auth import LoginError, authenticate, get_current_user, require_admin
 from portal.gateway import (
+    build_agent_iframe_url,
     build_iframe_url,
+    build_widget_snippet,
+    build_widget_url,
+    delete_agent_session_via_ragflow,
     delete_session_via_ragflow,
+    fetch_agent_session_history_via_ragflow,
     fetch_session_history_via_ragflow,
+    precreate_agent_session_via_ragflow,
     precreate_session_via_ragflow,
     proxy_sse_to_ragflow,
+    rename_agent_session_via_ragflow,
     rename_session_via_ragflow,
 )
-from portal.models import Permission, PortalGroup, PortalUser, SharePage, SharePageGrant, SubjectType
+from portal.models import (
+    EmbedType,
+    Permission,
+    PortalGroup,
+    PortalUser,
+    RagflowType,
+    SharePage,
+    SharePageGrant,
+    SubjectType,
+)
 from portal.oidc import SSO_PROVIDER, OIDCConfig, exchange_code_for_claims, get_authorization_url
 from portal.password import hash_password
 
@@ -76,6 +92,10 @@ class AddGroupMemberRequest(BaseModel):
 class CreateSharePageRequest(BaseModel):
     name: str
     ragflow_resource_id: str
+    # Slice 16:embed_type / ragflow_type 开放选择器(D9 一期固定值已扩展)。
+    # Literal 触发 Pydantic 422 校验:无效值在入口处拒绝,不进 handler。
+    embed_type: EmbedType = "fullscreen"
+    ragflow_type: RagflowType = "chat"
 
 
 class UpdateEnabledRequest(BaseModel):
@@ -425,7 +445,13 @@ async def _invoke_upstream(fn: Callable[[], Awaitable[T]], action: str) -> T:
         raise HTTPException(status_code=502, detail=f"{action}: {e}")
 
 
-async def _dual_delete_session(settings, store, dialog_id: str, session_id: str) -> bool:
+async def _dual_delete_session(
+    settings,
+    store,
+    dialog_id: str,
+    session_id: str,
+    ragflow_type: str = "chat",
+) -> bool:
     """单会话双删协调:RAGFlow DELETE 成功 → 门户硬删除;失败 → 标记 deleted_at 待重试。
 
     用于 delete_session / admin_delete_session 的双删策略(单会话场景)。
@@ -433,11 +459,16 @@ async def _dual_delete_session(settings, store, dialog_id: str, session_id: str)
     也硬删除门户侧(用户已不存在无法重试,避免孤儿);此处单会话删除失败时保留
     门户侧记录标记 deleted_at,供后台重试任务后续清理。
 
+    Slice 16:加 ``ragflow_type`` 参数,agent 类型调 agentbot 端点,chat 类型调 chatbot 端点。
+
     返回 True 表示 RAGFlow 删除成功(门户侧已硬删除);
     返回 False 表示 RAGFlow 失败(门户侧已标记 deleted_at,记录保留待重试)。
     """
     try:
-        await delete_session_via_ragflow(settings, dialog_id, session_id)
+        if ragflow_type == "agent":
+            await delete_agent_session_via_ragflow(settings, dialog_id, session_id)
+        else:
+            await delete_session_via_ragflow(settings, dialog_id, session_id)
         store.delete(session_id)
         return True
     except HTTPException:
@@ -458,9 +489,15 @@ async def list_my_share_pages(request: Request, user=Depends(get_current_user)):
 
 @router.get("/share-pages/{share_page_id}/embed-url")
 async def get_embed_url(share_page_id: str, request: Request, user=Depends(get_current_user)):
-    """返回 iframe URL(含 auth=T_short,不含真实 beta Token)。
+    """返回嵌入所需的 URL(含 auth=T_short,不含真实 beta Token)。
 
     对应验收点 2:iframe URL 含 auth=T_short,不含真实 beta Token。
+
+    Slice 16 分支:
+      - embed_type=fullscreen:返回 iframe_url(全屏 iframe 嵌入,向后兼容)。
+        ragflow_type=chat → /chat/share;ragflow_type=agent → /agent/share。
+      - embed_type=widget:返回 widget_url + snippet(悬浮组件 iframe 嵌入),
+        不返回 iframe_url(避免前端误用全屏 iframe)。
     """
     seed = request.app.state.seed
     share_page = _check_share_page_access(seed, share_page_id, user)
@@ -468,9 +505,27 @@ async def get_embed_url(share_page_id: str, request: Request, user=Depends(get_c
     settings = request.app.state.settings
     token_store = request.app.state.token_store
     t_short = token_store.issue(user.id, share_page.id, settings.t_short_ttl_seconds)
-    iframe_url = build_iframe_url(settings.ragflow_host, share_page.ragflow_resource_id, t_short)
+    # Slice 16:widget 类型返回 widget_url + snippet(不返回 iframe_url)
+    if share_page.embed_type == "widget":
+        # widget_url 用门户同源 origin(若部署在反代后,前端可用相对路径)
+        portal_origin = ""  # 留空返回相对路径,前端按需补 origin
+        widget_url = build_widget_url(portal_origin, share_page.id)
+        snippet = build_widget_snippet(widget_url)
+        return {
+            "embed_type": "widget",
+            "widget_url": widget_url,
+            "snippet": snippet,
+            "share_page_id": share_page.id,
+            "expires_in": settings.t_short_ttl_seconds,
+        }
+    # fullscreen 类型:按 ragflow_type 选 iframe URL 构造函数
+    if share_page.ragflow_type == "agent":
+        iframe_url = build_agent_iframe_url(settings.ragflow_host, share_page.ragflow_resource_id, t_short)
+    else:
+        iframe_url = build_iframe_url(settings.ragflow_host, share_page.ragflow_resource_id, t_short)
     return {
         "iframe_url": iframe_url,
+        "ragflow_type": share_page.ragflow_type,
         "share_page_id": share_page.id,
         "expires_in": settings.t_short_ttl_seconds,
     }
@@ -493,15 +548,25 @@ async def precreate_session(share_page_id: str, request: Request, user=Depends(g
          从 SSE 首帧解析 session_id。
       2. 立即写入 chat_session_owner 绑定到当前用户(portal_user_id NOT NULL)。
       3. 签发 T_short,构造含 session_id 的 iframe URL 返回。
+
+    Slice 16:agent 类型走 agentbot 端点(/api/v1/agentbots/<id>/completions),
+    chat 类型走 chatbot 端点(/api/v1/chatbots/<id>/completions)。
     """
     seed = request.app.state.seed
     share_page = _check_share_page_access(seed, share_page_id, user)
     settings = request.app.state.settings
     # 调 RAGFlow 预创建 session(网关用 beta Token,绝不返回浏览器)
-    session_id = await _invoke_upstream(
-        lambda: precreate_session_via_ragflow(settings, share_page.ragflow_resource_id),
-        "预创建 session 失败",
-    )
+    # Slice 16:agent 类型走 agentbot 端点,chat 类型走 chatbot 端点
+    if share_page.ragflow_type == "agent":
+        session_id = await _invoke_upstream(
+            lambda: precreate_agent_session_via_ragflow(settings, share_page.ragflow_resource_id),
+            "预创建 agent session 失败",
+        )
+    else:
+        session_id = await _invoke_upstream(
+            lambda: precreate_session_via_ragflow(settings, share_page.ragflow_resource_id),
+            "预创建 session 失败",
+        )
     # 立即绑定到当前用户(chat_session_owner.portal_user_id NOT NULL)
     request.app.state.session_store.bind(
         session_id=session_id,
@@ -512,7 +577,11 @@ async def precreate_session(share_page_id: str, request: Request, user=Depends(g
     # 签发 T_short 并构造含 session_id 的 iframe URL
     token_store = request.app.state.token_store
     t_short = token_store.issue(user.id, share_page.id, settings.t_short_ttl_seconds)
-    iframe_url = build_iframe_url(settings.ragflow_host, share_page.ragflow_resource_id, t_short, session_id)
+    # Slice 16:agent 类型用 /agent/share 路径构造 iframe URL
+    if share_page.ragflow_type == "agent":
+        iframe_url = build_agent_iframe_url(settings.ragflow_host, share_page.ragflow_resource_id, t_short, session_id)
+    else:
+        iframe_url = build_iframe_url(settings.ragflow_host, share_page.ragflow_resource_id, t_short, session_id)
     return {
         "session_id": session_id,
         "iframe_url": iframe_url,
@@ -567,11 +636,18 @@ async def resume_session(share_page_id: str, session_id: str, request: Request, 
     if owner.share_page_id != share_page_id:
         raise HTTPException(status_code=403, detail="会话不属于该分享页")
     # 调 RAGFlow GET 端点取回消息 + 引用
+    # Slice 16:agent 类型走 agentbot 端点,chat 类型走 chatbot 端点
     settings = request.app.state.settings
-    history = await _invoke_upstream(
-        lambda: fetch_session_history_via_ragflow(settings, share_page.ragflow_resource_id, session_id),
-        "取回会话失败",
-    )
+    if share_page.ragflow_type == "agent":
+        history = await _invoke_upstream(
+            lambda: fetch_agent_session_history_via_ragflow(settings, share_page.ragflow_resource_id, session_id),
+            "取回 agent 会话失败",
+        )
+    else:
+        history = await _invoke_upstream(
+            lambda: fetch_session_history_via_ragflow(settings, share_page.ragflow_resource_id, session_id),
+            "取回会话失败",
+        )
     # 恢复会话时用 len(messages) 更新 message_count(简化实现:字段存在,恢复后准确)
     # Slice 8:DB 后端需经公开 API update_message_count 持久化(原直接改 dataclass 属性不生效)
     if isinstance(history, dict):
@@ -616,8 +692,12 @@ async def rename_session(
         raise HTTPException(status_code=403, detail="会话不属于该分享页")
     # 同步策略:RAGFlow PATCH 成功才更新门户 title;失败抛 502(不吞异常,不更新门户 title)
     # rename_session_via_ragflow 在非 200 时已抛 HTTPException(502),此处直接透传
+    # Slice 16:agent 类型走 agentbot 端点,chat 类型走 chatbot 端点
     settings = request.app.state.settings
-    await rename_session_via_ragflow(settings, share_page.ragflow_resource_id, session_id, body.title)
+    if share_page.ragflow_type == "agent":
+        await rename_agent_session_via_ragflow(settings, share_page.ragflow_resource_id, session_id, body.title)
+    else:
+        await rename_session_via_ragflow(settings, share_page.ragflow_resource_id, session_id, body.title)
     # RAGFlow 成功 → 更新门户 title(两侧同步)
     request.app.state.session_store.rename(session_id, body.title)
     return {"session_id": session_id, "title": body.title}
@@ -645,9 +725,14 @@ async def delete_session(share_page_id: str, session_id: str, request: Request, 
     if owner.share_page_id != share_page_id:
         raise HTTPException(status_code=403, detail="会话不属于该分享页")
     # 双删:RAGFlow DELETE 成功 → 门户硬删除;失败 → 标记 deleted_at(返回 200 不暴露失败)
+    # Slice 16:agent 类型走 agentbot 端点,chat 类型走 chatbot 端点
     settings = request.app.state.settings
     deleted = await _dual_delete_session(
-        settings, request.app.state.session_store, share_page.ragflow_resource_id, session_id
+        settings,
+        request.app.state.session_store,
+        share_page.ragflow_resource_id,
+        session_id,
+        share_page.ragflow_type,
     )
     # Slice 6 审计:仅 RAGFlow 成功(门户侧已硬删除)时记 session_delete
     if deleted:
@@ -680,7 +765,66 @@ async def proxy_chatbot_completions(dialog_id: str, request: Request):
 
     Slice 4:网关 ACL 解析支持 user 与 group 两种 subject_type(has_use_grant 升级)。
     """
-    return await proxy_sse_to_ragflow(request, dialog_id)
+    return await proxy_sse_to_ragflow(request, dialog_id, ragflow_type="chat")
+
+
+@router.post("/api/v1/agentbots/{agent_id}/completions")
+async def proxy_agentbot_completions(agent_id: str, request: Request):
+    """Agent SSE 代理(Slice 16):校验 T_short → 用 beta Token 调 RAGFlow agentbot_api → 流式回传。
+
+    路径与 RAGFlow Agent 前端原生 SSE 调用路径一致(同源部署下 iframe 内前端发起的
+    `/api/v1/agentbots/<agent_id>/completions` 天然走网关)。
+    与 chatbot 端点的区别:上游走 agentbot 端点(/api/v1/agentbots/<id>/completions)。
+
+    校验链与 chatbot 一致(同源 cookie + grant + T_short + 归属 + agent_id 一致),
+    任一失败 → 403/401。详见 proxy_sse_to_ragflow 文档。
+    """
+    return await proxy_sse_to_ragflow(request, agent_id, ragflow_type="agent")
+
+
+# ---------------------------------------------------------------------------
+# Slice 16:widget 独立 HTML 页面端点
+# ---------------------------------------------------------------------------
+
+
+@router.get("/widget/{share_page_id}")
+async def widget_page(share_page_id: str, request: Request):
+    """widget 独立 HTML 页面端点(Slice 16)。
+
+    返回一个独立的 HTML 页面,作为悬浮组件 iframe 的 src 目标。页面含 widget-root
+    容器(供前端 React 挂载)与 share_page_id 标识。CSP 由 main.py 中间件对 /widget/*
+    路径加 frame-ancestors 允许跨域嵌入(其他路径保持 X-Frame-Options: SAMEORIGIN)。
+
+    分享页不存在或已禁用 → 404。不要求登录态(widget 页面本身不含敏感数据,
+    实际对话仍需 T_short + 登录态 cookie,由 SSE 代理端点校验)。
+    """
+    seed = request.app.state.seed
+    share_page = seed.get_share_page(share_page_id)
+    if not share_page or not share_page.enabled:
+        raise HTTPException(status_code=404, detail="分享页不存在或已禁用")
+    if share_page.embed_type != "widget":
+        raise HTTPException(status_code=404, detail="该分享页不是 widget 类型")
+    # 返回独立 HTML 页面(含 widget-root 容器与 share_page_id 标识)
+    # 实际对话能力由前端 JS 加载(开发时 Vite dev server;生产时前端构建产物)
+    html = f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RAGFlow 悬浮组件</title>
+<style>
+  html, body {{ margin: 0; padding: 0; height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }}
+  #widget-root {{ height: 100vh; display: flex; flex-direction: column; }}
+</style>
+</head>
+<body>
+<div id="widget-root" data-share-page-id="{share_page_id}"></div>
+<!-- 生产环境由前端构建产物挂载;开发环境由 Vite dev server 注入 -->
+</body>
+</html>"""
+    from fastapi.responses import HTMLResponse
+
+    return HTMLResponse(content=html)
 
 
 # ===========================================================================
@@ -860,10 +1004,16 @@ async def admin_remove_group_member(
 async def admin_create_share_page(body: CreateSharePageRequest, request: Request, user=Depends(require_admin)):
     """管理员创建分享页(对应 PRD 用户故事 12)。
 
-    embed_type/ragflow_type 一期固定值(D9),不开放选择器。
+    Slice 16:embed_type/ragflow_type 开放选择器(D9 一期固定值已扩展),
+    由 CreateSharePageRequest 的 Literal 类型在入口处做 Pydantic 422 校验。
     """
     seed = request.app.state.seed
-    page = seed.create_share_page(name=body.name, ragflow_resource_id=body.ragflow_resource_id)
+    page = seed.create_share_page(
+        name=body.name,
+        ragflow_resource_id=body.ragflow_resource_id,
+        embed_type=body.embed_type,
+        ragflow_type=body.ragflow_type,
+    )
     return _share_page_to_dict(page)
 
 
@@ -906,9 +1056,15 @@ async def admin_delete_session(share_page_id: str, session_id: str, request: Req
     if owner.share_page_id != share_page_id:
         raise HTTPException(status_code=403, detail="会话不属于该分享页")
     # 双删:RAGFlow DELETE(管理员不校验 portal_user_id 归属,可删任意用户的会话)
+    # Slice 16:agent 类型走 agentbot 端点,chat 类型走 chatbot 端点
     settings = request.app.state.settings
+    share_page = seed.get_share_page(share_page_id)
     deleted = await _dual_delete_session(
-        settings, request.app.state.session_store, owner.ragflow_resource_id, session_id
+        settings,
+        request.app.state.session_store,
+        owner.ragflow_resource_id,
+        session_id,
+        share_page.ragflow_type if share_page else "chat",
     )
     # Slice 6 审计:仅 RAGFlow 成功(门户侧已硬删除)时记 session_delete
     if deleted:

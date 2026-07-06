@@ -775,14 +775,25 @@ class SeedData:
     # 分享页 CRUD
     # -----------------------------------------------------------------
 
-    def create_share_page(self, name: str, ragflow_resource_id: str) -> SharePage:
-        """创建分享页(管理员调用);embed_type/ragflow_type 一期固定(D9)。"""
+    def create_share_page(
+        self,
+        name: str,
+        ragflow_resource_id: str,
+        *,
+        embed_type: EmbedType = "fullscreen",
+        ragflow_type: RagflowType = "chat",
+    ) -> SharePage:
+        """创建分享页(管理员调用)。
+
+        Slice 16:embed_type/ragflow_type 由调用方传入(D9 一期固定值已扩展为可选);
+        不传时默认 fullscreen/chat(向后兼容)。
+        """
         page = SharePage(
             id=_gen_id("sp"),
             name=name,
-            ragflow_type="chat",
+            ragflow_type=ragflow_type,
             ragflow_resource_id=ragflow_resource_id,
-            embed_type="fullscreen",
+            embed_type=embed_type,
             enabled=True,
             created_at=time.time(),
         )
