@@ -24,13 +24,8 @@ import {
   type AdminSharePage,
   type AdminUser,
 } from '../../api/client';
-
-function formatTime(epoch: number): string {
-  if (!epoch) return '';
-  const d = new Date(epoch * 1000);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
+import { formatTime } from '../../utils/formatTime';
+import { useAdminList } from '../../hooks/useAdminList';
 
 interface SessionMessage {
   role: string;
@@ -41,7 +36,22 @@ export default function SessionsAdminPage() {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [sharePages, setSharePages] = useState<AdminSharePage[]>([]);
   const [sessions, setSessions] = useState<AdminSessionMetadata[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const { error, setError } = useAdminList(
+    async () => {
+      const [usersRes, pagesRes] = await Promise.all([
+        api.listAdminUsers(),
+        api.listAdminSharePages(),
+      ]);
+      return { users: usersRes.users, sharePages: pagesRes.share_pages };
+    },
+    {
+      errorMessage: '加载用户/分享页失败',
+      onSuccess: (d) => {
+        setUsers(d.users);
+        setSharePages(d.sharePages);
+      },
+    },
+  );
 
   // 筛选表单
   const [filterUserId, setFilterUserId] = useState('');
@@ -65,7 +75,7 @@ export default function SessionsAdminPage() {
     return m;
   }, [sharePages]);
 
-  // 初始加载:用户/分享页下拉数据 + 全部会话
+  // 初始加载用户/分享页下拉数据由 useAdminList 完成(上方);此处仅保留会话加载
   const loadSessions = useCallback(
     async (opts: { userId?: string; sharePageId?: string; keyword?: string } = {}) => {
       setSessions(null);
@@ -81,31 +91,10 @@ export default function SessionsAdminPage() {
         setError(e instanceof ApiError ? e.message : '加载会话列表失败');
       }
     },
-    [],
+    [setError],
   );
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const [usersRes, pagesRes] = await Promise.all([
-          api.listAdminUsers(),
-          api.listAdminSharePages(),
-        ]);
-        if (cancelled) return;
-        setUsers(usersRes.users);
-        setSharePages(pagesRes.share_pages);
-      } catch (e) {
-        if (cancelled) return;
-        setError(e instanceof ApiError ? e.message : '加载用户/分享页失败');
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // 用户/分享页下拉就绪后,首次加载会话
+  // 首次加载会话
   useEffect(() => {
     void loadSessions();
   }, [loadSessions]);
@@ -228,8 +217,8 @@ export default function SessionsAdminPage() {
                   <td>{s.title || '(无标题)'}</td>
                   <td>{userMap.get(s.portal_user_id)?.username ?? s.portal_user_id}</td>
                   <td>{sharePageMap.get(s.share_page_id)?.name ?? s.share_page_id}</td>
-                  <td>{formatTime(s.created_at)}</td>
-                  <td>{formatTime(s.last_active_at)}</td>
+                  <td>{formatTime(s.created_at, 'datetime')}</td>
+                  <td>{formatTime(s.last_active_at, 'datetime')}</td>
                   <td>{s.message_count}</td>
                   <td className="admin-actions">
                     <button

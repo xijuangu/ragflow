@@ -11,15 +11,32 @@
  *   1. 成员列表显示用户名(而非裸 ID)。
  *   2. 添加成员下拉选项。
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
 import { ApiError, api, type AdminGroup, type AdminUser } from '../../api/client';
+import { useAdminList } from '../../hooks/useAdminList';
+import { useOptimisticToggle } from '../../hooks/useOptimisticToggle';
 
 export default function GroupsAdminPage() {
   const [groups, setGroups] = useState<AdminGroup[] | null>(null);
   const [users, setUsers] = useState<AdminUser[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<string | null>(null); // `${groupId}:action:userId` 或 groupId
+  const { error, setError } = useAdminList(
+    async () => {
+      const [groupsRes, usersRes] = await Promise.all([
+        api.listAdminGroups(),
+        api.listAdminUsers(),
+      ]);
+      return { groups: groupsRes.groups, users: usersRes.users };
+    },
+    {
+      errorMessage: '加载用户组失败',
+      onSuccess: (d) => {
+        setGroups(d.groups);
+        setUsers(d.users);
+      },
+    },
+  );
+  const { busyId, run } = useOptimisticToggle({ onError: setError });
 
   const [groupName, setGroupName] = useState('');
   const [creating, setCreating] = useState(false);
@@ -35,27 +52,6 @@ export default function GroupsAdminPage() {
     (userId: string) => userMap.get(userId)?.username ?? userId,
     [userMap],
   );
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const [groupsRes, usersRes] = await Promise.all([
-          api.listAdminGroups(),
-          api.listAdminUsers(),
-        ]);
-        if (cancelled) return;
-        setGroups(groupsRes.groups);
-        setUsers(usersRes.users);
-      } catch (e) {
-        if (cancelled) return;
-        setError(e instanceof ApiError ? e.message : '加载用户组失败');
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   const handleCreate = useCallback(
     async (e: FormEvent) => {
@@ -74,85 +70,78 @@ export default function GroupsAdminPage() {
         setCreating(false);
       }
     },
-    [creating, groupName],
+    [creating, groupName, setGroups, setError],
   );
 
   const handleAddMember = useCallback(
     async (groupId: string, userId: string) => {
-      if (!userId || busy) return;
-      setBusy(`${groupId}:add:${userId}`);
-      // 乐观更新:追加 user_id 到成员列表
-      setGroups((prev) =>
-        prev
-          ? prev.map((g) =>
-              g.id === groupId && !g.members.includes(userId)
-                ? { ...g, members: [...g.members, userId], member_count: g.member_count + 1 }
-                : g,
-            )
-          : prev,
-      );
-      try {
-        await api.addAdminGroupMember(groupId, userId);
-      } catch (e) {
-        // 回滚
-        setGroups((prev) =>
-          prev
-            ? prev.map((g) =>
-                g.id === groupId
-                  ? {
-                      ...g,
-                      members: g.members.filter((id) => id !== userId),
-                      member_count: Math.max(0, g.member_count - 1),
-                    }
-                  : g,
-              )
-            : prev,
-        );
-        setError(e instanceof ApiError ? e.message : '添加成员失败');
-      } finally {
-        setBusy(null);
-      }
+      if (!userId) return;
+      await run({
+        id: `${groupId}:add:${userId}`,
+        optimistic: () =>
+          setGroups((prev) =>
+            prev
+              ? prev.map((g) =>
+                  g.id === groupId && !g.members.includes(userId)
+                    ? { ...g, members: [...g.members, userId], member_count: g.member_count + 1 }
+                    : g,
+                )
+              : prev,
+          ),
+        rollback: () =>
+          setGroups((prev) =>
+            prev
+              ? prev.map((g) =>
+                  g.id === groupId
+                    ? {
+                        ...g,
+                        members: g.members.filter((id) => id !== userId),
+                        member_count: Math.max(0, g.member_count - 1),
+                      }
+                    : g,
+                )
+              : prev,
+          ),
+        action: () => api.addAdminGroupMember(groupId, userId),
+        errorMessage: '添加成员失败',
+      });
     },
-    [busy],
+    [run, setGroups],
   );
 
   const handleRemoveMember = useCallback(
     async (groupId: string, userId: string) => {
-      if (busy) return;
-      setBusy(`${groupId}:remove:${userId}`);
-      // 乐观更新:从成员列表移除
-      setGroups((prev) =>
-        prev
-          ? prev.map((g) =>
-              g.id === groupId
-                ? {
-                    ...g,
-                    members: g.members.filter((id) => id !== userId),
-                    member_count: Math.max(0, g.member_count - 1),
-                  }
-                : g,
-            )
-          : prev,
-      );
-      try {
-        await api.removeAdminGroupMember(groupId, userId);
-      } catch (e) {
-        // 回滚
-        setGroups((prev) =>
-          prev
-            ? prev.map((g) =>
-                g.id === groupId && !g.members.includes(userId)
-                  ? { ...g, members: [...g.members, userId], member_count: g.member_count + 1 }
-                  : g,
-              )
-            : prev,
-        );
-        setError(e instanceof ApiError ? e.message : '移除成员失败');
-      } finally {
-        setBusy(null);
-      }
+      await run({
+        id: `${groupId}:remove:${userId}`,
+        optimistic: () =>
+          setGroups((prev) =>
+            prev
+              ? prev.map((g) =>
+                  g.id === groupId
+                    ? {
+                        ...g,
+                        members: g.members.filter((id) => id !== userId),
+                        member_count: Math.max(0, g.member_count - 1),
+                      }
+                    : g,
+                )
+              : prev,
+          ),
+        rollback: () =>
+          setGroups((prev) =>
+            prev
+              ? prev.map((g) =>
+                  g.id === groupId && !g.members.includes(userId)
+                    ? { ...g, members: [...g.members, userId], member_count: g.member_count + 1 }
+                    : g,
+                )
+              : prev,
+          ),
+        action: () => api.removeAdminGroupMember(groupId, userId),
+        errorMessage: '移除成员失败',
+      });
     },
-    [busy],
+    [run, setGroups],
   );
 
   return (
@@ -209,7 +198,7 @@ export default function GroupsAdminPage() {
                           type="button"
                           className="btn btn-danger btn-xs"
                           onClick={() => handleRemoveMember(g.id, uid)}
-                          disabled={busy === `${g.id}:remove:${uid}`}
+                          disabled={busyId === `${g.id}:remove:${uid}`}
                         >
                           移除
                         </button>
@@ -226,7 +215,7 @@ export default function GroupsAdminPage() {
                   users={users}
                   existingMembers={g.members}
                   onAdd={handleAddMember}
-                  disabled={busy !== null}
+                  disabled={busyId !== null}
                 />
               </div>
             </div>

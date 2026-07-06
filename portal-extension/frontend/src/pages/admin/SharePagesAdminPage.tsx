@@ -10,9 +10,11 @@
  *   - embed_type:fullscreen(全屏 iframe)/ widget(悬浮组件 snippet)
  *   - ragflow_type:chat(/chat/share)/ agent(/agent/share)
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import type { FormEvent } from 'react';
 import { ApiError, api, type AdminSharePage } from '../../api/client';
+import { useAdminList } from '../../hooks/useAdminList';
+import { useOptimisticToggle } from '../../hooks/useOptimisticToggle';
 
 interface SharePageFormState {
   name: string;
@@ -29,29 +31,15 @@ const DEFAULT_FORM: SharePageFormState = {
 };
 
 export default function SharePagesAdminPage() {
-  const [pages, setPages] = useState<AdminSharePage[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [busyId, setBusyId] = useState<string | null>(null);
+  const { data: pages, setData: setPages, error, setError } = useAdminList(
+    () => api.listAdminSharePages().then((r) => r.share_pages),
+    { errorMessage: '加载分享页列表失败' },
+  );
+  const { busyId, run } = useOptimisticToggle({ onError: setError });
 
   const [form, setForm] = useState<SharePageFormState>(DEFAULT_FORM);
   const [formError, setFormError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await api.listAdminSharePages();
-        if (!cancelled) setPages(res.share_pages);
-      } catch (e) {
-        if (cancelled) return;
-        setError(e instanceof ApiError ? e.message : '加载分享页列表失败');
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   const handleCreate = useCallback(
     async (e: FormEvent) => {
@@ -80,29 +68,27 @@ export default function SharePagesAdminPage() {
         setCreating(false);
       }
     },
-    [creating, form],
+    [creating, form, setPages],
   );
 
   const handleToggleEnabled = useCallback(
     async (p: AdminSharePage) => {
-      if (busyId) return;
-      setBusyId(p.id);
       const next = !p.enabled;
-      setPages((prev) =>
-        prev ? prev.map((x) => (x.id === p.id ? { ...x, enabled: next } : x)) : prev,
-      );
-      try {
-        await api.updateAdminSharePage(p.id, next);
-      } catch (e) {
-        setPages((prev) =>
-          prev ? prev.map((x) => (x.id === p.id ? { ...x, enabled: p.enabled } : x)) : prev,
-        );
-        setError(e instanceof ApiError ? e.message : '更新分享页失败');
-      } finally {
-        setBusyId(null);
-      }
+      await run({
+        id: p.id,
+        optimistic: () =>
+          setPages((prev) =>
+            prev ? prev.map((x) => (x.id === p.id ? { ...x, enabled: next } : x)) : prev,
+          ),
+        rollback: () =>
+          setPages((prev) =>
+            prev ? prev.map((x) => (x.id === p.id ? { ...x, enabled: p.enabled } : x)) : prev,
+          ),
+        action: () => api.updateAdminSharePage(p.id, next),
+        errorMessage: '更新分享页失败',
+      });
     },
-    [busyId],
+    [run, setPages],
   );
 
   return (
