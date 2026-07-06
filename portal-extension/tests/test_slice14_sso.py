@@ -27,7 +27,7 @@ from sqlalchemy.pool import StaticPool
 
 from portal.db import init_db
 from portal.main import create_app
-from portal.models import SeedData
+from portal.models import SeedData, SSOIdentity
 from portal.oidc import OIDCConfig, clear_discovery_cache
 
 # OIDC 测试配置(非真实 IdP,仅占位值)
@@ -174,7 +174,9 @@ async def test_sso_callback_existing_user_success(
 
     # 预创建 SSO 用户(模拟之前已通过 SSO 登录过)
     seed = oidc_app.state.seed
-    sso_user = seed.create_sso_user("oidc", "sub-existing-001", username="sso_existing", email="existing@test.example")
+    sso_user = seed.create_sso_user(
+        SSOIdentity("oidc", "sub-existing-001"), username="sso_existing", email="existing@test.example"
+    )
     # 给该用户授权默认分享页(验证权限模型一致)
     seed.create_grant("sp_default", "user", sso_user.id, "use")
 
@@ -237,14 +239,16 @@ async def test_sso_callback_auto_create_new_user(
 
     # 验证用户已创建
     seed = oidc_app.state.seed
-    user = seed.get_user_by_sso("oidc", "sub-new-002")
+    user = seed.get_user_by_sso(SSOIdentity("oidc", "sub-new-002"))
     assert user is not None
     assert user.username == "new_sso_user"
     assert user.email == "newuser@test.example"
     assert user.is_admin is False
     assert user.enabled is True
-    assert user.sso_provider == "oidc"
-    assert user.sso_external_id == "sub-new-002"
+    # TD9:SSO 字段捆成 SSOIdentity(user.sso.provider / .external_id)
+    assert user.sso is not None
+    assert user.sso.provider == "oidc"
+    assert user.sso.external_id == "sub-new-002"
 
 
 async def test_sso_callback_reject_new_user_when_auto_create_disabled(
@@ -279,7 +283,7 @@ async def test_sso_callback_reject_new_user_when_auto_create_disabled(
         assert "不允许自动创建" in resp.json()["detail"]
 
     # 验证用户未被创建
-    assert app.state.seed.get_user_by_sso("oidc", "sub-rejected-003") is None
+    assert app.state.seed.get_user_by_sso(SSOIdentity("oidc", "sub-rejected-003")) is None
 
 
 # ===========================================================================
@@ -359,7 +363,9 @@ async def test_sso_callback_disabled_user(oidc_app, oidc_client, mock_oidc_auth_
 
     # 预创建 SSO 用户并禁用
     seed = oidc_app.state.seed
-    sso_user = seed.create_sso_user("oidc", "sub-disabled-004", username="sso_disabled", email="disabled@test.example")
+    sso_user = seed.create_sso_user(
+        SSOIdentity("oidc", "sub-disabled-004"), username="sso_disabled", email="disabled@test.example"
+    )
     seed.set_user_enabled(sso_user.id, False)
 
     mock_oidc_auth_url("https://idp.test.example/auth")
@@ -389,7 +395,7 @@ async def test_sso_user_permissions_consistent_with_builtin(
 
     # 创建 SSO 用户并授权
     seed = oidc_app.state.seed
-    sso_user = seed.create_sso_user("oidc", "sub-perm-005", username="sso_perm", email="perm@test.example")
+    sso_user = seed.create_sso_user(SSOIdentity("oidc", "sub-perm-005"), username="sso_perm", email="perm@test.example")
     seed.create_grant("sp_default", "user", sso_user.id, "use")
 
     mock_oidc_auth_url("https://idp.test.example/auth")
@@ -479,7 +485,7 @@ def test_sso_migration_adds_columns_to_existing_table():
 
 
 def test_seed_data_get_user_by_sso():
-    """SeedData.get_user_by_sso 按 provider + external_id 查用户;自建账号不匹配。"""
+    """SeedData.get_user_by_sso 按 SSOIdentity 查用户;自建账号不匹配。"""
     engine = _make_sqlite_engine()
     init_db(engine)
     from portal.config import load_settings
@@ -488,18 +494,18 @@ def test_seed_data_get_user_by_sso():
 
     sm = create_session_maker(engine)
     seed = build_seed_data(load_settings(), sm)  # 含 admin 自建账号用户
-    # 创建 SSO 用户
-    sso_user = seed.create_sso_user("oidc", "sub-xyz", username="sso_test", email="sso@test.example")
+    # 创建 SSO 用户(TD9:用 SSOIdentity 替代两参数)
+    sso_user = seed.create_sso_user(SSOIdentity("oidc", "sub-xyz"), username="sso_test", email="sso@test.example")
     # 查询匹配
-    found = seed.get_user_by_sso("oidc", "sub-xyz")
+    found = seed.get_user_by_sso(SSOIdentity("oidc", "sub-xyz"))
     assert found is not None
     assert found.id == sso_user.id
     # 不匹配的 sub
-    assert seed.get_user_by_sso("oidc", "sub-other") is None
-    # 自建账号用户(admin)sso_provider 为 None,不会被 SSO 查询匹配
+    assert seed.get_user_by_sso(SSOIdentity("oidc", "sub-other")) is None
+    # 自建账号用户(admin)sso 为 None,不会被 SSO 查询匹配
     admin = seed.get_user_by_username("admin")
     assert admin is not None
-    assert admin.sso_provider is None
+    assert admin.sso is None
     engine.dispose()
 
 
@@ -511,11 +517,14 @@ def test_seed_data_create_sso_user_defaults():
 
     sm = create_session_maker(engine)
     seed = SeedData(sm)
-    user = seed.create_sso_user("oidc", "sub-defaults", username="sso_defaults", email="d@test.example")
+    # TD9:用 SSOIdentity 替代 (provider, external_id) 两参数
+    user = seed.create_sso_user(SSOIdentity("oidc", "sub-defaults"), username="sso_defaults", email="d@test.example")
     assert user.is_admin is False
     assert user.enabled is True
-    assert user.sso_provider == "oidc"
-    assert user.sso_external_id == "sub-defaults"
+    # TD9:SSO 字段捆成 SSOIdentity(user.sso.provider / .external_id)
+    assert user.sso is not None
+    assert user.sso.provider == "oidc"
+    assert user.sso.external_id == "sub-defaults"
     engine.dispose()
 
 
