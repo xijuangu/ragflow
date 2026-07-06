@@ -38,6 +38,7 @@ from typing import Literal
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
+from portal.config import Settings
 from portal.db import (
     AuditLogModel,
     ChatSessionOwnerModel,
@@ -872,7 +873,7 @@ class SeedData:
             return result
 
 
-def build_seed_data(settings, session_maker: sessionmaker) -> SeedData:
+def build_seed_data(settings: Settings, session_maker: sessionmaker) -> SeedData:
     """构造初始数据:admin + user2 + 默认分享页 + grant(Slice 1-3 兼容,Slice 8 DB idempotent)。
 
     Slice 4 保留 seed admin 与 user2 以避免 Slice 1-3 测试回归;
