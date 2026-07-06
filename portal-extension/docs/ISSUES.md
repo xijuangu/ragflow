@@ -647,6 +647,22 @@ PRD D9 决定一期仅全屏 Chat,字段已预留(`embed_type` / `ragflow_type`)
 
 ---
 
+## 后续待办(Issue 16 AC2 遗留)
+
+> Issue 16 AC2「悬浮组件在任意页面右下角加载,点击展开对话窗,能正常对话」— Slice 16 实现了 `/widget/<id>` 骨架 HTML + 可嵌入 snippet + CSP frame-ancestors 放行,但 **悬浮组件实际 UI 渲染(右下角悬浮按钮 + 点击展开对话窗 + iframe 加载 + SSE 对话)尚未实现**。`/widget/<id>` 当前仅返回含 `<div id="widget-root">` 的占位 HTML,需前端构建产物挂载 React 组件。
+
+**待实现内容:**
+- 前端新建 WidgetEntry 组件(独立入口,不依赖 AuthContext)
+- 右下角悬浮按钮(可折叠/展开)
+- 展开后渲染 iframe(调 `/public/<id>/embed-url` 或标准 embed-url,带 session_id)
+- widget 模式下会话 CRUD(复用 Slice 10 逻辑,但 widget 独立入口无登录态 — 若需登录则走标准 embed-url,若公开则走 /public)
+- Vite 多入口构建配置(widget 独立 bundle)
+- `/widget/<id>` HTML 模板加载 widget bundle JS
+
+**Blocked by:** 无(可随时开始,但建议技术债清理后进行)
+
+---
+
 ## 技术债(待重构,非 slice)
 
 > 来源:Slice 8 + Slice 9 合并后的 `/review` Standards 报告(2026-07-06)。记入文档备查,暂不拆 slice,后续迭代时择机处理。
