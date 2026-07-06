@@ -495,6 +495,51 @@ async def _invoke_upstream(fn: Callable[[], Awaitable[T]], action: str) -> T:
         raise HTTPException(status_code=502, detail=f"{action}: {e}")
 
 
+# ---------------------------------------------------------------------------
+# TD15:ragflow_type 分发辅助 — 消除散落的 ``if ragflow_type == "agent"`` 分支
+#
+# 每个操作集中到一个 dispatch 函数,按 ragflow_type 调用对应的 chat/agent 函数名。
+# 保留按名调用(而非 dict 派发)以兼容测试 monkeypatch:测试 patch
+# ``portal.routes.precreate_agent_session_via_ragflow`` 等名字,必须在运行时
+# 从模块 globals 解析才能命中 mock。
+# ---------------------------------------------------------------------------
+
+
+def _build_iframe_url(ragflow_host: str, resource_id: str, t_short: str, session_id: str, ragflow_type: str) -> str:
+    """按 ragflow_type 构造 iframe URL(chat → /chat/share,agent → /agent/share)。"""
+    if ragflow_type == "agent":
+        return build_agent_iframe_url(ragflow_host, resource_id, t_short, session_id)
+    return build_iframe_url(ragflow_host, resource_id, t_short, session_id)
+
+
+async def _precreate_session(settings, resource_id: str, ragflow_type: str) -> str:
+    """按 ragflow_type 预创建 session(chat → chatbot 端点,agent → agentbot 端点)。"""
+    if ragflow_type == "agent":
+        return await precreate_agent_session_via_ragflow(settings, resource_id)
+    return await precreate_session_via_ragflow(settings, resource_id)
+
+
+async def _fetch_session_history(settings, resource_id: str, session_id: str, ragflow_type: str) -> dict:
+    """按 ragflow_type 取回会话 history(chat → chatbot 端点,agent → agentbot 端点)。"""
+    if ragflow_type == "agent":
+        return await fetch_agent_session_history_via_ragflow(settings, resource_id, session_id)
+    return await fetch_session_history_via_ragflow(settings, resource_id, session_id)
+
+
+async def _rename_session(settings, resource_id: str, session_id: str, name: str, ragflow_type: str) -> None:
+    """按 ragflow_type 重命名会话(chat → chatbot 端点,agent → agentbot 端点)。"""
+    if ragflow_type == "agent":
+        return await rename_agent_session_via_ragflow(settings, resource_id, session_id, name)
+    return await rename_session_via_ragflow(settings, resource_id, session_id, name)
+
+
+async def _delete_session(settings, resource_id: str, session_id: str, ragflow_type: str) -> None:
+    """按 ragflow_type 删除会话(chat → chatbot 端点,agent → agentbot 端点)。"""
+    if ragflow_type == "agent":
+        return await delete_agent_session_via_ragflow(settings, resource_id, session_id)
+    return await delete_session_via_ragflow(settings, resource_id, session_id)
+
+
 async def _dual_delete_session(
     settings,
     store,
@@ -515,10 +560,8 @@ async def _dual_delete_session(
     返回 False 表示 RAGFlow 失败(门户侧已标记 deleted_at,记录保留待重试)。
     """
     try:
-        if ragflow_type == "agent":
-            await delete_agent_session_via_ragflow(settings, dialog_id, session_id)
-        else:
-            await delete_session_via_ragflow(settings, dialog_id, session_id)
+        # TD15:统一走 _delete_session 分发(消除 if ragflow_type == "agent" 分支)
+        await _delete_session(settings, dialog_id, session_id, ragflow_type)
         store.delete(session_id)
         return True
     except HTTPException:
@@ -568,11 +611,10 @@ async def get_embed_url(share_page_id: str, request: Request, user=Depends(get_c
             "share_page_id": share_page.id,
             "expires_in": settings.t_short_ttl_seconds,
         }
-    # fullscreen 类型:按 ragflow_type 选 iframe URL 构造函数
-    if share_page.ragflow_type == "agent":
-        iframe_url = build_agent_iframe_url(settings.ragflow_host, share_page.ragflow_resource_id, t_short)
-    else:
-        iframe_url = build_iframe_url(settings.ragflow_host, share_page.ragflow_resource_id, t_short)
+    # fullscreen 类型:按 ragflow_type 构造 iframe URL(TD15:统一走 _build_iframe_url)
+    iframe_url = _build_iframe_url(
+        settings.ragflow_host, share_page.ragflow_resource_id, t_short, "", share_page.ragflow_type
+    )
     return {
         "iframe_url": iframe_url,
         "ragflow_type": share_page.ragflow_type,
@@ -606,17 +648,11 @@ async def precreate_session(share_page_id: str, request: Request, user=Depends(g
     share_page = _check_share_page_access(seed, share_page_id, user)
     settings = request.app.state.settings
     # 调 RAGFlow 预创建 session(网关用 beta Token,绝不返回浏览器)
-    # Slice 16:agent 类型走 agentbot 端点,chat 类型走 chatbot 端点
-    if share_page.ragflow_type == "agent":
-        session_id = await _invoke_upstream(
-            lambda: precreate_agent_session_via_ragflow(settings, share_page.ragflow_resource_id),
-            "预创建 agent session 失败",
-        )
-    else:
-        session_id = await _invoke_upstream(
-            lambda: precreate_session_via_ragflow(settings, share_page.ragflow_resource_id),
-            "预创建 session 失败",
-        )
+    # TD15:统一走 _precreate_session 分发(消除 if ragflow_type == "agent" 分支)
+    session_id = await _invoke_upstream(
+        lambda: _precreate_session(settings, share_page.ragflow_resource_id, share_page.ragflow_type),
+        "预创建 session 失败",
+    )
     # 立即绑定到当前用户(chat_session_owner.portal_user_id NOT NULL)
     # Slice 13:session 继承 share_page 的 org_id(与 user.org_id 一致,已由 _check_share_page_access 校验)
     request.app.state.session_store.bind(
@@ -629,11 +665,10 @@ async def precreate_session(share_page_id: str, request: Request, user=Depends(g
     # 签发 T_short 并构造含 session_id 的 iframe URL
     token_store = request.app.state.token_store
     t_short = token_store.issue(user.id, share_page.id, settings.t_short_ttl_seconds)
-    # Slice 16:agent 类型用 /agent/share 路径构造 iframe URL
-    if share_page.ragflow_type == "agent":
-        iframe_url = build_agent_iframe_url(settings.ragflow_host, share_page.ragflow_resource_id, t_short, session_id)
-    else:
-        iframe_url = build_iframe_url(settings.ragflow_host, share_page.ragflow_resource_id, t_short, session_id)
+    # TD15:统一走 _build_iframe_url 分发(消除 if ragflow_type == "agent" 分支)
+    iframe_url = _build_iframe_url(
+        settings.ragflow_host, share_page.ragflow_resource_id, t_short, session_id, share_page.ragflow_type
+    )
     return {
         "session_id": session_id,
         "iframe_url": iframe_url,
@@ -690,22 +725,16 @@ async def resume_session(share_page_id: str, session_id: str, request: Request, 
     # 调 RAGFlow GET 端点取回消息 + 引用
     # Slice 16:agent 类型走 agentbot 端点,chat 类型走 chatbot 端点
     settings = request.app.state.settings
-    if share_page.ragflow_type == "agent":
-        history = await _invoke_upstream(
-            lambda: fetch_agent_session_history_via_ragflow(settings, share_page.ragflow_resource_id, session_id),
-            "取回 agent 会话失败",
-        )
-    else:
-        history = await _invoke_upstream(
-            lambda: fetch_session_history_via_ragflow(settings, share_page.ragflow_resource_id, session_id),
-            "取回会话失败",
-        )
-    # 恢复会话时用 len(messages) 更新 message_count(简化实现:字段存在,恢复后准确)
-    # Slice 8:DB 后端需经公开 API update_message_count 持久化(原直接改 dataclass 属性不生效)
-    if isinstance(history, dict):
-        messages = history.get("messages", [])
-        if owner.message_count != len(messages):
-            request.app.state.session_store.update_message_count(session_id, len(messages))
+    # TD15:统一走 _fetch_session_history 分发(消除 if ragflow_type == "agent" 分支)
+    history = await _invoke_upstream(
+        lambda: _fetch_session_history(settings, share_page.ragflow_resource_id, session_id, share_page.ragflow_type),
+        "取回会话失败",
+    )
+    # 恢复会话时同步 message_count(TD2 + TD8:聚到 sync_message_count_from_history)
+    # history 已 fetch,传入 history= 避免重复请求
+    await request.app.state.session_store.sync_message_count_from_history(
+        settings, share_page.ragflow_resource_id, session_id, share_page.ragflow_type, history=history
+    )
     # 补充门户侧标题(chat_session_owner.title 为列表显示主源)
     if isinstance(history, dict):
         history = {**history, "title": owner.title}
@@ -744,12 +773,9 @@ async def rename_session(
         raise HTTPException(status_code=403, detail="会话不属于该分享页")
     # 同步策略:RAGFlow PATCH 成功才更新门户 title;失败抛 502(不吞异常,不更新门户 title)
     # rename_session_via_ragflow 在非 200 时已抛 HTTPException(502),此处直接透传
-    # Slice 16:agent 类型走 agentbot 端点,chat 类型走 chatbot 端点
+    # TD15:统一走 _rename_session 分发(消除 if ragflow_type == "agent" 分支)
     settings = request.app.state.settings
-    if share_page.ragflow_type == "agent":
-        await rename_agent_session_via_ragflow(settings, share_page.ragflow_resource_id, session_id, body.title)
-    else:
-        await rename_session_via_ragflow(settings, share_page.ragflow_resource_id, session_id, body.title)
+    await _rename_session(settings, share_page.ragflow_resource_id, session_id, body.title, share_page.ragflow_type)
     # RAGFlow 成功 → 更新门户 title(两侧同步)
     request.app.state.session_store.rename(session_id, body.title)
     return {"session_id": session_id, "title": body.title}
@@ -1449,12 +1475,10 @@ async def admin_get_session(
         lambda: fetch_session_history_via_ragflow(settings, owner.ragflow_resource_id, session_id),
         "取回会话失败",
     )
-    # 恢复会话时用 len(messages) 更新 message_count(简化实现:字段存在,恢复后准确)
-    # Slice 8:DB 后端需经公开 API update_message_count 持久化(原直接改 dataclass 属性不生效)
-    if isinstance(history, dict):
-        messages = history.get("messages", [])
-        if owner.message_count != len(messages):
-            request.app.state.session_store.update_message_count(session_id, len(messages))
+    # 同步 message_count(TD2 + TD8:聚到 sync_message_count_from_history)
+    await session_store.sync_message_count_from_history(
+        settings, owner.ragflow_resource_id, session_id, history=history
+    )
     # 合并元数据与正文
     return {
         **metadata,
