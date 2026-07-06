@@ -638,6 +638,18 @@ PRD D9 决定一期仅全屏 Chat,字段已预留(`embed_type` / `ragflow_type`)
 
 ---
 
+## 技术债(待重构,非 slice)
+
+> 来源:Slice 8 + Slice 9 合并后的 `/review` Standards 报告(2026-07-06)。记入文档备查,暂不拆 slice,后续迭代时择机处理。
+
+| # | 类型 | 位置 | 描述 | 处置 |
+|---|---|---|---|---|
+| TD1 | Duplicated Code | `portal/models.py` SeedData/SessionStore/AuditStore | `with self._sm() as session: ... session.commit()` 形状重复 30+ 次。可抽 `_transact(fn)` 上下文管理器。 | 待重构 |
+| TD2 | Duplicated Code | `portal/routes.py:443-447` 与 `:1002-1006` | 消息计数同步逻辑(`if isinstance(history, dict): ... update_message_count(...)`)两处逐字重复。可抽 `_sync_message_count(owner, history, session_id, store)` helper。 | 待重构 |
+| TD3 | Feature Envy | `portal/models.py` `build_seed_data` | 直接构造 `PortalUserModel`/`SharePageModel` 绕过 `SeedData` CRUD。**评估为有意为之**:固定 ID(`u_admin`/`sp_default`)保证 idempotent seed,`create_user` 用随机 ID 无法保证。 | Won't fix(有理由) |
+| TD4 | Mysterious Name | `portal/models.py` `self._sm`(38 次) | `_sm` 对 `session_maker` 过简,`_session_maker` 更诚实。 | 待重构(随 TD1 一起) |
+| TD5 | Primitive Obsession(pre-existing) | `portal/db.py` `SharePageGrantModel` | `subject_type`/`permission` 仍为 `String(16)`,虽同文件已定义 `SubjectType`/`Permission` Literal。pre-existing,非 Slice 8 引入。 | 延后(影响 schema 迁移) |
+
 ## 迁移至正式 issue tracker 时的说明
 
 - 每个 Issue 节对应一个 issue,标题用「Slice N: <描述>」。
