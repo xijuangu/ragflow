@@ -1314,10 +1314,10 @@ iframe 内 RAGFlow 前端用 `useSendMessageWithSse()`(返回 `{ send, answer, d
    - 校验 `event.origin`(只接受同源 iframe,避免恶意 postMessage)
    - 过滤 `event.data.type === 'ragflow:completions:start'` → setIsStreaming(true)
    - 过滤 `event.data.type === 'ragflow:completions:end'` → setIsStreaming(false)
-   - `handleNewSession` / `handleReopen` 在 `isStreaming` 时 return(守卫)
-   - 「新建会话」「切换会话」按钮在 isStreaming 时变灰禁用 + tooltip 提示「正在生成回复,请稍候...」
+   - `handleNewSession` / `handleReopen` 在 `isStreaming` 时弹提示「正在生成回复,请先点击对话框内的停止按钮,再新建/切换会话(为限制并发量)」,return(不执行切换)
+   - **不禁用按钮**(按钮仍可点击,但点击时弹提示,给用户反馈而非变灰)
 3. **测试**:
-   - portal Vitest:模拟 postMessage start/end,验证 isStreaming 状态切换 + 按钮禁用逻辑
+   - portal Vitest:模拟 postMessage start/end,验证 isStreaming 状态切换 + isStreaming 时 handleNewSession/handleReopen 不执行 + 提示文案
    - RAGFlow web `npm run build`(Jest 跑不起来,用 build 兜底)
 
 ### postMessage 协议(决策点)
@@ -1333,10 +1333,11 @@ postMessage({ type: 'ragflow:completions:end' }, '*');
 
 ### Acceptance criteria
 
-- [ ] iframe 内发消息后(SSE 开始),portal 侧「新建会话」「切换会话」按钮变灰禁用
-- [ ] SSE 完成(RAGFlow 回复结束)后,按钮自动恢复可用
-- [ ] SSE 出错时按钮也恢复(不会永久禁用)—— 验证 done/error 都触发 end
-- [ ] 禁用期间点击按钮无效果(不重载 iframe,不丢失消息)
+- [ ] iframe 内发消息后(SSE 开始),portal 侧点击「新建会话」/「切换会话」弹提示「正在生成回复,请先点击对话框内的停止按钮,再新建/切换会话(为限制并发量)」
+- [ ] 弹提示后不执行切换(不重载 iframe,不丢失消息)
+- [ ] 用户点 iframe 内「停止生成」→ SSE 结束 → postMessage end → portal 恢复可切换
+- [ ] SSE 正常完成后,点击「新建会话」/「切换会话」不再弹提示(正常切换)
+- [ ] SSE 出错时也恢复可切换(不会永久禁用)—— 验证 done/error 都触发 end
 - [ ] origin 校验:非同源 postMessage 被忽略(安全)
 - [ ] 既有 portal Vitest 全绿 + 新增 isStreaming 测试通过
 - [ ] RAGFlow web `npm run build` 通过
