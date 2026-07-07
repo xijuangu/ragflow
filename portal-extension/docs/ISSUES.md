@@ -1048,6 +1048,112 @@ Issue 23/25 当前用 SSE 成功后的 `message_count += 1` 表示"完成一轮�
 
 ---
 
+## Issue 27 — Slice 27: 部署 RAGFlow bot_api 扩展端点到运行容器(修复 GET/PATCH/DELETE sessions 404)
+
+### Parent
+
+Issue 24(Slice 24 部署 commit `1a65f38` 后浏览器 E2E 暴露:点击会话与管理员 elevated 查正文均 404)。
+
+### 根因(E2E 验证发现)
+
+部署的 RAGFlow 容器 `docker-ragflow-cpu-1`(官方 v0.26.0 镜像)`api/apps/restful_apis/bot_api.py` 只有 4 个端点(`/completions`、`/info`、`/agentbots/*/completions`、`/agentbots/*/inputs`)。本地 fork 在 Slice 2(commit `e4d2f3a`)与 Slice 5(commit `6fecd01`)加的 3 个 chatbot 端点 + 对应 agentbot 端点 + `_assert_dialog_access` helper **从未部署到容器**。
+
+Portal 网关 `fetch_session_history_via_ragflow`(`portal-extension/portal/gateway.py:514`)调 RAGFlow `GET /api/v1/chatbots/<dialog_id>/sessions/<session_id>` → RAGFlow 返回 404 → portal 原样透传给浏览器 → 浏览器显示「请求错误 404: undefined」,iframe 内只有界面无消息。管理员 elevated 视图(`portal-extension/portal/routes.py`)同理 502「RAGFlow 取回会话失败: HTTP 404」。
+
+服务器验证:`ssh 172.16.10.180 'docker exec docker-ragflow-cpu-1 grep -n "_assert_dialog_access\|chatbots.*sessions" /ragflow/api/apps/restful_apis/bot_api.py'` 返回空。
+
+### What to build
+
+把本地 fork 在 Slice 2/5 加的 chatbot 端点(GET/PATCH/DELETE `/chatbots/<dialog_id>/sessions/<session_id>`)+ 对应 agentbot 端点(Slice 16/TD15 重构时加的 thin wrapper)+ `_assert_dialog_access` helper,部署到 172.16.10.180 的 `docker-ragflow-cpu-1` 容器。
+
+**部署方式(用户确认):docker cp 临时替换**。把改动的 `.py` 文件 docker cp 进容器,重启 RAGFlow api server 进程(容器内 `pkill -f ragflow_server.py`,entrypoint 会自动拉起;或 `docker restart docker-ragflow-cpu-1`)。
+
+**运维约束**:docker cp 替换在容器重建(`docker compose down/up`)时会丢失。需在 `docs/HANDOFF-phase3.md` 或运维文档记录此约束,后续若重建容器需重新 cp 或改为 volume 挂载 / rebuild 镜像。
+
+**改动范围**:对照本地 `api/apps/restful_apis/bot_api.py` 与容器内版本,diff 出需 cp 的文件(至少 `bot_api.py`;若 agent 端点在 `agent_api.py` 也一并 cp;若 `_assert_dialog_access` 依赖其他 helper 也需 cp)。cp 前先备份容器内原文件(`dist.bak.<timestamp>` 模式)。
+
+### Acceptance criteria
+
+- [x] 容器内 `curl GET /api/v1/chatbots/{dialog_id}/sessions/{session_id}` 返回 200(非 404)— 部署后 curl 验证通过(无 T_short 返回鉴权错误 JSON,端点存在;portal 透传后 200)
+- [ ] 容器内 `curl PATCH .../sessions/{sid}` 重命名返回 200,`API4Conversation.name` 更新 — curl 层面端点存在(返回鉴权 JSON 非 404),完整 PATCH 验证留待 Slice 29
+- [ ] 容器内 `curl DELETE .../sessions/{sid}` 返回 200,记录删除 — 同上,端点存在,完整 DELETE 验证留待 Slice 29
+- [x] nginx 路径 `GET /api/v1/chatbots/{id}/sessions/{sid}` 返回 200(portal 透传 RAGFlow) — Slice 27 部署后 curl 验证通过
+- [x] 容器内原 `bot_api.py` 已备份(`bot_api.py.bak.20260707-145501`),可在需要时回滚
+- [x] 运维文档记录「容器重建需重新 cp」约束(更新 `docs/HANDOFF-phase3.md` §5.1 部署命令)
+- [x] 既有 portal pytest 全绿(无回归;基线 387 passed + 5 skipped)— Slice 27 部署后 pytest 387 passed + 5 skipped,无回归
+- [ ] 浏览器点击左侧会话,iframe 显示历史消息 — 留待 Slice 29 E2E 验收
+- [ ] 管理后台「会话搜索 → 查看正文 → 以管理员身份查看」返回 200 — 留待 Slice 29 E2E 验收
+- [ ] ~`ragflow_type=agent` 的分享页同样工作~ — **已知限制**:portal 网关 `_ragflow_bot_segment` 对 agent 返回 "agentbots",但 RAGFlow 官方只有 `/agents/<id>/sessions/<sid>`(非 `/agentbots/`)。chat 类型已修复,agent 类型需改 portal 网关 URL 构造,留作后续 issue(非 Slice 27 范围)
+
+### Blocked by
+
+None - can start immediately(Issue 24 已部署,本 slice 修部署遗漏)
+
+---
+
+## Issue 28 — Slice 28: 修复"新建会话"按钮创建空 session 无 greeting
+
+### Parent
+
+Issue 24(Slice 24 改 RAGFlow 前端读 URL `session_id` 跳过 `fetchSessionId` greeting,与 portal 前端 `handleNewSession` 的 precreate 路径冲突)。
+
+### 根因(E2E 验证发现)
+
+Slice 24 改了 RAGFlow 前端 [use-send-shared-message.ts](file:///Users/xijuangu/Developer/Work/thqh_projects/rag/ragflow/web/src/pages/next-chats/hooks/use-send-shared-message.ts):URL 有 `session_id` → 跳过 `fetchSessionId`(greeting)→ 调 GET history 恢复 `derivedMessages`。
+
+但 portal 前端 [SharePageDetailPage.tsx:155](file:///Users/xijuangu/Developer/Work/thqh_projects/rag/ragflow/portal-extension/frontend/src/pages/SharePageDetailPage.tsx#L155) 的 `handleNewSession` 仍调 `api.precreateSession(id)`,返回的 `iframe_url` 带 `session_id` 参数 → RAGFlow 前端读 URL session_id → 跳过 greeting → 调 GET history 取 precreate 的空 session → 显示空(且因 Issue 27 缺端点还会 404)。
+
+用户期望(已确认):「新建会话」按钮应显示 greeting 开场白,符合用户对「新建会话」的直觉。
+
+### What to build
+
+portal 前端 `handleNewSession` 改为不带 session_id 的路径:调 `api.getEmbedUrl(id)`(而非 `precreateSession`),返回的 iframe URL 不含 `session_id` → RAGFlow 前端走 `fetchSessionId` 创建新 session + greeting → 网关 Slice 22 逻辑在 SSE 成功后绑定到当前用户 → Slice 23 轮询刷新左侧列表。
+
+消除 precreate 路径产生的空 session 孤儿(precreate 创建的 session_A 不会被 iframe 使用,因 RAGFlow 前端不读 URL session_id —— Slice 22 根因诊断已确认)。fullscreen 类型不再用 precreate;widget 类型若仍需 precreate(独立入口逻辑)单独评估。
+
+### Acceptance criteria
+
+- [ ] 点击「新建会话」→ iframe 显示 greeting 开场白(非空)
+- [ ] 发送首条消息后,左侧 2s 内出现新会话,消息数正确(非 0)
+- [ ] 不产生消息数为 0 的孤儿 precreate session(验证:新建会话后立即刷新,左侧不出现新会话,只有发消息后才出现)
+- [ ] 连续点击「新建会话」多次,只创建一个 session(保留 Slice 23 的 useRef 防抖)
+- [ ] fullscreen 类型不再调 `precreateSession`(改调 `getEmbedUrl`)
+- [ ] 既有前端 Vitest 全绿
+- [ ] 既有 portal pytest 全绿(无回归)
+
+### Blocked by
+
+- Issue 27(Slice 27 先部署 GET history 端点,否则新建会话的 greeting session 点击会 404)
+
+---
+
+## Issue 29 — Slice 29: Issue 24/26 E2E 验收闭环
+
+### Parent
+
+Issue 24 + 26(代码已实现并部署,但浏览器 E2E 验收因 Issue 27 部署遗漏 + Issue 28 新建会话副作用而未闭环)。
+
+### What to build
+
+Issue 27(部署端点)+ Issue 28(新建会话修复)代码与部署均就绪后,做最终浏览器 E2E 验收,确认 Issue 24 + 26 的 acceptance criteria 全部满足,勾选 ISSUES.md。本 slice 无代码改动(纯验收 + 文档)。
+
+若验收中发现新问题,记录为新 issue 而非在本 slice 内修复。
+
+### Acceptance criteria
+
+- [ ] Issue 24 的 11 项 AC 全部勾选(关键:点击会话恢复历史、刷新页面历史仍在、admin elevated 不 502)
+- [ ] Issue 26 的 8 项 AC 全部勾选(关键:首次提问后消息数 = 3、新增轮次按 history 长度同步)
+- [ ] Issue 20(Phase 3 B1/B2/B3 E2E 验收)顺带完成或记录剩余项
+- [ ] Slice 27 + 28 的浏览器相关验收项全部勾选
+- [ ] 验收过程无新 issue 产生(或有则记录)
+
+### Blocked by
+
+- Issue 27(Slice 27 先修复 404)
+- Issue 28(Slice 28 先修复新建会话 greeting)
+
+---
+
 ## 后续待办(Issue 16 AC2 遗留)
 
 > Issue 16 AC2「悬浮组件在任意页面右下角加载,点击展开对话窗,能正常对话」— Slice 16 实现了 `/widget/<id>` 骨架 HTML + 可嵌入 snippet + CSP frame-ancestors 放行,但 **悬浮组件实际 UI 渲染(右下角悬浮按钮 + 点击展开对话窗 + iframe 加载 + SSE 对话)尚未实现**。`/widget/<id>` 当前仅返回含 `<div id="widget-root">` 的占位 HTML,需前端构建产物挂载 React 组件。

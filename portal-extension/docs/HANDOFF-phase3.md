@@ -94,14 +94,43 @@ head -12 frontend/dist/index.html
 # 同步前端 dist + 后端改动
 rsync -az --delete ragflow/portal-extension/frontend/dist/ 172.16.10.180:~/portal-extension/frontend/dist/
 rsync -az ragflow/portal-extension/portal/main.py 172.16.10.180:~/portal-extension/portal/main.py
-# (改 routes.py/gateway.py 时同步对应文件)
+# (改 routes.py/gateway.py/models.py 时同步对应文件)
+rsync -az ragflow/portal-extension/portal/{gateway.py,models.py,routes.py} 172.16.10.180:~/portal-extension/portal/
 
-# 重启 portal(加载新 dist + 代码)
-ssh 172.16.10.180 'bash ~/portal-extension/start.sh'
+# 重启 portal(注意:start.sh 用 exec,不会自动 pkill 旧进程;必须先 pkill 再 start)
+ssh 172.16.10.180 'pkill -f "uvicorn portal.main:app"; sleep 2; nohup bash ~/portal-extension/start.sh > ~/portal-extension/portal.log 2>&1 < /dev/null &'
 
 # curl 验证(服务器本地)
 ssh 172.16.10.180 'curl -s -H "Accept: text/html" -o /dev/null -w "%{http_code} %{content_type}\n" http://127.0.0.1/portal/share-pages'
 ```
+
+### 5.1 RAGFlow bot_api 扩展端点部署(Slice 27 — docker cp 临时替换)
+
+RAGFlow 容器是官方 v0.26.0 镜像,不含本地 fork 在 Slice 2/5 加的 chatbot sessions 端点
+(`GET/PATCH/DELETE /api/v1/chatbots/<dialog_id>/sessions/<session_id>`)。
+Slice 27 通过 docker cp 把本地 `api/apps/restful_apis/bot_api.py` 替换容器内版本。
+
+```bash
+# 1. 备份容器内原文件(带时间戳)
+ssh 172.16.10.180 'TS=$(date +%Y%m%d-%H%M%S); docker exec docker-ragflow-cpu-1 cp /ragflow/api/apps/restful_apis/bot_api.py /ragflow/api/apps/restful_apis/bot_api.py.bak.$TS'
+
+# 2. cp 本地 bot_api.py 到容器
+scp ragflow/api/apps/restful_apis/bot_api.py 172.16.10.180:/tmp/bot_api.py
+ssh 172.16.10.180 'docker cp /tmp/bot_api.py docker-ragflow-cpu-1:/ragflow/api/apps/restful_apis/bot_api.py && rm /tmp/bot_api.py'
+
+# 3. 重启 RAGFlow api server(容器内 pkill,entrypoint 自动拉起)
+ssh 172.16.10.180 'docker exec docker-ragflow-cpu-1 pkill -f ragflow_server.py; sleep 15'
+
+# 4. 验证端点存在(返回 200,非 404)
+ssh 172.16.10.180 'curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1/api/v1/chatbots/<dialog_id>/sessions/<session_id>'
+```
+
+**运维约束(重要):**
+- docker cp 替换在容器重建(`docker compose down/up`、`docker restart` 不会丢,但 `down -v` 或重新 `up` 镜像会丢)时会丢失。
+- 若容器重建,需重新执行上述 cp 步骤,或改为 volume 挂载 / rebuild 镜像。
+- 容器内备份文件 `bot_api.py.bak.<timestamp>` 是回滚点,回滚命令:
+  `docker exec docker-ragflow-cpu-1 bash -c "cp /ragflow/api/apps/restful_apis/bot_api.py.bak.<timestamp> /ragflow/api/apps/restful_apis/bot_api.py && pkill -f ragflow_server.py"`
+- agent 类型(`ragflow_type=agent`)的 sessions 端点仍有已知问题:portal 网关 `_ragflow_bot_segment` 对 agent 返回 "agentbots",但 RAGFlow 官方只有 `/agents/<id>/sessions/<sid>`(非 `/agentbots/`)。chat 类型已修复,agent 类型留作后续 issue。
 
 ## 6. 已完成的 Phase 3 前置工作(本轮)
 
