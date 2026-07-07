@@ -832,6 +832,57 @@ iframe 加载后,RAGFlow 前端从 URL 读 session_id,首问直接带 session_id
 
 ---
 
+## Issue 22 — Slice 22: 网关 SSE 代理时绑定 RAGFlow 实际创建的 session(修正 Issue 21 方向)
+
+### Parent
+
+Issue 21(实施后 E2E 仍 403 — 方向错误,根因诊断见下)。
+
+### 根因诊断(Issue 21 实施后 E2E 仍 403)
+
+Issue 21 的假设:**「iframe 加载后,RAGFlow 前端从 URL 读 session_id,首问直接带 session_id」** — 这个假设是**错的**。
+
+RAGFlow 前端 `web/src/pages/next-chats/hooks/use-send-shared-message.ts:77`:
+```tsx
+session_id: get(derivedMessages, '0.session_id'),
+```
+session_id 来自 `derivedMessages[0].session_id`(SSE 响应里 RAGFlow 返回的 session_id),**不从 URL `?session_id=` 读**。
+
+页面加载时 `useEffect(fetchSessionId)`(`use-send-shared-message.ts:120-122`)发 `question: ''` 请求(无 session_id)→ RAGFlow 创建新 session_B → SSE 返回 session_B → 前端存 `derivedMessages[0].session_id = session_B`。
+
+**完整失败链路**:
+1. portal `precreate_session` 创建 session_A,绑定 session_A,返回 iframe URL 含 `session_id=session_A`
+2. iframe 加载,RAGFlow 前端**忽略 URL 的 session_id**
+3. `fetchSessionId` 发 `POST /completions` body `{question:'', session_id: undefined}` → 网关 `request_session_id=""` → 跳过归属校验 → 透传 → 200,RAGFlow 返回 session_B
+4. 用户发消息 → `POST /completions` body `{question:'...', session_id: session_B}` → 网关 `_assert_session_ownership(session_B)` → `session_store.get(session_B)` 返回 None(只绑定了 session_A)→ **403**
+
+Slice 21 往 iframe URL 塞 `session_id` 参数无效 — RAGFlow 前端不读它。
+
+### What to build
+
+**修复方向**:网关在 SSE 代理时,若请求体无 session_id(首次 fetchSessionId 请求),从 SSE 响应流解析 RAGFlow 返回的 session_id,流成功完成后绑定到当前用户。这样 iframe 实际使用的 session_B 会被绑定,后续请求(带 session_B)归属校验通过。
+
+1. **网关 `_build_sse_streaming_response`**:流式转发的同时解析 SSE `data:` 行的 session_id;流成功完成后,若 `request_session_id == ""`(请求体无 session_id)且解析到响应 session_id,调 `session_store.bind(parsed_session_id, share_page_id, portal_user_id, dialog_id, org_id)` 绑定到当前用户。
+2. **前端回退 Slice 21**:fullscreen 类型改回只调 `GET /embed-url`(不 precreate)。precreate 创建的 session_A 不会被 iframe 使用(RAGFlow 前端不读 URL session_id),留着只产生孤儿记录。widget 类型仍用 embed-url(返回 snippet,逻辑不变)。
+
+### Acceptance criteria
+
+- [ ] 网关 `_build_sse_streaming_response` 解析 SSE 响应的 session_id(首帧 `data.session_id` 或 `data.data.session_id`)
+- [ ] 请求体无 session_id 且响应有 session_id 时,流成功完成后绑定到当前用户(chat_session_owner)
+- [ ] 请求体有 session_id 且已绑定时,不重复绑定(走既有归属校验 + update_last_active 路径)
+- [ ] 前端 fullscreen 类型改回调 `GET /embed-url`(回退 Slice 21 的 precreate)
+- [ ] iframe 内首次发消息(fetchSessionId 的 question='' 请求触发绑定),第二次 /completions(带 session_id)返回 200
+- [ ] 多轮对话:连续发 2+ 条消息,每次 /completions 均 200
+- [ ] portal 日志无 403「会话不存在或无权访问」
+- [ ] 既有 pytest 全绿(无回归;基线 375 passed + 5 skipped)
+- [ ] 前端 Vitest 全绿(回退 Slice 21 后测试同步调整)
+
+### Blocked by
+
+- Issue 21(Slice 21 实施后暴露根因 — RAGFlow 前端不读 URL session_id)
+
+---
+
 ## 后续待办(Issue 16 AC2 遗留)
 
 > Issue 16 AC2「悬浮组件在任意页面右下角加载,点击展开对话窗,能正常对话」— Slice 16 实现了 `/widget/<id>` 骨架 HTML + 可嵌入 snippet + CSP frame-ancestors 放行,但 **悬浮组件实际 UI 渲染(右下角悬浮按钮 + 点击展开对话窗 + iframe 加载 + SSE 对话)尚未实现**。`/widget/<id>` 当前仅返回含 `<div id="widget-root">` 的占位 HTML,需前端构建产物挂载 React 组件。

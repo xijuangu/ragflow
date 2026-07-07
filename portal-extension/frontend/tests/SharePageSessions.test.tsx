@@ -87,7 +87,6 @@ describe('SharePageDetailPage — 我的会话(Slice 10)', () => {
     globalThis.fetch = mockFetch([
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
       { url: '/share-pages/sp_default/embed-url', status: 200, body: EMBED_RESPONSE },
-      { url: '/share-pages/sp_default/sessions', method: 'POST', status: 200, body: PRECREATE_RESPONSE },
       { url: '/share-pages/sp_default/sessions', status: 200, body: SESSIONS_RESPONSE },
     ]);
 
@@ -105,20 +104,19 @@ describe('SharePageDetailPage — 我的会话(Slice 10)', () => {
     globalThis.fetch = mockFetch([
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
       { url: '/share-pages/sp_default/embed-url', status: 200, body: EMBED_RESPONSE },
-      { url: '/share-pages/sp_default/sessions', method: 'POST', status: 200, body: PRECREATE_RESPONSE },
       { url: '/share-pages/sp_default/sessions', status: 200, body: SESSIONS_RESPONSE },
     ]);
 
     renderDetail();
 
     const iframe = await screen.findByTitle('RAGFlow 对话');
-    // Slice 21:初始 iframe URL 已含 session_id(挂载时调 precreateSession)
-    expect(iframe.getAttribute('src')).toContain('session_id=sess-new-999');
+    // Slice 22:初始 iframe URL 来自 embed-url(无 session_id — 网关 SSE 绑定)
+    expect(iframe.getAttribute('src')).not.toContain('session_id=');
 
     // 点击「会话一」重新打开
     await user.click(screen.getByRole('button', { name: /会话一/ }));
 
-    // iframe URL 重新加载并追加 session_id(RAGFlow 原生读 URL 参数恢复历史)
+    // iframe URL 重新加载并追加 session_id(重新打开调 embed-url + appendSessionId)
     const reopened = await screen.findByTitle('RAGFlow 对话');
     const src = reopened.getAttribute('src') ?? '';
     expect(src).toContain('session_id=sess-001');
@@ -131,9 +129,9 @@ describe('SharePageDetailPage — 我的会话(Slice 10)', () => {
     globalThis.fetch = mockFetch([
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
       { url: '/share-pages/sp_default/embed-url', status: 200, body: EMBED_RESPONSE },
-      { url: '/share-pages/sp_default/sessions', method: 'POST', status: 200, body: PRECREATE_RESPONSE },
       { url: '/share-pages/sp_default/sessions', status: 200, body: { sessions: [] } },
       { url: '/share-pages/sp_default/sessions', method: 'POST', status: 200, body: PRECREATE_RESPONSE },
+      { url: '/share-pages/sp_default/sessions', status: 200, body: { sessions: [] } },
     ]);
 
     renderDetail();
@@ -155,7 +153,6 @@ describe('SharePageDetailPage — 我的会话(Slice 10)', () => {
     globalThis.fetch = mockFetch([
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
       { url: '/share-pages/sp_default/embed-url', status: 200, body: EMBED_RESPONSE },
-      { url: '/share-pages/sp_default/sessions', method: 'POST', status: 200, body: PRECREATE_RESPONSE },
       { url: '/share-pages/sp_default/sessions', status: 200, body: SESSIONS_RESPONSE },
       {
         url: '/share-pages/sp_default/sessions/sess-001',
@@ -187,7 +184,6 @@ describe('SharePageDetailPage — 我的会话(Slice 10)', () => {
     globalThis.fetch = mockFetch([
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
       { url: '/share-pages/sp_default/embed-url', status: 200, body: EMBED_RESPONSE },
-      { url: '/share-pages/sp_default/sessions', method: 'POST', status: 200, body: PRECREATE_RESPONSE },
       { url: '/share-pages/sp_default/sessions', status: 200, body: SESSIONS_RESPONSE },
     ]);
 
@@ -209,7 +205,6 @@ describe('SharePageDetailPage — 我的会话(Slice 10)', () => {
     globalThis.fetch = mockFetch([
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
       { url: '/share-pages/sp_default/embed-url', status: 200, body: EMBED_RESPONSE },
-      { url: '/share-pages/sp_default/sessions', method: 'POST', status: 200, body: PRECREATE_RESPONSE },
       { url: '/share-pages/sp_default/sessions', status: 200, body: SESSIONS_RESPONSE },
       {
         url: '/share-pages/sp_default/sessions/sess-001',
@@ -239,7 +234,6 @@ describe('SharePageDetailPage — 我的会话(Slice 10)', () => {
     globalThis.fetch = mockFetch([
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
       { url: '/share-pages/sp_default/embed-url', status: 200, body: EMBED_RESPONSE },
-      { url: '/share-pages/sp_default/sessions', method: 'POST', status: 200, body: PRECREATE_RESPONSE },
       { url: '/share-pages/sp_default/sessions', status: 200, body: SESSIONS_RESPONSE },
     ]);
 
@@ -258,7 +252,6 @@ describe('SharePageDetailPage — 我的会话(Slice 10)', () => {
     globalThis.fetch = mockFetch([
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
       { url: '/share-pages/sp_default/embed-url', status: 200, body: EMBED_RESPONSE },
-      { url: '/share-pages/sp_default/sessions', method: 'POST', status: 200, body: PRECREATE_RESPONSE },
       { url: '/share-pages/sp_default/sessions', status: 200, body: { sessions: [] } },
     ]);
 
@@ -271,7 +264,6 @@ describe('SharePageDetailPage — 我的会话(Slice 10)', () => {
     globalThis.fetch = mockFetch([
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
       { url: '/share-pages/sp_default/embed-url', status: 200, body: EMBED_RESPONSE },
-      { url: '/share-pages/sp_default/sessions', method: 'POST', status: 200, body: PRECREATE_RESPONSE },
       { url: '/share-pages/sp_default/sessions', status: 500, body: { detail: '会话列表加载失败' } },
     ]);
 

@@ -321,6 +321,42 @@ def _parse_session_id_from_body(body: bytes) -> str:
         return ""
 
 
+def _parse_session_id_from_sse_chunk(chunk: bytes) -> str:
+    """Slice 22:从 SSE 响应字节块解析 session_id(RAGFlow 在首帧返回新建 session 的 id)。
+
+    RAGFlow SSE 首帧结构:{data: {session_id: "..."}} 或 {session_id: "..."}。
+    chunk 可能含多行,逐行尝试解析 `data:` 前缀的 JSON。
+    无 session_id 或解析失败返回空字符串(调用方累积,首个非空即用)。
+    """
+    if not chunk:
+        return ""
+    try:
+        text = chunk.decode("utf-8", errors="ignore")
+    except UnicodeDecodeError:
+        return ""
+    for line in text.split("\n"):
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        payload = line[len("data:") :].strip()
+        if not payload:
+            continue
+        try:
+            data = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        # 兼容两种结构:{data:{session_id}} 与 {session_id}
+        inner = data.get("data")
+        sid = (
+            (inner.get("session_id") if isinstance(inner, dict) else None)
+            or data.get("session_id")
+            or ""
+        )
+        if sid:
+            return str(sid)
+    return ""
+
+
 def _build_upstream_headers(beta_token: str, content_type: str | None = None) -> dict:
     """构造发往 RAGFlow 的请求头(用 beta Token 鉴权)。
 
@@ -643,7 +679,19 @@ async def proxy_sse_to_ragflow(request: Request, dialog_id: str, ragflow_type: s
     # 归属隔离:若请求体含 session_id,校验其归属当前 T_short 持有用户
     if request_session_id and session_store is not None:
         _assert_session_ownership(session_store, request_session_id, record.portal_user_id, dialog_id)
-    return _build_sse_streaming_response(settings, body, dialog_id, request_session_id, session_store, ragflow_type)
+    # Slice 22:传 portal_user_id + share_page_id + org_id,供网关在请求体无 session_id 时
+    # 从 SSE 响应解析 session_id 并绑定(fetchSessionId 场景)
+    return _build_sse_streaming_response(
+        settings,
+        body,
+        dialog_id,
+        request_session_id,
+        session_store,
+        ragflow_type,
+        portal_user_id=record.portal_user_id,
+        share_page_id=record.share_page_id,
+        org_id=share_page.org_id,
+    )
 
 
 async def _proxy_sse_public_core(
@@ -713,6 +761,10 @@ def _build_sse_streaming_response(
     request_session_id: str,
     session_store,
     ragflow_type: str = "chat",
+    *,
+    portal_user_id: str = "",
+    share_page_id: str = "",
+    org_id: str = "default",
 ) -> StreamingResponse:
     """构造 SSE 流式响应(标准路径与公开路径共用)。
 
@@ -722,6 +774,13 @@ def _build_sse_streaming_response(
     Slice 16:加 ``ragflow_type`` 参数,agent 类型走 agentbot 端点
     (/api/v1/agentbots/<id>/completions),chat 类型走 chatbot 端点
     (/api/v1/chatbots/<id>/completions)。
+
+    Slice 22:若请求体无 session_id(RAGFlow 前端 fetchSessionId 场景,RAGFlow 会新建
+    session 并在 SSE 首帧返回 session_id),流成功完成后从 SSE 响应解析 session_id 并
+    绑定到当前用户(chat_session_owner)。这样后续请求带该 session_id 时归属校验通过。
+    根因:RAGFlow 前端 ``use-send-shared-message.ts:77`` 的 session_id 来自 SSE 响应
+    (``derivedMessages[0].session_id``),不从 URL ``?session_id=`` 读 — precreate 往
+    iframe URL 塞 session_id 无效,必须在网关侧绑定 RAGFlow 实际创建的 session。
     """
     # Slice 16:agent 类型走 agentbot 端点,chat 类型走 chatbot 端点
     bot_segment = _ragflow_bot_segment(ragflow_type)
@@ -731,26 +790,55 @@ def _build_sse_streaming_response(
     async def stream_generator():
         # 流式期间不设读超时(SSE 可长时间),但连接阶段设 10s 超时
         success = False
+        # Slice 22:累积解析 SSE 响应的 session_id(RAGFlow fetchSessionId 新建的 session)
+        parsed_session_id = ""
         try:
             async with _build_upstream_client(timeout=None) as client:
                 async with client.stream("POST", upstream_url, content=body, headers=upstream_headers) as upstream:
                     async for chunk in upstream.aiter_bytes():
                         yield chunk
+                        # Slice 22:未解析到 session_id 时,尝试从当前 chunk 解析(首帧即含)
+                        if not parsed_session_id:
+                            sid = _parse_session_id_from_sse_chunk(chunk)
+                            if sid:
+                                parsed_session_id = sid
             # 流完整消费完毕(无异常)才标记成功
             success = True
         except httpx.RequestError:
             # 连接失败:返回 SSE 错误事件(不含任何敏感信息)
             yield 'data: {"error": "上游服务不可用"}\n\n'.encode("utf-8")
         finally:
-            # Slice 2:仅在流成功完成后更新 last_active_at(失败流不更新,避免误推活跃时间)
-            # Slice 12:同一时机更新 message_count(调 GET history 取最新消息数,
-            #   与 resume_session 同逻辑保证一致;GET history 失败只 log warning 不破坏流)
-            # Slice 16:agent 类型调 agentbot 端点取 history(chat 类型调 chatbot 端点)
-            if success and request_session_id and session_store is not None:
-                session_store.update_last_active(request_session_id)
-                await _sync_message_count_after_sse(
-                    settings, session_store, request_session_id, dialog_id, ragflow_type
+            # Slice 22:不用 early return(会吞掉非 RequestError 的异常,如客户端断连的
+            # CancelledError),改为守卫包裹。失败流不更新/绑定,异常正常传播。
+            if success and session_store is not None:
+                # Slice 2:仅在流成功完成后更新 last_active_at(失败流不更新,避免误推活跃时间)
+                # Slice 12:同一时机更新 message_count(调 GET history 取最新消息数,
+                #   与 resume_session 同逻辑保证一致;GET history 失败只 log warning 不破坏流)
+                # Slice 16:agent 类型调 agentbot 端点取 history(chat 类型调 chatbot 端点)
+                # Slice 22:统一目标 session_id(请求体有则用请求体的;无则用响应解析的)
+                target_session_id = request_session_id or (
+                    parsed_session_id if (parsed_session_id and portal_user_id and share_page_id) else ""
                 )
+                if request_session_id:
+                    session_store.update_last_active(request_session_id)
+                # Slice 22:请求体无 session_id 但响应有 session_id → 绑定到当前用户
+                # (fetchSessionId 场景:RAGFlow 新建 session,网关绑定后后续请求归属校验通过)
+                # 仅标准链传入 portal_user_id + share_page_id;公开链不传(公开 session 归 u_anonymous)
+                elif parsed_session_id and portal_user_id and share_page_id:
+                    # 已绑定则跳过(避免唯一约束冲突);未绑定则 bind
+                    if session_store.get(parsed_session_id) is None:
+                        session_store.bind(
+                            session_id=parsed_session_id,
+                            share_page_id=share_page_id,
+                            portal_user_id=portal_user_id,
+                            ragflow_resource_id=dialog_id,
+                            org_id=org_id,
+                        )
+                # 统一同步 message_count(请求体有 session_id 或新绑定均需要)
+                if target_session_id:
+                    await _sync_message_count_after_sse(
+                        settings, session_store, target_session_id, dialog_id, ragflow_type
+                    )
 
     return StreamingResponse(stream_generator(), media_type="text/event-stream")
 

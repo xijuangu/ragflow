@@ -332,10 +332,14 @@ async def test_chatbot_completions_with_tshort_uses_beta_token(client, app, monk
     )
     await resp.aread()
     assert resp.status_code == 200
-    # 验证上游用 beta Token(非原始 T_short)
+    # 验证上游用 beta Token(非原始 T_short)。
+    # Slice 22:请求体无 session_id 时,网关绑定 SSE 响应的 session 后会调 GET history
+    # 同步 message_count(第二次 beta Token 调用),所以 captured_auth 可能含多次。
+    # 本测试只验证"所有上游调用都用 beta Token"(非 T_short 透传),不关心次数。
     beta_token = os.environ["RAGFLOW_BETA_TOKEN"]
-    assert captured_auth == [f"Bearer {beta_token}"], (
-        f"应换 beta Token,实际: {captured_auth}"
+    assert captured_auth, "应至少一次上游调用"
+    assert all(auth == f"Bearer {beta_token}" for auth in captured_auth), (
+        f"应全部用 beta Token,实际: {captured_auth}"
     )
 
 

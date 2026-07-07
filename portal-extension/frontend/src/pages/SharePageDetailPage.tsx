@@ -50,17 +50,19 @@ export default function SharePageDetailPage() {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [sessionBusy, setSessionBusy] = useState(false);
 
-  // 初始加载:embed-url(判断 embed_type)+ 会话列表
-  // Slice 21:fullscreen 类型改调 precreateSession(预创建 session,绑定归属),
-  //           避免 iframe 首次 /completions 后 session 未绑定 → 后续 403。
-  //           widget 类型仍用 embed-url(返回 snippet,不需 session 归属)。
+  // 初始加载:embed-url(判断 embed_type + 取 iframe URL)+ 会话列表
+  // Slice 22:回退 Slice 21 — fullscreen 类型改回只调 embed-url(不 precreate)。
+  //   根因:RAGFlow 前端 use-send-shared-message.ts:77 的 session_id 来自 SSE 响应
+  //   (derivedMessages[0].session_id),不从 URL ?session_id= 读。precreate 往 iframe
+  //   URL 塞 session_id 无效,且 precreate 创建的 session 不会被 iframe 使用(孤儿)。
+  //   改由网关在 SSE 代理时绑定 RAGFlow 实际创建的 session(见 gateway.py Slice 22)。
+  //   widget 类型仍用 embed-url(返回 snippet,不需 session 归属)。
   useEffect(() => {
     if (!id) return;
     let cancelled = false;
 
     (async () => {
       try {
-        // 先调 embed-url 判断 embed_type(widget 类型直接用 snippet,不预创建)
         const embedRes = await api.getEmbedUrl(id);
         if (cancelled) return;
         // Slice 16:widget 类型返回 widget_url + snippet(无 iframe_url)
@@ -71,13 +73,10 @@ export default function SharePageDetailPage() {
           setIframeUrl(null);
           return;
         }
-        // Slice 21:fullscreen 类型调预创建 session(返回带 session_id 的 iframe_url,
-        // session 已绑定到当前用户 → 后续 /completions 归属校验通过)
-        const preRes = await api.precreateSession(id);
-        if (cancelled) return;
+        // fullscreen 类型:用 embed-url 返回的 iframe_url(无 session_id — RAGFlow 前端
+        // 不读 URL session_id,session 由网关在 SSE 代理时绑定)
         setIsWidget(false);
-        setActiveSessionId(preRes.session_id);
-        setIframeUrl(preRes.iframe_url ?? null);
+        setIframeUrl(embedRes.iframe_url ?? null);
         setSnippet(null);
         setWidgetUrl(null);
         setIframeNonce((n) => n + 1);
