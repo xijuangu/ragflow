@@ -38,16 +38,18 @@ export function EmbedContainer({
           <div className="flex md:hidden items-center">
             <img src="/logo.svg" alt="" className="h-6" />
           </div>
-          <Button
-            variant={'secondary'}
-            className="text-sm text-foreground cursor-pointer"
-            onClick={handleReset}
-          >
-            <div className="flex gap-1 items-center">
-              <RefreshCcw size={14} />
-              <span className="hidden text-lg md:inline-block">Reset</span>
-            </div>
-          </Button>
+          {handleReset && (
+            <Button
+              variant={'secondary'}
+              className="text-sm text-foreground cursor-pointer"
+              onClick={handleReset}
+            >
+              <div className="flex gap-1 items-center">
+                <RefreshCcw size={14} />
+                <span className="hidden text-lg md:inline-block">Reset</span>
+              </div>
+            </Button>
+          )}
         </div>
         {children}
       </div>
