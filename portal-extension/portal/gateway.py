@@ -455,8 +455,25 @@ def _assert_grant_exists(seed, portal_user_id: str, share_page_id: str) -> None:
 
 
 def _ragflow_bot_segment(ragflow_type: str) -> str:
-    """RAGFlow bot URL 路径段:agent → 'agentbots',chat → 'chatbots'(TD15 统一)。"""
+    """RAGFlow bot URL 路径段:agent → 'agentbots',chat → 'chatbots'(TD15 统一)。
+
+    仅用于 completions 端点(POST /api/v1/{bot_segment}/<id>/completions),
+    RAGFlow bot_api.py 对 chat/agent 都用 chatbots/agentbots 路径。
+    """
     return "agentbots" if ragflow_type == "agent" else "chatbots"
+
+
+def _ragflow_sessions_segment(ragflow_type: str) -> str:
+    """RAGFlow sessions URL 路径段:agent → 'agents',chat → 'chatbots'(Slice 30 修复)。
+
+    用于 sessions 端点(GET/PATCH/DELETE /api/v1/{sessions_segment}/<id>/sessions/<sid>)。
+    RAGFlow 官方路径不一致:
+      - chat sessions:bot_api.py → /api/v1/chatbots/<id>/sessions/<sid>(与 completions 同段)
+      - agent sessions:agent_api.py → /api/v1/agents/<id>/sessions/<sid>(非 agentbots!)
+    故 agent sessions 必须走 /agents/ 段,否则 RAGFlow 返回 404。
+    chat sessions 保持 /chatbots/(与 completions 一致,向后兼容)。
+    """
+    return "agents" if ragflow_type == "agent" else "chatbots"
 
 
 async def precreate_session_via_ragflow(settings, dialog_id: str, ragflow_type: str = "chat") -> str:
@@ -522,8 +539,12 @@ async def fetch_session_history_via_ragflow(
 
     TD15:统一 chat/agent 版本,ragflow_type='chat' 走 chatbot 端点,'agent' 走 agentbot 端点。
     返回结构两者一致(RAGFlow agentbot 与 chatbot GET 端点返回结构相同)。
+
+    Slice 30:sessions 端点路径段用 _ragflow_sessions_segment(agent → 'agents',
+    非 'agentbots')。RAGFlow agent sessions 走 agent_api.py 的 /agents/ 路径,
+    bot_api.py 的 /agentbots/ 路径不含 sessions GET 端点 → 404。
     """
-    bot_segment = _ragflow_bot_segment(ragflow_type)
+    bot_segment = _ragflow_sessions_segment(ragflow_type)
     upstream_url = f"{settings.ragflow_host.rstrip('/')}/api/v1/{bot_segment}/{dialog_id}/sessions/{session_id}"
     upstream_headers = _build_upstream_headers(settings.ragflow_beta_token)
     err_action = "取回 agent 会话" if ragflow_type == "agent" else "取回会话"
@@ -557,8 +578,11 @@ async def rename_session_via_ragflow(
 
     TD15:统一 chat/agent 版本,ragflow_type='chat' 走 chatbot 端点,'agent' 走 agentbot 端点。
     同步策略两者一致:RAGFlow 成功才更新门户 title;失败抛 502。
+
+    Slice 30:sessions 端点路径段用 _ragflow_sessions_segment(agent → 'agents',
+    非 'agentbots')。
     """
-    bot_segment = _ragflow_bot_segment(ragflow_type)
+    bot_segment = _ragflow_sessions_segment(ragflow_type)
     upstream_url = f"{settings.ragflow_host.rstrip('/')}/api/v1/{bot_segment}/{dialog_id}/sessions/{session_id}"
     upstream_headers = _build_upstream_headers(settings.ragflow_beta_token, content_type="application/json")
     err_action = "重命名 agent 会话" if ragflow_type == "agent" else "重命名会话"
@@ -585,8 +609,11 @@ async def delete_session_via_ragflow(settings, dialog_id: str, session_id: str, 
 
     TD15:统一 chat/agent 版本,ragflow_type='chat' 走 chatbot 端点,'agent' 走 agentbot 端点。
     双删策略两者一致:RAGFlow 成功 → 门户硬删除;失败 → 标记 deleted_at 待重试。
+
+    Slice 30:sessions 端点路径段用 _ragflow_sessions_segment(agent → 'agents',
+    非 'agentbots')。
     """
-    bot_segment = _ragflow_bot_segment(ragflow_type)
+    bot_segment = _ragflow_sessions_segment(ragflow_type)
     upstream_url = f"{settings.ragflow_host.rstrip('/')}/api/v1/{bot_segment}/{dialog_id}/sessions/{session_id}"
     upstream_headers = _build_upstream_headers(settings.ragflow_beta_token)
     err_action = "删除 agent 会话" if ragflow_type == "agent" else "删除会话"
@@ -1033,7 +1060,9 @@ async def proxy_session_history_to_ragflow(
 
     settings = request.app.state.settings
     token_store = request.app.state.token_store
-    bot_segment = _ragflow_bot_segment(ragflow_type)
+    # Slice 30:sessions 端点路径段用 _ragflow_sessions_segment(agent → 'agents',
+    # 非 'agentbots'),与 fetch/rename/delete_session_via_ragflow 一致。
+    bot_segment = _ragflow_sessions_segment(ragflow_type)
     upstream_url = f"{settings.ragflow_host.rstrip('/')}/api/v1/{bot_segment}/{resource_id}/sessions/{session_id}"
 
     t_short = extract_t_short(request)
