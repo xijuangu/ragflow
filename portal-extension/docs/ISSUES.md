@@ -956,7 +956,46 @@ RAGFlow 前端 `web/src/pages/next-chats/hooks/use-send-shared-message.ts`:
 
 ### Blocked by
 
-- Issue 23(Slice 23 修复列表刷新后,用户能看到历史会话列表 — 本 slice 修复点击后恢复历史)
+- Issue 25(Slice 25 修复刷新产生垃圾会话 + 发消息后不显示 — 本 slice 修复点击后恢复历史,依赖 Slice 25 先把会话列表准确性修好)
+
+---
+
+## Issue 25 — Slice 25: 会话列表准确性 — 过滤 greeting session + 真实消息后及时刷新
+
+### Parent
+
+Issue 23(Slice 23 加了 5s 轮询 + useRef 防抖 + increment_message_count,E2E 验证发现 RAGFlow 前端每次 iframe 加载自动发 greeting 创建新 session,网关 Slice 22 把 greeting session 也 bind 到用户 → 刷新产生垃圾会话;且 5s 轮询太慢,发消息后左侧不及时显示)。
+
+### 根因(E2E 验证发现)
+
+1. **刷新产生垃圾会话**:RAGFlow 前端 `web/src/pages/next-chats/hooks/use-send-shared-message.ts:120-122` 在 iframe 挂载时自动调 `fetchSessionId()`,发 `{ question: '' }` 的 greeting 请求(无 session_id)→ RAGFlow 创建新 session 返回 session_id + prologue(开场白)。网关 Slice 22 的 `_build_sse_streaming_response` 在 request body 无 session_id 时,从 SSE 响应解析 session_id 并 bind 到用户。每次刷新 iframe 重载 → 又发 greeting → 又 bind → 左侧出现消息数为 1 的垃圾会话(只有打招呼)。
+
+2. **发消息后左侧不及时显示**:Slice 23 的 5s 轮询间隔对用户感知太慢。用户进入页面后初始 `listSessions` 返回空,greeting session 在 5s 后才被轮询检测到。用户在 5s 内发消息时左侧仍为空,误以为"没显示"。
+
+### What to build
+
+**端到端行为**:用户进入分享页 → iframe 加载发 greeting(创建 session 但不 bind 到用户)→ 左侧不显示 greeting session(无垃圾会话)→ 用户发首条消息 → 网关 bind session 到用户 → 前端及时刷新列表 → 左侧出现会话。刷新页面 → 不产生新会话。
+
+1. **网关过滤 greeting session**:`_build_sse_streaming_response` 的 bind 逻辑加 `question` 字段判断 — 请求体 `question == ''`(greeting)时不 bind session(即使 SSE 返回 session_id)。`question != ''`(真实消息)时:
+   - 若 request body 有 session_id 且 session 未 bind → bind 到当前用户(greeting 创建的 session 现在被用户正式使用)
+   - 若 session 已 bind → `update_last_active` + `increment_message_count`(保持 Slice 23 行为)
+2. **校验链放行未 bind 的 session**:SSE 代理前的 session 归属校验,对"session 存在于 RAGFlow 但未 bind 到 portal"的情况放行(前提:dialog_id 与 share_page 一致),允许用户用 greeting 创建的 session 发首条消息。bind 发生在 SSE 流成功后(非校验阶段)。
+3. **前端及时刷新**:SSE 流完成后主动触发一次 `listSessions` 刷新(不等 5s 轮询)。可用 postMessage(iframe → 父页面)或缩短轮询间隔到 2s。零侵入优先(postMessage 需改 RAGFlow 源码,缩短间隔更简单)。
+
+### Acceptance criteria
+
+- [ ] 刷新分享页 → 左侧不出现新会话(无 greeting 垃圾会话)
+- [ ] 连续刷新 3 次 → 左侧会话数不增加(均为既有会话)
+- [ ] 用户首次发消息后 → 左侧 2s 内出现新会话(消息数 1)
+- [ ] 用户发 2+ 条消息 → 左侧会话消息数正确递增
+- [ ] greeting session 不在 `chat_session_owner` 表中留下记录(未 bind)
+- [ ] 既有 pytest 全绿(无回归;基线 384 passed + 5 skipped)
+- [ ] 前端 Vitest 全绿
+- [ ] E2E:进入 → 刷新 3 次 → 左侧无新会话 → 发消息 → 2s 内显示会话 → 消息数正确
+
+### Blocked by
+
+- Issue 23(Slice 23 已完成轮询 + 防抖 + increment — 本 slice 在其基础上修 greeting 过滤 + 及时刷新)
 
 ---
 
