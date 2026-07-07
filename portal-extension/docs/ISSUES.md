@@ -1113,13 +1113,13 @@ portal 前端 `handleNewSession` 改为不带 session_id 的路径:调 `api.getE
 
 ### Acceptance criteria
 
-- [ ] 点击「新建会话」→ iframe 显示 greeting 开场白(非空)
-- [ ] 发送首条消息后,左侧 2s 内出现新会话,消息数正确(非 0)
-- [ ] 不产生消息数为 0 的孤儿 precreate session(验证:新建会话后立即刷新,左侧不出现新会话,只有发消息后才出现)
-- [ ] 连续点击「新建会话」多次,只创建一个 session(保留 Slice 23 的 useRef 防抖)
-- [ ] fullscreen 类型不再调 `precreateSession`(改调 `getEmbedUrl`)
-- [ ] 既有前端 Vitest 全绿
-- [ ] 既有 portal pytest 全绿(无回归)
+- [ ] 点击「新建会话」→ iframe 显示 greeting 开场白(非空) — 留待 Slice 29 E2E 验收
+- [ ] 发送首条消息后,左侧 2s 内出现新会话,消息数正确(非 0) — 留待 Slice 29 E2E 验收
+- [ ] 不产生消息数为 0 的孤儿 precreate session(验证:新建会话后立即刷新,左侧不出现新会话,只有发消息后才出现) — 留待 Slice 29 E2E 验收
+- [ ] 连续点击「新建会话」多次,只创建一个 session(保留 Slice 23 的 useRef 防抖) — 留待 Slice 29 E2E 验收
+- [x] fullscreen 类型不再调 `precreateSession`(改调 `getEmbedUrl`) — commit c7b1dae,handleNewSession 分流:fullscreen 走 getEmbedUrl,widget 保持 precreate
+- [x] 既有前端 Vitest 全绿 — 76 passed(73 基线 + 3 新增 Slice 28 测试)
+- [x] 既有 portal pytest 全绿(无回归) — 387 passed + 5 skipped(Slice 30 合并后 400 passed)
 
 ### Blocked by
 
@@ -1189,13 +1189,15 @@ agent 的 sessions 端点 RAGFlow 用 `/agents/`(非 `/agentbots/`),导致 porta
 
 ### Acceptance criteria
 
-- [ ] `fetch_session_history_via_ragflow(ragflow_type='agent')` 上游 URL 含 `/agents/`(非 `/agentbots/`)
-- [ ] `rename_session_via_ragflow(ragflow_type='agent')` 上游 URL 含 `/agents/`
-- [ ] `delete_session_via_ragflow(ragflow_type='agent')` 上游 URL 含 `/agents/`
-- [ ] chat 类型 sessions URL 不变(仍 `/chatbots/`)
-- [ ] completions 端点 URL 不变(仍用 `_ragflow_bot_segment`,agent → "agentbots")
-- [ ] 既有 portal pytest 全绿(无回归;基线 387 passed + 5 skipped)
-- [ ] 新增/修改的单测覆盖 agent sessions URL 构造
+- [x] `fetch_session_history_via_ragflow(ragflow_type='agent')` 上游 URL 含 `/agents/`(非 `/agentbots/`) — commit b92be81
+- [x] `rename_session_via_ragflow(ragflow_type='agent')` 上游 URL 含 `/agents/` — commit b92be81
+- [x] `delete_session_via_ragflow(ragflow_type='agent')` 上游 URL 含 `/agents/` — commit b92be81
+- [x] chat 类型 sessions URL 不变(仍 `/chatbots/`) — 13 个测试覆盖,chat sessions URL 仍含 `/chatbots/`
+- [x] completions 端点 URL 不变(仍用 `_ragflow_bot_segment`,agent → "agentbots") — `precreate_session_via_ragflow` 与 `proxy_sse_to_ragflow` 未改,测试断言 agent completions 仍含 `/agentbots/`
+- [x] 既有 portal pytest 全绿(无回归;基线 387 passed + 5 skipped) — 合并后 400 passed + 5 skipped(13 新增 Slice 30 测试)
+- [x] 新增/修改的单测覆盖 agent sessions URL 构造 — `tests/test_slice30_agent_sessions_url.py` 13 个测试
+
+**额外修复**:子代理发现第 4 个 sessions URL 函数 `proxy_session_history_to_ragflow`(L1048,服务于路由 `GET /api/v1/agentbots/{id}/sessions/{sid}`)同样错误使用 `_ragflow_bot_segment`,已一并修复(否则 agent GET history 代理端点仍 404)。
 
 ### Blocked by
 
