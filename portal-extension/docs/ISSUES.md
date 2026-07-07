@@ -933,6 +933,12 @@ RAGFlow 前端 `web/src/pages/next-chats/hooks/use-send-shared-message.ts`:
 
 **失败链路**:刷新页面 / 点击历史会话 → iframe 重载 → `fetchSessionId` 创建新 session → 旧 session 的历史不恢复 → 用户看不到之前的对话。
 
+**2026-07-07 E2E 补充反馈(Issue 25 部署后)**:
+- 进入分享页后发送一条消息,左侧会刷新出一个新会话(绑定与刷新已生效)。
+- 点击这个会话后,iframe 内只显示一个 greeting,没有刚才发出的用户消息与 RAGFlow 回复。
+- 左侧消息数显示为 1。用户期望若按 UI 消息条数统计,首轮应包含 greeting + 用户消息 + 助手回复共 3 条。
+- 结论:Issue 25 已解决 greeting 垃圾会话与绑定刷新问题,但历史会话恢复仍未完成;点击会话时 iframe 仍没有加载绑定 session 的真实历史。
+
 ### What to build
 
 **端到端行为**:用户点击左侧历史会话 → iframe URL 带 session_id → RAGFlow 前端读 URL session_id → 跳过 `fetchSessionId`(不创建新 session)→ 用该 session_id 恢复历史 → 用户看到历史消息。
@@ -947,8 +953,11 @@ RAGFlow 前端 `web/src/pages/next-chats/hooks/use-send-shared-message.ts`:
 
 - [ ] RAGFlow 前端 `useGetSharedChatSearchParams` 读 URL `session_id` 参数
 - [ ] iframe URL 含 session_id 时,`fetchSessionId` 跳过(不创建新 session)
-- [ ] 用户点击左侧历史会话 → iframe 重载 → 显示该会话的历史消息(非空)
-- [ ] 刷新页面 → iframe 重载 → 显示最近活跃会话的历史消息(非空)
+- [ ] 用户发一条消息并获得回复后,左侧出现该会话
+- [ ] 用户点击左侧会话 → iframe 重载 → 显示该会话的真实历史消息:至少包含 greeting、用户问题、RAGFlow 回复
+- [ ] 点击左侧会话不会创建新的 greeting-only session
+- [ ] 切换会话再切回 → 仍显示对应历史消息与引用片段
+- [ ] 刷新页面 → iframe 重载 → 如恢复最近活跃会话,显示真实历史而不是 greeting-only
 - [ ] iframe URL 不含 session_id 时,保持原行为(创建新 session,兼容公开分享)
 - [ ] 既有 portal pytest 全绿(无回归)
 - [ ] 前端 Vitest 全绿
@@ -996,6 +1005,44 @@ Issue 23(Slice 23 加了 5s 轮询 + useRef 防抖 + increment_message_count,E2E
 ### Blocked by
 
 - Issue 23(Slice 23 已完成轮询 + 防抖 + increment — 本 slice 在其基础上修 greeting 过滤 + 及时刷新)
+
+---
+
+## Issue 26 — Slice 26: 会话列表消息数与 RAGFlow 历史消息条数一致
+
+### Parent
+
+Issue 24(恢复历史会话后,左侧消息数需要与用户实际看到的 RAGFlow 历史消息条数一致)。
+
+### 根因(E2E 验证发现)
+
+Issue 23/25 当前用 SSE 成功后的 `message_count += 1` 表示"完成一轮真实提问"。这能避免新会话显示 0,但语义与 UI 上的消息条数不一致。
+
+用户当前期望左侧"消息数"反映 RAGFlow 历史消息条数:首轮对话应显示 3 条(greeting + 用户问题 + 助手回复),而不是 1 轮。
+
+### What to build
+
+**端到端行为**:用户发送消息并获得回复后,左侧会话列表中的消息数与恢复会话时 RAGFlow 返回的历史 messages 数一致。消息数不再表示"问答轮次",而表示用户点击会话后实际能看到的消息条数。
+
+1. **明确消息数语义**:左侧列表与管理员元数据里的 `message_count` 均表示 RAGFlow history messages 条数。
+2. **真实消息后同步绝对值**:SSE 流成功后,在不破坏发消息体验的前提下同步该 session 的 RAGFlow history,用 `len(messages)` 更新 `message_count`。
+3. **恢复会话时校准**:用户点击历史会话或管理员查看正文时,继续用 RAGFlow history 绝对值校准 `message_count`。
+4. **失败容错**:若 history 同步失败,不影响 SSE 正常返回;但不得把 `message_count` 更新成错误的 `+1` 值。
+
+### Acceptance criteria
+
+- [ ] 首次真实提问并获得回复后,左侧消息数显示为 3(greeting + 用户消息 + RAGFlow 回复)
+- [ ] 每新增一轮问答后,消息数按 RAGFlow history messages 条数同步,不是简单 `+1`
+- [ ] 点击历史会话恢复后,列表中的 `message_count` 与恢复接口返回的 messages 数一致
+- [ ] greeting-only session 不进入会话列表,也不影响任何已有会话的消息数
+- [ ] GET history 失败时不破坏发消息流程,但列表不展示错误的新增消息数
+- [ ] 既有 portal pytest 全绿(无回归)
+- [ ] 前端 Vitest 全绿
+- [ ] E2E:发消息 → 左侧消息数为 3 → 点击会话 → iframe 内消息条数与左侧一致
+
+### Blocked by
+
+- Issue 24(Slice 24 先修复点击会话后能恢复真实历史;本 slice 再校准消息数语义)
 
 ---
 
