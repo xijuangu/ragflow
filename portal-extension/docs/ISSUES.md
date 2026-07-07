@@ -725,6 +725,77 @@ None - can start immediately
 
 ---
 
+## Issue 19 — Slice 19: 区分过期 portal T_short 与原生 beta Token(修复浏览器 109 + x.find 崩溃)
+
+### Parent
+
+Issue 18(Slice 18 网关透传分支上线后,浏览器 E2E 暴露的回归)。
+
+### What to build
+
+Slice 18 的透传分支无法区分两种「token 不在 TokenStore」的场景:
+1. **原生 beta Token**(RAGFlow 自身签发,原生分享页用户带此 token,无 portal 会话)— 应**透传** RAGFlow;
+2. **过期的 portal T_short**(portal 重启后 TokenStore 清空,iframe URL 里残留的旧 T_short)— 应**拒绝**(401),触发 iframe 重新向 portal 申请 T_short。
+
+当前两者都被透传给 RAGFlow,但过期 T_short 不是合法 beta Token,RAGFlow AUTH_BETA 拒绝 → 浏览器看到 `109 No authorization`,且 `/info` 或 `/completions` 返回错误体后下游组件 `MarkdownContent` 调 `reference.doc_aggs.find(...)` 拿到 undefined → `TypeError: x.find is not a function` → 分享页显示「Something went wrong」。
+
+**修复方向**:给 portal 签发的 T_short 加可识别前缀 `pt_`(`secrets.token_urlsafe` 结果前加 `pt_`)。网关校验链改为:
+- Authorization token 以 `pt_` 开头但不在 TokenStore → **401**(过期/吊销的 portal T_short,触发重新登录);
+- Authorization token 以 `pt_` 开头且在 TokenStore 但 revoked/expired → **401**(Slice 18 既有逻辑,保持);
+- Authorization token 不以 `pt_` 开头(原生 beta Token 或其它)→ **透传** RAGFlow(Slice 18 既有逻辑,保持);
+- 无 Authorization header → **透传** RAGFlow(Slice 18 既有逻辑,保持)。
+
+副作用:正在使用的 iframe URL(含旧格式 T_short,无 `pt_` 前缀)会失效 — 用户重新登录 portal 获取新 embed-url 即可(T_short 本就是短命令牌,5 分钟过期,可接受)。
+
+同时确认 `proxy_bot_json_to_ragflow` 与 `_build_sse_passthrough_response` 的响应体**逐字节透传** RAGFlow(`Response(content=resp.content)` + 原 content-type),无 FastAPI 中间件改写 — 确保 `/info` 返回的 `doc_aggs` 数组形状与直连 RAGFlow 一致,`x.find` 不再崩溃。
+
+### Acceptance criteria
+
+- [ ] `TokenStore.issue` 签发的 T_short 以 `pt_` 前缀开头;既有测试断言更新(token 格式变化)
+- [ ] 网关 SSE 与 JSON 代理的透传分支:`pt_` 前缀但不在 TokenStore → 401(非透传);无 `pt_` 前缀 → 透传(保持)
+- [ ] portal 重启后,带新格式 T_short(`pt_` 前缀)的 iframe 触发干净 401/重新申请 T_short,而非 109 + x.find 崩溃(旧格式无前缀 T_short 会透传,5 分钟内自然过期,可接受)
+- [ ] 原生分享页(带 RAGFlow beta Token,无 `pt_` 前缀)仍透传成功,不 403
+- [ ] 浏览器 Network 面板 `/api/v1/chatbots/{id}/info` 与 `.../completions` 均返回 200(用 fresh portal T_short 时)
+- [ ] 浏览器控制台无 `TypeError: x.find is not a function`,share 页渲染对话 UI 不再显示「Something went wrong」
+- [ ] portal 代理 `/info` 响应 JSON 与直连 RAGFlow `/info` 响应结构逐字节一致(curl diff 验证 `data.doc_aggs` 为数组)
+- [ ] 单测覆盖:`pt_` 前缀 token 不在 TokenStore → 401;无前缀 token → 透传;`pt_` 前缀 + 有效 → 换 beta Token
+- [ ] 既有 pytest 全绿(无回归;基线 366 passed + 5 skipped)
+
+### Blocked by
+
+- Issue 18(Slice 18 透传分支已上线,本 slice 在其基础上细化区分逻辑)
+
+---
+
+## Issue 20 — Slice 20: Phase 3 完整 E2E 浏览器验收(B1 + B2 + B3 三 bug 确认)
+
+### Parent
+
+Phase 3(B1 + B2 + B3 三 bug 修复)。
+
+### What to build
+
+Slice 17(cookie 隔离)+ Slice 18(网关统一代理 + 透传)+ Slice 19(T_short 前缀区分)代码与部署均已就绪后,做最终浏览器 E2E 验收,确认 3 个原始 bug 消失,并勾选 Issue 17 + 18 + 19 的浏览器相关验收项。
+
+本 slice 无代码改动(纯验收 + 文档更新);若验收中发现新问题,记录为新 issue 而非在本 slice 内修复。
+
+### Acceptance criteria
+
+- [ ] **B1 消失**:portal 嵌入的 iframe 加载 RAGFlow 分享页,显示对话 UI,不再跳 RAGFlow 登录页
+- [ ] iframe 内 `GET /api/v1/chatbots/{id}/info` 返回 200(经网关换 beta Token)
+- [ ] iframe 内发消息,`POST .../completions` SSE 流式回复正常,引用片段可见
+- [ ] **B3 消失**:直接访问 `http://172.16.10.180/chats/share?shared_id=xxx` 原生分享页(不经 portal,无 portal 会话),发消息返回 200 不再 403
+- [ ] 原生分享页的 `GET /info`(无 T_short 或带 RAGFlow beta Token)透传 RAGFlow,返回 200
+- [ ] **B2 消失**:登录 RAGFlow 后刷新 `/portal/` 仍保持 portal 登录态;反之亦然
+- [ ] `ragflow_type=agent` 的分享页同样工作(`/agentbots/{id}/inputs` + `/completions`)
+- [ ] Issue 17 + 18 + 19 的浏览器相关验收项全部勾选;ISSUES.md Phase 3 验收清单标记完成
+
+### Blocked by
+
+- Issue 19(Slice 19 T_short 前缀区分 — 109 + x.find 修复后才能通过 E2E)
+
+---
+
 ## 后续待办(Issue 16 AC2 遗留)
 
 > Issue 16 AC2「悬浮组件在任意页面右下角加载,点击展开对话窗,能正常对话」— Slice 16 实现了 `/widget/<id>` 骨架 HTML + 可嵌入 snippet + CSP frame-ancestors 放行,但 **悬浮组件实际 UI 渲染(右下角悬浮按钮 + 点击展开对话窗 + iframe 加载 + SSE 对话)尚未实现**。`/widget/<id>` 当前仅返回含 `<div id="widget-root">` 的占位 HTML,需前端构建产物挂载 React 组件。

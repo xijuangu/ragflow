@@ -73,6 +73,11 @@ class TokenRecord:
     scope: str = "standard"  # Slice 15:'standard'(默认)或 'public'(公开分享页)
 
 
+# Slice 19:portal 签发的 T_short 前缀,网关据此区分「portal T_short」与「原生 beta Token」。
+# 定义在 TokenStore 旁(前缀知识与签发/判定共处,避免散落)。
+PORTAL_TOKEN_PREFIX = "pt_"
+
+
 class TokenStore:
     """内存令牌表 — Slice 1 不持久化,Slice 8 保留内存(决策说明见下)。
 
@@ -99,8 +104,15 @@ class TokenStore:
         Slice 15:scope 参数区分标准令牌('standard')与公开令牌('public')。
         公开令牌用于 /public/<id>/embed-url 签发,免 cookie/grant 校验,
         但 proxy_sse_public_to_ragflow 每次校验 share_page.is_public=true。
+
+        Slice 19:T_short 加 `pt_` 前缀(portal token),网关据此区分「portal 签发的
+        T_short」与「RAGFlow 原生 beta Token」:
+          - `pt_` 前缀但不在 TokenStore → 过期/重启后失效的 portal T_short → 401(触发重新登录);
+          - 无 `pt_` 前缀 → 原生 beta Token(非 portal 签发)→ 透传 RAGFlow。
+        副作用:本 slice 上线后,旧格式 T_short(无 pt_ 前缀)的 iframe URL 失效,
+        用户重新登录获取新 embed-url 即可(T_short 本就短命,5 分钟过期)。
         """
-        token = secrets.token_urlsafe(32)
+        token = PORTAL_TOKEN_PREFIX + secrets.token_urlsafe(32)
         self._tokens[token] = TokenRecord(
             token=token,
             portal_user_id=portal_user_id,
@@ -267,6 +279,16 @@ def extract_t_short(request: Request):
     if not auth_header.startswith("Bearer "):
         return None
     return auth_header[len("Bearer ") :].strip() or None
+
+
+def _is_portal_token(token: str | None) -> bool:
+    """Slice 19:判断 token 是否为 portal 签发的 T_short(带 `pt_` 前缀)。
+
+    网关透传分支据此区分:
+      - `pt_` 前缀但不在 TokenStore → 过期/重启后失效的 portal T_short → 401;
+      - 无 `pt_` 前缀 → 原生 beta Token(RAGFlow 自身签发)→ 透传 RAGFlow。
+    """
+    return bool(token) and token.startswith(PORTAL_TOKEN_PREFIX)
 
 
 def _parse_session_id_from_body(body: bytes) -> str:
@@ -560,13 +582,23 @@ async def proxy_sse_to_ragflow(request: Request, dialog_id: str, ragflow_type: s
       透传 RAGFlow(保留原始 Authorization + Cookie),RAGFlow 用自身 auth 处理。
       关键:区分「T_short 不存在」(token 不在 TokenStore → 透传)vs「T_short 无效」
       (token 在 TokenStore 但 revoked/expired → 401),前者透传,后者 401。
+
+    Slice 19 扩展:用 `pt_` 前缀区分「过期 portal T_short」与「原生 beta Token」。
+      portal 重启后 TokenStore 清空,iframe URL 里残留的旧 T_short(带 pt_ 前缀)调
+      /completions — 旧逻辑误透传给 RAGFlow(pt_ token 非合法 beta Token → RAGFlow 返回
+      109,前端 doc_aggs.find 崩溃)。新逻辑:
+        - `pt_` 前缀但不在 TokenStore → 401(过期/重启后失效的 portal T_short,触发重新登录);
+        - 无 `pt_` 前缀 → 原生 beta Token → 透传 RAGFlow(Slice 18 既有逻辑)。
     """
     settings = request.app.state.settings
     token_store = request.app.state.token_store
     # 提取 T_short(先于 cookie 校验,用于判断走标准链还是公开链)
     t_short = extract_t_short(request)
     record = token_store.get_record(t_short) if t_short else None
-    # Slice 18:无 T_short 或 token 不在 TokenStore(非 portal T_short)→ 透传 RAGFlow
+    # Slice 19:`pt_` 前缀但不在 TokenStore → 401(过期/重启后失效的 portal T_short)
+    if record is None and _is_portal_token(t_short):
+        raise HTTPException(status_code=401, detail="令牌无效或已过期")
+    # Slice 18:无 T_short 或无 `pt_` 前缀(原生 beta Token)→ 透传 RAGFlow
     # (原生分享页场景:用户带 RAGFlow 自身 beta Token,无 portal 会话)
     if record is None:
         body = await request.body()
@@ -784,7 +816,10 @@ async def proxy_bot_json_to_ragflow(
 
     t_short = extract_t_short(request)
     record = token_store.get_record(t_short) if t_short else None
-    # Slice 18:无 T_short 或非 portal T_short → 透传 RAGFlow
+    # Slice 19:`pt_` 前缀但不在 TokenStore → 401(过期/重启后失效的 portal T_short)
+    if record is None and _is_portal_token(t_short):
+        raise HTTPException(status_code=401, detail="令牌无效或已过期")
+    # Slice 18:无 T_short 或无 `pt_` 前缀(原生 beta Token)→ 透传 RAGFlow
     if record is None:
         passthrough_headers = _build_passthrough_headers(request)
         try:
