@@ -1,17 +1,17 @@
-"""Slice 23 后端测试 — 网关 SSE 流完成后 message_count += 1(不依赖 GET history)。
+"""Slice 23/25 后端测试 — 网关 SSE 流完成后 message_count += 1(不依赖 GET history)。
 
 覆盖验收点(ISSUES.md Issue 23):
   1. SSE 流成功后,已绑定 session 的 message_count +1(每轮对话 +1)。
-  2. 新绑定 session(Slice 22 的 fetchSessionId 场景)的 message_count 也 +1。
+  2. 新绑定 session(真实首问场景)的 message_count 也 +1。
   3. 连续 2 轮对话后,message_count = 2(非 0)。
   4. GET history 失败时不影响 message_count +1(increment 不依赖 GET history)。
+  5. Issue 25:greeting 请求(question='')不绑定 session,也不增加 message_count。
 
 根因(Issue 23):
   网关 _sync_message_count_after_sse 调 GET history 取 messages 长度同步 count,
   但 RAGFlow 新建空 session 返回空历史 → count 仍 0。改为 SSE 流完成后直接 +1。
 """
 import httpx
-import pytest
 
 
 def _mock_ragflow_sse_success(monkeypatch, session_id: str = "s1", message_id: str = "m1"):
@@ -83,7 +83,7 @@ async def test_sse_success_increments_message_count_for_bound_session(client, ap
 
 
 # ---------------------------------------------------------------------------
-# 验收点 2:新绑定 session(fetchSessionId 场景)的 message_count 也 +1。
+# 验收点 2:新绑定 session(真实首问场景)的 message_count 也 +1。
 # ---------------------------------------------------------------------------
 
 
@@ -93,10 +93,10 @@ async def test_sse_success_increments_message_count_for_newly_bound_session(clie
     ragflow_session_id = "slice23-new-002"
     _mock_ragflow_sse_success(monkeypatch, session_id=ragflow_session_id)
 
-    # 请求体无 session_id(fetchSessionId 场景)
+    # 请求体无 session_id 但 question 非空,代表真实首问
     resp = await client.post(
         f"/api/v1/chatbots/{dialog_id}/completions",
-        json={"question": "", "stream": True, "quote": True},
+        json={"question": "首问", "stream": True, "quote": True},
         headers={"Authorization": f"Bearer {t_short}"},
     )
     await resp.aread()
@@ -105,6 +105,23 @@ async def test_sse_success_increments_message_count_for_newly_bound_session(clie
     owner = app.state.session_store.get(ragflow_session_id)
     assert owner is not None, "网关应从 SSE 响应绑定 session"
     assert owner.message_count == 1, f"新绑定 session message_count 应 +1,实际 {owner.message_count}"
+
+
+async def test_greeting_sse_does_not_bind_or_increment_message_count(client, app, monkeypatch):
+    """question='' 的 greeting 请求不绑定 session,避免刷新产生消息数 1 的垃圾会话。"""
+    t_short, dialog_id = await _login_and_get_t_short(client)
+    ragflow_session_id = "slice25-greeting-002"
+    _mock_ragflow_sse_success(monkeypatch, session_id=ragflow_session_id)
+
+    resp = await client.post(
+        f"/api/v1/chatbots/{dialog_id}/completions",
+        json={"question": "", "stream": True, "quote": True},
+        headers={"Authorization": f"Bearer {t_short}"},
+    )
+    await resp.aread()
+    assert resp.status_code == 200
+
+    assert app.state.session_store.get(ragflow_session_id) is None
 
 
 # ---------------------------------------------------------------------------

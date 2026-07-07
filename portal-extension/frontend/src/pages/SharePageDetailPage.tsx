@@ -30,8 +30,8 @@ function appendSessionId(url: string, sessionId: string): string {
   return `${url}${sep}session_id=${encodeURIComponent(sessionId)}`;
 }
 
-/** Slice 23:会话列表轮询间隔(ms)。5s 对用户感知可接受,且 listSessions 是轻量 GET。 */
-const SESSION_POLL_INTERVAL_MS = 5000;
+/** Slice 25:会话列表轮询间隔(ms)。真实首问后需在 2s 内刷新左侧列表。 */
+const SESSION_POLL_INTERVAL_MS = 2000;
 
 export default function SharePageDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -107,7 +107,7 @@ export default function SharePageDetailPage() {
   // Slice 23:会话列表定时轮询(每 SESSION_POLL_INTERVAL_MS)— 检测 iframe 内发消息后
   // 网关 bind 的新 session。根因:原列表只在挂载时调一次 listSessions,iframe 发消息后
   // 不刷新 → 看不到新会话。轮询而非 postMessage:iframe 跨域(RAGFlow 前端)postMessage
-  // 需改 RAGFlow 源码,轮询是零侵入方案(5s 间隔对用户感知可接受,且 listSessions 是轻量 GET)。
+  // 需改 RAGFlow 源码,轮询是零侵入方案(2s 内满足 Issue 25 的及时刷新验收)。
   useEffect(() => {
     if (!id) return;
     let cancelled = false;

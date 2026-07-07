@@ -13,10 +13,7 @@
   (无 session_id)→ RAGFlow 创建新 session → 前端存其 session_id。后续请求带这个 session_id。
   若网关未绑定该 session → 403。
 """
-from unittest.mock import AsyncMock
-
 import httpx
-import pytest
 
 
 def _mock_ragflow_sse_with_session_id(monkeypatch, session_id: str, message_id: str = "msg-001", nested: bool = False):
@@ -69,24 +66,22 @@ async def _get_t_short(client, share_page_id="sp_default"):
 
 
 async def test_gateway_binds_session_id_from_sse_response_when_request_has_none(client, app, monkeypatch):
-    """请求体无 session_id(fetchSessionId 场景)→ 网关透传 → 流成功后绑定响应的 session_id。"""
+    """greeting 请求(question='')不绑定响应 session_id,避免刷新产生垃圾会话。"""
     t_short, dialog_id = await _get_t_short(client)
     ragflow_session_id = "slice22-session-from-ragflow-001"
     _mock_ragflow_sse_with_session_id(monkeypatch, ragflow_session_id)
 
-    # 请求体无 session_id(模拟 fetchSessionId 的 question='' 请求)
+    # 请求体无 session_id 且 question=''(模拟 RAGFlow 前端挂载时的 greeting 请求)
     resp = await client.post(
         f"/api/v1/chatbots/{dialog_id}/completions",
         json={"question": "", "stream": True, "quote": True},
         headers={"Authorization": f"Bearer {t_short}"},
     )
-    assert resp.status_code == 200, f"首次无 session_id 请求应成功: {resp.text}"
+    assert resp.status_code == 200, f"greeting 请求应成功透传: {resp.text}"
 
-    # 流成功后,网关应绑定 RAGFlow 返回的 session_id 到当前用户
+    # greeting session 不应绑定到当前用户,否则刷新 iframe 会污染左侧会话列表
     owner = app.state.session_store.get(ragflow_session_id)
-    assert owner is not None, "网关未从 SSE 响应绑定 session_id 到当前用户"
-    assert owner.portal_user_id == "u_admin"
-    assert owner.ragflow_resource_id == dialog_id
+    assert owner is None, "greeting session 不应写入 chat_session_owner"
 
 
 # ---------------------------------------------------------------------------
@@ -95,26 +90,31 @@ async def test_gateway_binds_session_id_from_sse_response_when_request_has_none(
 
 
 async def test_subsequent_request_with_bound_session_id_returns_200(client, app, monkeypatch):
-    """首次无 session_id 请求触发绑定后,第二次带该 session_id 请求应 200(不 403)。"""
+    """greeting 创建的未绑定 session 发真实首问时应放行并在成功后绑定。"""
     t_short, dialog_id = await _get_t_short(client)
     ragflow_session_id = "slice22-session-from-ragflow-002"
     _mock_ragflow_sse_with_session_id(monkeypatch, ragflow_session_id, message_id="msg-002")
 
-    # 第一次:无 session_id(触发绑定)
+    # 第一次:greeting 只拿到 RAGFlow session_id,但不绑定
     resp1 = await client.post(
         f"/api/v1/chatbots/{dialog_id}/completions",
         json={"question": "", "stream": True, "quote": True},
         headers={"Authorization": f"Bearer {t_short}"},
     )
     assert resp1.status_code == 200
+    assert app.state.session_store.get(ragflow_session_id) is None
 
-    # 第二次:带 RAGFlow 返回的 session_id(应归属校验通过)
+    # 第二次:真实消息带 greeting session_id,归属校验应允许首次绑定
     resp2 = await client.post(
         f"/api/v1/chatbots/{dialog_id}/completions",
         json={"question": "继续提问", "stream": True, "quote": True, "session_id": ragflow_session_id},
         headers={"Authorization": f"Bearer {t_short}"},
     )
-    assert resp2.status_code == 200, f"绑定后第二次请求应 200,实际 {resp2.status_code}: {resp2.text}"
+    assert resp2.status_code == 200, f"真实首问应 200,实际 {resp2.status_code}: {resp2.text}"
+    owner = app.state.session_store.get(ragflow_session_id)
+    assert owner is not None, "真实首问成功后应绑定 session_id 到当前用户"
+    assert owner.portal_user_id == "u_admin"
+    assert owner.ragflow_resource_id == dialog_id
 
 
 # ---------------------------------------------------------------------------
@@ -128,16 +128,15 @@ async def test_already_bound_session_does_not_rebind(client, app, monkeypatch):
     ragflow_session_id = "slice22-session-already-bound-003"
     _mock_ragflow_sse_with_session_id(monkeypatch, ragflow_session_id, message_id="msg-003")
 
-    # 首次无 session_id 触发绑定
-    resp1 = await client.post(
-        f"/api/v1/chatbots/{dialog_id}/completions",
-        json={"question": "", "stream": True, "quote": True},
-        headers={"Authorization": f"Bearer {t_short}"},
+    app.state.session_store.bind(
+        session_id=ragflow_session_id,
+        share_page_id="sp_default",
+        portal_user_id="u_admin",
+        ragflow_resource_id=dialog_id,
     )
-    assert resp1.status_code == 200
     assert app.state.session_store.get(ragflow_session_id) is not None
 
-    # 第二次带同一 session_id → 应 200(不重复 bind,不抛异常)
+    # 带同一 session_id → 应 200(不重复 bind,不抛异常)
     resp2 = await client.post(
         f"/api/v1/chatbots/{dialog_id}/completions",
         json={"question": "二问", "stream": True, "quote": True, "session_id": ragflow_session_id},
@@ -152,15 +151,18 @@ async def test_already_bound_session_does_not_rebind(client, app, monkeypatch):
 
 
 async def test_unbound_session_id_still_rejected_403(client, app, monkeypatch):
-    """请求体有未绑定的 session_id(越权场景)→ 仍 403(绑定逻辑只在无 session_id 时触发)。"""
+    """请求体有未绑定的 session_id 且 question 为空时仍拒绝,避免空请求抢绑。"""
     t_short, dialog_id = await _get_t_short(client)
-    # 不调任何请求,直接用未绑定的 session_id
+    ragflow_session_id = "never-bound-session-004"
+    _mock_ragflow_sse_with_session_id(monkeypatch, ragflow_session_id, message_id="msg-004")
+
     resp = await client.post(
         f"/api/v1/chatbots/{dialog_id}/completions",
-        json={"question": "越权", "stream": True, "quote": True, "session_id": "never-bound-session-004"},
+        json={"question": "", "stream": True, "quote": True, "session_id": ragflow_session_id},
         headers={"Authorization": f"Bearer {t_short}"},
     )
-    assert resp.status_code == 403, f"未绑定 session_id 应 403: {resp.status_code}"
+    assert resp.status_code == 403, f"空问题不应绑定未归属 session: {resp.status_code}"
+    assert app.state.session_store.get(ragflow_session_id) is None
 
 
 # ---------------------------------------------------------------------------
@@ -169,15 +171,15 @@ async def test_unbound_session_id_still_rejected_403(client, app, monkeypatch):
 
 
 async def test_gateway_binds_session_id_from_nested_sse_response(client, app, monkeypatch):
-    """SSE 响应用嵌套结构 {data:{session_id}} → 网关仍能解析并绑定(兼容两种格式)。"""
+    """真实消息无 session_id 时,嵌套结构 {data:{session_id}} 也能解析并绑定。"""
     t_short, dialog_id = await _get_t_short(client)
     ragflow_session_id = "slice22-session-nested-005"
     _mock_ragflow_sse_with_session_id(monkeypatch, ragflow_session_id, nested=True)
 
-    # 请求体无 session_id
+    # 请求体无 session_id 但 question 非空,代表真实首问
     resp = await client.post(
         f"/api/v1/chatbots/{dialog_id}/completions",
-        json={"question": "", "stream": True, "quote": True},
+        json={"question": "首问", "stream": True, "quote": True},
         headers={"Authorization": f"Bearer {t_short}"},
     )
     assert resp.status_code == 200, f"嵌套结构响应应成功: {resp.text}"

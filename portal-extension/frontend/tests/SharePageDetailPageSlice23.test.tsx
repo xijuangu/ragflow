@@ -1,9 +1,9 @@
 /**
- * Slice 23 前端测试 — 新建会话防抖 + 会话列表定时轮询刷新。
+ * Slice 23/25 前端测试 — 新建会话防抖 + 会话列表定时轮询刷新。
  *
  * 覆盖验收点(ISSUES.md Issue 23):
  *   1. 快速点击"新建会话"按钮 2 次 → 只调 1 次 POST /sessions(防抖)。
- *   2. iframe 加载后定时轮询 GET /sessions 刷新左侧列表(检测新会话)。
+ *   2. iframe 加载后 2s 定时轮询 GET /sessions 刷新左侧列表(检测新会话)。
  *
  * 根因(Issue 23):
  *   - handleNewSession 用 sessionBusy state 做守卫,但 setSessionBusy(true) 异步,
@@ -89,7 +89,7 @@ describe('Slice 23 — 新建会话防抖 + 会话列表轮询', () => {
     });
   });
 
-  it('iframe 加载后定时轮询 GET /sessions 刷新左侧列表(检测新会话)', async () => {
+  it('iframe 加载后 2s 定时轮询 GET /sessions 刷新左侧列表(检测新会话)', async () => {
     // 初始列表为空,轮询后返回新会话
     const SESSION_AFTER_POLL = {
       sessions: [
@@ -126,7 +126,7 @@ describe('Slice 23 — 新建会话防抖 + 会话列表轮询', () => {
         );
         expect(getCalls.length).toBeGreaterThan(1);
       },
-      { timeout: 8000 },
+      { timeout: 3000 },
     );
-  }, 15000);
+  }, 6000);
 });

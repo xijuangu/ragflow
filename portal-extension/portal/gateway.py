@@ -43,7 +43,7 @@ import logging
 import secrets
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import urlencode
 
 import httpx
@@ -71,6 +71,7 @@ class TokenRecord:
     expires_at: float  # unix 时间戳
     revoked: bool = False
     scope: str = "standard"  # Slice 15:'standard'(默认)或 'public'(公开分享页)
+    pending_greeting_session_ids: set[str] = field(default_factory=set)
 
 
 # Slice 19:portal 签发的 T_short 前缀,网关据此区分「portal T_short」与「原生 beta Token」。
@@ -321,6 +322,24 @@ def _parse_session_id_from_body(body: bytes) -> str:
         return ""
 
 
+def _parse_question_from_body(body: bytes) -> str | None:
+    """从 SSE 请求体中解析 question;缺失或解析失败返回 None。
+
+    RAGFlow 前端挂载 iframe 时会发 ``question: ""`` 的 greeting 请求。Issue 25
+    需要把它与真实提问区分开,避免把 greeting session 绑定到门户会话列表。
+    """
+    if not body:
+        return None
+    try:
+        data = json.loads(body)
+        if "question" not in data:
+            return None
+        question = data.get("question")
+        return str(question) if question is not None else ""
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+
+
 def _parse_session_id_from_sse_chunk(chunk: bytes) -> str:
     """Slice 22:从 SSE 响应字节块解析 session_id(RAGFlow 在首帧返回新建 session 的 id)。
 
@@ -399,6 +418,26 @@ def _assert_session_ownership(session_store, session_id: str, portal_user_id: st
         raise HTTPException(status_code=403, detail="无权访问该会话")
     if owner.ragflow_resource_id != dialog_id:
         raise HTTPException(status_code=403, detail="会话与目标资源不匹配")
+
+
+def _assert_or_allow_first_real_message(
+    session_store,
+    session_id: str,
+    portal_user_id: str,
+    dialog_id: str,
+    request_question: str | None,
+    pending_greeting_session_ids: set[str],
+) -> None:
+    """校验已绑定 session;真实首问允许未绑定 session 通过。
+
+    Issue 25 中 greeting 请求先由 RAGFlow 创建 session,但门户不绑定。用户随后发
+    真实首问时会带这个未绑定 session_id。这里允许 ``question != ""`` 的首问
+    通过代理,实际绑定在 SSE 成功完成后发生。空 question 仍按普通归属校验拒绝。
+    """
+    owner = session_store.get(session_id)
+    if owner is None and request_question not in (None, "") and session_id in pending_greeting_session_ids:
+        return
+    _assert_session_ownership(session_store, session_id, portal_user_id, dialog_id)
 
 
 def _assert_grant_exists(seed, portal_user_id: str, share_page_id: str) -> None:
@@ -645,10 +684,18 @@ async def proxy_sse_to_ragflow(request: Request, dialog_id: str, ragflow_type: s
     # 读取请求体(原样转发给 RAGFlow)
     body = await request.body()
     request_session_id = _parse_session_id_from_body(body)
+    request_question = _parse_question_from_body(body)
     session_store = getattr(request.app.state, "session_store", None)
     # 归属隔离:若请求体含 session_id,校验其归属当前 T_short 持有用户
     if request_session_id and session_store is not None:
-        _assert_session_ownership(session_store, request_session_id, record.portal_user_id, dialog_id)
+        _assert_or_allow_first_real_message(
+            session_store,
+            request_session_id,
+            record.portal_user_id,
+            dialog_id,
+            request_question,
+            record.pending_greeting_session_ids,
+        )
     # Slice 22:传 portal_user_id + share_page_id + org_id,供网关在请求体无 session_id 时
     # 从 SSE 响应解析 session_id 并绑定(fetchSessionId 场景)
     return _build_sse_streaming_response(
@@ -656,8 +703,10 @@ async def proxy_sse_to_ragflow(request: Request, dialog_id: str, ragflow_type: s
         body,
         dialog_id,
         request_session_id,
+        request_question,
         session_store,
         ragflow_type,
+        pending_greeting_session_ids=record.pending_greeting_session_ids,
         portal_user_id=record.portal_user_id,
         share_page_id=record.share_page_id,
         org_id=share_page.org_id,
@@ -714,13 +763,14 @@ async def _proxy_sse_public_core(
     if body is None:
         body = await request.body()
     request_session_id = _parse_session_id_from_body(body) or fallback_session_id
+    request_question = _parse_question_from_body(body)
     session_store = getattr(request.app.state, "session_store", None)
     # 步骤 4:session 归属 u_anonymous(公开会话锚点)
     if request_session_id and session_store is not None:
         _assert_session_ownership(session_store, request_session_id, record.portal_user_id, dialog_id)
     # 公开分享页当前仅 chat 类型,ragflow_type 固定为 'chat'
     return _build_sse_streaming_response(
-        settings, body, dialog_id, request_session_id, session_store, ragflow_type="chat"
+        settings, body, dialog_id, request_session_id, request_question, session_store, ragflow_type="chat"
     )
 
 
@@ -729,9 +779,11 @@ def _build_sse_streaming_response(
     body: bytes,
     dialog_id: str,
     request_session_id: str,
+    request_question: str | None,
     session_store,
     ragflow_type: str = "chat",
     *,
+    pending_greeting_session_ids: set[str] | None = None,
     portal_user_id: str = "",
     share_page_id: str = "",
     org_id: str = "default",
@@ -745,12 +797,15 @@ def _build_sse_streaming_response(
     (/api/v1/agentbots/<id>/completions),chat 类型走 chatbot 端点
     (/api/v1/chatbots/<id>/completions)。
 
-    Slice 22:若请求体无 session_id(RAGFlow 前端 fetchSessionId 场景,RAGFlow 会新建
-    session 并在 SSE 首帧返回 session_id),流成功完成后从 SSE 响应解析 session_id 并
-    绑定到当前用户(chat_session_owner)。这样后续请求带该 session_id 时归属校验通过。
+    Slice 22:若请求体无 session_id 且是真实提问,RAGFlow 会新建 session 并在 SSE
+    首帧返回 session_id,流成功完成后从 SSE 响应解析 session_id 并绑定到当前用户。
     根因:RAGFlow 前端 ``use-send-shared-message.ts:77`` 的 session_id 来自 SSE 响应
     (``derivedMessages[0].session_id``),不从 URL ``?session_id=`` 读 — precreate 往
     iframe URL 塞 session_id 无效,必须在网关侧绑定 RAGFlow 实际创建的 session。
+
+    Slice 25:``question == ""`` 是 iframe 挂载时的 greeting 请求,不绑定、不计数,
+    只把返回的 session_id 记入当前 T_short 的 pending 集合。真实首问只有带着
+    这个 pending session_id 才能通过校验,并在流成功后绑定到当前用户。
     """
     # Slice 16:agent 类型走 agentbot 端点,chat 类型走 chatbot 端点
     bot_segment = _ragflow_bot_segment(ragflow_type)
@@ -786,29 +841,33 @@ def _build_sse_streaming_response(
                 #   与 resume_session 同逻辑保证一致;GET history 失败只 log warning 不破坏流)
                 # Slice 16:agent 类型调 agentbot 端点取 history(chat 类型调 chatbot 端点)
                 # Slice 22:统一目标 session_id(请求体有则用请求体的;无则用响应解析的)
+                is_greeting = request_question == ""
+                if is_greeting and parsed_session_id and pending_greeting_session_ids is not None:
+                    pending_greeting_session_ids.add(parsed_session_id)
                 target_session_id = request_session_id or (
-                    parsed_session_id if (parsed_session_id and portal_user_id and share_page_id) else ""
+                    parsed_session_id
+                    if (not is_greeting and parsed_session_id and portal_user_id and share_page_id)
+                    else ""
                 )
-                if request_session_id:
-                    session_store.update_last_active(request_session_id)
-                # Slice 22:请求体无 session_id 但响应有 session_id → 绑定到当前用户
-                # (fetchSessionId 场景:RAGFlow 新建 session,网关绑定后后续请求归属校验通过)
-                # 仅标准链传入 portal_user_id + share_page_id;公开链不传(公开 session 归 u_anonymous)
-                elif parsed_session_id and portal_user_id and share_page_id:
-                    # 已绑定则跳过(避免唯一约束冲突);未绑定则 bind
-                    if session_store.get(parsed_session_id) is None:
+                if target_session_id and not is_greeting:
+                    # 已绑定:更新时间;未绑定:真实首问成功后建立归属。
+                    if session_store.get(target_session_id) is None and portal_user_id and share_page_id:
                         session_store.bind(
-                            session_id=parsed_session_id,
+                            session_id=target_session_id,
                             share_page_id=share_page_id,
                             portal_user_id=portal_user_id,
                             ragflow_resource_id=dialog_id,
                             org_id=org_id,
                         )
+                        if pending_greeting_session_ids is not None:
+                            pending_greeting_session_ids.discard(target_session_id)
+                    else:
+                        session_store.update_last_active(target_session_id)
                 # Slice 23:统一 message_count +1(每轮对话 +1,不依赖 GET history)。
                 # 根因:_sync_message_count_after_sse 调 GET history 取 messages 长度,
                 # 但 RAGFlow 新建空 session 返回空历史 → count 仍 0。改为直接 increment。
                 # resume_session 路径仍用 sync_message_count_from_history(恢复时同步绝对值)。
-                if target_session_id:
+                if target_session_id and not is_greeting:
                     session_store.increment_message_count(target_session_id)
 
     return StreamingResponse(stream_generator(), media_type="text/event-stream")
