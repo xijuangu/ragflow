@@ -1,7 +1,7 @@
 # Handoff — RAGFlow Portal 同源部署修复(Phase 3)
 
-> 生成时间:2026-07-06。接手前必读:`docs/ISSUES.md` Phase 3 区段(Issue 17 + 18)、`docs/PRD.md` L21/L120-128/L131-133。
-> 本文档不重复 ISSUES.md / PRD 内容,只补充操作细节与当前环境状态。
+> 生成时间:2026-07-06。接手前必读:`CONTEXT.md`(项目级约束/约定/已知限制)、`docs/ISSUES.md` Phase 3 区段、`docs/PRD.md` L21/L120-128/L131-133。
+> 本文档只记录操作细节与当前环境状态,项目记忆见 `CONTEXT.md`。
 
 ## 1. 项目位置与入口
 
@@ -9,24 +9,12 @@
 - 后端入口:`portal/main.py`(`app = create_app()`),`portal/routes.py`(路由),`portal/gateway.py`(网关/SSE 代理/TokenStore)
 - 前端入口:`frontend/src/main.tsx`(Router basename),`frontend/src/api/client.ts`(API_BASE),`frontend/vite.config.ts`(base)
 - 配置:`portal/config.py`(`load_settings`),`.env`(本地)/`~/.env`(服务器)
-- Issue 跟踪:`docs/ISSUES.md`(本地文件作 tracker,Issue 1-18 + TD1-TD20)
+- Issue 跟踪:`docs/ISSUES.md`(本地文件作 tracker,Issue 1-30 + TD1-TD20)
 - PRD:`docs/PRD.md`
 
 ## 2. 当前部署架构(172.16.10.180)
 
-同源架构,三层容器/进程,全部经 nginx :80 对外:
-
-```
-浏览器 → nginx :80
-          ├─ /portal/            → rewrite ^/portal/(.*) → portal:8000/(前端 SPA + API)
-          ├─ /portal/assets/     → rewrite → portal:8000/assets/
-          ├─ /api/v1/(chatbots|agentbots)/  → portal:8000(统一代理:/info、/inputs、/completions)  ← Slice 18 放宽后
-          └─ /                   → RAGFlow:8080(原生)
-```
-
-- nginx 容器:`portal-nginx`,配置在 `~/portal-nginx/conf.d/default.conf`(服务器)
-- RAGFlow:`~/ragflow/docker/.env` 设 `SVR_WEB_HTTP_PORT=172.16.10.180:8080`(腾出 :80 给 nginx)
-- portal:uvicorn `--port 8000 --host 0.0.0.0`,启动脚本 `~/portal-extension/start.sh`(pkill → source .env → nohup uv run uvicorn,PID 写 `~/portal-extension/portal.pid`)
+详见 `CONTEXT.md` §1。本文档只补充操作命令。
 
 ### 2.1 nginx 配置(Slice 18 放宽后,服务器 `~/portal-nginx/conf.d/default.conf`)
 

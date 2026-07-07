@@ -1154,6 +1154,55 @@ Issue 27(部署端点)+ Issue 28(新建会话修复)代码与部署均就绪后,
 
 ---
 
+## Issue 30 — Slice 30: 修复 agent 类型 sessions 端点 URL 构造(404)
+
+### Parent
+
+Issue 27(Slice 27 部署 chat 类型 sessions 端点时发现 agent 类型仍有 404)。
+
+### 根因
+
+portal 网关 `_ragflow_bot_segment`(`portal-extension/portal/gateway.py:457`)对 agent 统一返回 "agentbots":
+
+```python
+def _ragflow_bot_segment(ragflow_type: str) -> str:
+    return "agentbots" if ragflow_type == "agent" else "chatbots"
+```
+
+该 segment 用于 completions 与 sessions 两类端点。但 RAGFlow 官方端点路径不一致:
+
+| 端点类型 | chat | agent | RAGFlow 路径来源 |
+|---|---|---|---|
+| completions | `/api/v1/chatbots/<id>/completions` | `/api/v1/agentbots/<id>/completions` | `bot_api.py`(agentbot 部分在 bot_api.py) |
+| sessions(GET/PATCH/DELETE) | `/api/v1/chatbots/<id>/sessions/<sid>` | `/api/v1/agents/<id>/sessions/<sid>` | chat 在 `bot_api.py`(本地 fork 加),agent 在 `agent_api.py`(官方) |
+
+agent 的 sessions 端点 RAGFlow 用 `/agents/`(非 `/agentbots/`),导致 portal 网关 `fetch_session_history_via_ragflow` / `rename_session_via_ragflow` / `delete_session_via_ragflow` 对 agent 调 `/agentbots/<id>/sessions/<sid>` 返回 404。
+
+### What to build
+
+拆分 segment 函数:`_ragflow_bot_segment` 仍用于 completions(保持 "agentbots" 不变),新增 `_ragflow_sessions_segment` 用于 sessions 端点:agent → "agents",chat → "chatbots"。
+
+改动范围:
+- `portal/gateway.py`:加 `_ragflow_sessions_segment` 函数,在 `fetch_session_history_via_ragflow` / `rename_session_via_ragflow` / `delete_session_via_ragflow` 中用它替换 `_ragflow_bot_segment`
+- 既有测试验证 agent sessions URL 改为 `/agents/`(非 `/agentbots/`)
+- chat 类型 sessions URL 不变(仍 `/chatbots/`)
+
+### Acceptance criteria
+
+- [ ] `fetch_session_history_via_ragflow(ragflow_type='agent')` 上游 URL 含 `/agents/`(非 `/agentbots/`)
+- [ ] `rename_session_via_ragflow(ragflow_type='agent')` 上游 URL 含 `/agents/`
+- [ ] `delete_session_via_ragflow(ragflow_type='agent')` 上游 URL 含 `/agents/`
+- [ ] chat 类型 sessions URL 不变(仍 `/chatbots/`)
+- [ ] completions 端点 URL 不变(仍用 `_ragflow_bot_segment`,agent → "agentbots")
+- [ ] 既有 portal pytest 全绿(无回归;基线 387 passed + 5 skipped)
+- [ ] 新增/修改的单测覆盖 agent sessions URL 构造
+
+### Blocked by
+
+None - can start immediately(独立改动,与 Slice 28 无文件冲突)
+
+---
+
 ## 后续待办(Issue 16 AC2 遗留)
 
 > Issue 16 AC2「悬浮组件在任意页面右下角加载,点击展开对话窗,能正常对话」— Slice 16 实现了 `/widget/<id>` 骨架 HTML + 可嵌入 snippet + CSP frame-ancestors 放行,但 **悬浮组件实际 UI 渲染(右下角悬浮按钮 + 点击展开对话窗 + iframe 加载 + SSE 对话)尚未实现**。`/widget/<id>` 当前仅返回含 `<div id="widget-root">` 的占位 HTML,需前端构建产物挂载 React 组件。
