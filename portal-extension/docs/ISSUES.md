@@ -1153,6 +1153,7 @@ Issue 27(部署端点)+ Issue 28(新建会话修复)代码与部署均就绪后,
 - Issue 28(Slice 28 先修复新建会话 greeting)
 - Issue 31(Slice 31 先修复会话列表滚动条,验收时确认 UI 完整可用)
 - Issue 32(Slice 32 先移除 iframe Reset 按钮,避免历史不一致)
+- Issue 33(Slice 33 先修复 SSE 期间切换丢失消息,避免验收时数据丢失)
 
 ---
 
@@ -1280,6 +1281,69 @@ RAGFlow 分享页 `web/src/pages/next-chats/share/index.tsx:62` 把 `removeAllMe
 ### Blocked by
 
 None - can start immediately(独立 RAGFlow web 改动)
+
+---
+
+## Issue 33 — Slice 33: SSE 流式响应期间禁用会话切换(避免消息丢失)
+
+### Parent
+
+无(E2E 验收 Slice 31/32 时发现)。
+
+### 根因(E2E 验证发现)
+
+iframe 内 RAGFlow 前端用 `useSendMessageWithSse()`(返回 `{ send, answer, done }`)处理流式响应。当用户在 portal 侧点击「新建会话」或「切换会话」时:
+
+1. portal 改变 `iframeUrl` → iframe 重载
+2. RAGFlow 前端组件卸载 → SSE 请求被中止(`send` 的 fetch 还在 pending)
+3. `derivedMessages` state 被清空 → iframe 重载后 GET history 取不到未完成的消息(RAGFlow 后端只在 SSE 完成后才写入 session history)
+4. 结果:**本次消息丢失,新会话可能未创建,原会话也缺这条消息**
+
+**根因**:portal 侧切换按钮不知道 iframe 内 SSE 正在进行,直接重载 iframe 中断了流式响应。这是跨 iframe 边界的状态同步缺失。
+
+### What to build
+
+跨 iframe 边界的状态同步(垂直 slice,端到端):
+
+1. **RAGFlow 前端 `use-send-shared-message.ts`**:在 `send(completionUrl, ...)` 调用前向 `window.parent` postMessage `{ type: 'ragflow:completions:start' }`;在 SSE `done` 或 error 时 postMessage `{ type: 'ragflow:completions:end' }`。注意:
+   - `done` 来自 `useSendMessageWithSse()` 返回值,SSE 完成(含正常结束 + error)时触发
+   - 必须在 finally 或 done effect 里发 end,避免 error 时永久禁用按钮
+   - 用 try/finally 包裹 send 调用,保证 start/end 配对
+2. **portal 前端 `SharePageDetailPage.tsx`**:
+   - 加 `isStreaming` state,`useEffect` 监听 `window` 的 `message` 事件
+   - 校验 `event.origin`(只接受同源 iframe,避免恶意 postMessage)
+   - 过滤 `event.data.type === 'ragflow:completions:start'` → setIsStreaming(true)
+   - 过滤 `event.data.type === 'ragflow:completions:end'` → setIsStreaming(false)
+   - `handleNewSession` / `handleReopen` 在 `isStreaming` 时 return(守卫)
+   - 「新建会话」「切换会话」按钮在 isStreaming 时变灰禁用 + tooltip 提示「正在生成回复,请稍候...」
+3. **测试**:
+   - portal Vitest:模拟 postMessage start/end,验证 isStreaming 状态切换 + 按钮禁用逻辑
+   - RAGFlow web `npm run build`(Jest 跑不起来,用 build 兜底)
+
+### postMessage 协议(决策点)
+
+```ts
+// RAGFlow → parent
+postMessage({ type: 'ragflow:completions:start' }, '*');  // 或 targetOrigin
+postMessage({ type: 'ragflow:completions:end' }, '*');
+```
+
+- origin 校验:portal 监听时校验 `event.origin === window.location.origin`(同源,因为 iframe 经 nginx 代理同源)
+- 若跨域:`targetOrigin` 用具体 origin,portal 侧校验白名单
+
+### Acceptance criteria
+
+- [ ] iframe 内发消息后(SSE 开始),portal 侧「新建会话」「切换会话」按钮变灰禁用
+- [ ] SSE 完成(RAGFlow 回复结束)后,按钮自动恢复可用
+- [ ] SSE 出错时按钮也恢复(不会永久禁用)—— 验证 done/error 都触发 end
+- [ ] 禁用期间点击按钮无效果(不重载 iframe,不丢失消息)
+- [ ] origin 校验:非同源 postMessage 被忽略(安全)
+- [ ] 既有 portal Vitest 全绿 + 新增 isStreaming 测试通过
+- [ ] RAGFlow web `npm run build` 通过
+
+### Blocked by
+
+None - can start immediately(独立改动,跨 portal 前端 + RAGFlow 前端,无后端改动)
 
 ---
 
