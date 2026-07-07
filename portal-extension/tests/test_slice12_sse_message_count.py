@@ -90,10 +90,11 @@ async def _setup_session_and_get_tshort(client, app, monkeypatch, session_id: st
 
 
 async def test_sse_updates_message_count_on_success(client, app, monkeypatch):
-    """SSE 流成功完成后,调 GET history 取最新 messages 数,更新 message_count。
+    """SSE 流成功完成后,message_count +1(每轮对话 +1,不依赖 GET history)。
 
     验收点 4:不再仅靠 GET history(resume_session)更新;SSE 代理后也更新。
     验收点 5:message_count 与 last_active_at 在同一时机(流成功完成后)更新。
+    Slice 23:改为 +1(increment),非 GET history 的 len(messages)。
     """
     fake_session_id = "slice12-sse-msg-count-001"
     t_short, dialog_id = await _setup_session_and_get_tshort(client, app, monkeypatch, fake_session_id)
@@ -104,8 +105,6 @@ async def test_sse_updates_message_count_on_success(client, app, monkeypatch):
 
     # mock SSE 上游成功流
     _mock_ragflow_sse_success(monkeypatch)
-    # mock GET history 返回 3 条消息(模拟 SSE 后 RAGFlow 已存 3 条)
-    _mock_fetch_history(monkeypatch, messages=[{"role": "user"}, {"role": "assistant"}, {"role": "user"}])
 
     time.sleep(0.02)
 
@@ -117,16 +116,16 @@ async def test_sse_updates_message_count_on_success(client, app, monkeypatch):
     )
     await resp.aread()  # 消费流式响应体
 
-    # message_count 应被更新为 3(GET history 返回的 messages 数)
+    # Slice 23:message_count +1(每轮对话 +1,不依赖 GET history)
     owner_after = app.state.session_store.get(fake_session_id)
     assert owner_after is not None
-    assert owner_after.message_count == 3, f"message_count 应为 3,实际: {owner_after.message_count}"
+    assert owner_after.message_count == 1, f"message_count 应为 1(每轮 +1),实际: {owner_after.message_count}"
     # last_active_at 也被更新(同一时机)
     assert owner_after.last_active_at > owner_before.last_active_at, "last_active_at 也应被更新"
 
 
-async def test_sse_message_count_uses_get_history(client, app, monkeypatch):
-    """验证 SSE 流成功后调用了 fetch_session_history_via_ragflow 取最新消息数。"""
+async def test_sse_message_count_uses_increment_not_get_history(client, app, monkeypatch):
+    """Slice 23:验证 SSE 流成功后用 increment_message_count(+1),不调 GET history。"""
     fake_session_id = "slice12-sse-msg-count-002"
     t_short, dialog_id = await _setup_session_and_get_tshort(client, app, monkeypatch, fake_session_id)
 
@@ -141,11 +140,11 @@ async def test_sse_message_count_uses_get_history(client, app, monkeypatch):
     )
     await resp.aread()
 
-    # GET history 被调用(用于取最新消息数)
-    mock_history.assert_awaited_once()
-    # message_count 更新为 2
+    # Slice 23:GET history 不应被调用(改用 increment_message_count)
+    mock_history.assert_not_awaited()
+    # message_count +1(非 GET history 的 len(messages)=2)
     owner = app.state.session_store.get(fake_session_id)
-    assert owner.message_count == 2
+    assert owner.message_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -223,18 +222,18 @@ async def test_sse_no_session_id_does_not_update_message_count(client, app, monk
 
 
 async def test_sse_get_history_failure_does_not_break_stream(client, app, monkeypatch):
-    """流成功后调 GET history 失败时,不破坏已成功的流(只 log warning,message_count 不更新)。"""
+    """Slice 23:流成功后用 increment(+1),GET history 失败不影响 message_count 更新。"""
     fake_session_id = "slice12-sse-msg-count-history-fail"
     t_short, dialog_id = await _setup_session_and_get_tshort(client, app, monkeypatch, fake_session_id)
 
     _mock_ragflow_sse_success(monkeypatch)
-    # mock GET history 失败(抛异常)
+    # mock GET history 失败(抛异常)— Slice 23 不再调 GET history,但 mock 保留验证
     monkeypatch.setattr(
         "portal.gateway.fetch_session_history_via_ragflow",
         AsyncMock(side_effect=RuntimeError("GET history 网络抖动")),
     )
 
-    # SSE 代理应正常返回(流已成功,GET history 失败不破坏)
+    # SSE 代理应正常返回(流已成功)
     resp = await client.post(
         f"/api/v1/chatbots/{dialog_id}/completions",
         json={"question": "测试", "stream": True, "session_id": fake_session_id},
@@ -247,8 +246,8 @@ async def test_sse_get_history_failure_does_not_break_stream(client, app, monkey
     # last_active_at 仍被更新(流成功)
     owner = app.state.session_store.get(fake_session_id)
     assert owner.last_active_at > 0
-    # message_count 未更新(GET history 失败,无法获取最新消息数,保持原值)
-    assert owner.message_count == 0, "GET history 失败时 message_count 保持原值"
+    # Slice 23:message_count +1(increment 不依赖 GET history)
+    assert owner.message_count == 1, f"GET history 失败时 message_count 仍应 +1,实际: {owner.message_count}"
 
 
 if __name__ == "__main__":

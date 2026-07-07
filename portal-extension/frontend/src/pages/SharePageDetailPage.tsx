@@ -17,7 +17,7 @@
  * Slice 16:widget 类型展示 snippet(可复制 iframe HTML)而非 iframe;
  *   agent 类型 iframe URL 走 /agent/share 路径(由后端构造,前端透明)。
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { ApiError, api, type EmbedUrlResponse, type SessionSummary } from '../api/client';
 import { formatTime } from '../utils/formatTime';
@@ -29,6 +29,9 @@ function appendSessionId(url: string, sessionId: string): string {
   const sep = url.includes('?') ? '&' : '?';
   return `${url}${sep}session_id=${encodeURIComponent(sessionId)}`;
 }
+
+/** Slice 23:会话列表轮询间隔(ms)。5s 对用户感知可接受,且 listSessions 是轻量 GET。 */
+const SESSION_POLL_INTERVAL_MS = 5000;
 
 export default function SharePageDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -101,6 +104,27 @@ export default function SharePageDetailPage() {
     };
   }, [id]);
 
+  // Slice 23:会话列表定时轮询(每 SESSION_POLL_INTERVAL_MS)— 检测 iframe 内发消息后
+  // 网关 bind 的新 session。根因:原列表只在挂载时调一次 listSessions,iframe 发消息后
+  // 不刷新 → 看不到新会话。轮询而非 postMessage:iframe 跨域(RAGFlow 前端)postMessage
+  // 需改 RAGFlow 源码,轮询是零侵入方案(5s 间隔对用户感知可接受,且 listSessions 是轻量 GET)。
+  useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+    const interval = setInterval(async () => {
+      try {
+        const res = await api.listSessions(id);
+        if (!cancelled) setSessions(res.sessions);
+      } catch {
+        // 轮询失败静默(不阻塞 iframe,不打扰用户)
+      }
+    }, SESSION_POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [id]);
+
   /** 重新打开历史会话:调 embed-url 拿新 T_short,追加 session_id,重载 iframe。
    *  Slice 16:widget 类型无 iframe_url,不重载(widget snippet 是静态嵌入代码)。 */
   const handleReopen = useCallback(
@@ -124,9 +148,13 @@ export default function SharePageDetailPage() {
   );
 
   /** 新建会话:POST 预创建,用返回的 iframe_url(已含 session_id)重载 iframe。
-   *  Slice 16:widget 类型仍可新建会话(会话进入「我的会话」列表),但 iframe 不重载。 */
+   *  Slice 16:widget 类型仍可新建会话(会话进入「我的会话」列表),但 iframe 不重载。
+   *  Slice 23:用 useRef 做同步守卫(ref 赋值同步,非 state 异步),防止快速点击
+   *           绕过 sessionBusy 守卫导致多次 precreateSession(弹多个会话)。 */
+  const newSessionLockRef = useRef(false);
   const handleNewSession = useCallback(async () => {
-    if (!id || sessionBusy) return;
+    if (!id || sessionBusy || newSessionLockRef.current) return;
+    newSessionLockRef.current = true;
     setSessionBusy(true);
     try {
       const res = await api.precreateSession(id);
@@ -145,6 +173,7 @@ export default function SharePageDetailPage() {
     } catch (e) {
       setSessionsError(e instanceof ApiError ? e.message : '新建会话失败');
     } finally {
+      newSessionLockRef.current = false;
       setSessionBusy(false);
     }
   }, [id, sessionBusy, isWidget]);

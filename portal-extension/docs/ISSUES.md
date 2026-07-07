@@ -883,6 +883,83 @@ Slice 21 往 iframe URL 塞 `session_id` 参数无效 — RAGFlow 前端不读�
 
 ---
 
+## Issue 23 — Slice 23: 会话列表实时刷新 + 新建会话防抖 + 消息数准确同步
+
+### Parent
+
+Issue 22(Slice 22 修复了 /completions 403,E2E 验证发消息正常,但暴露会话列表/历史恢复/消息计数 3 个新问题)。
+
+### 根因(E2E 验证发现)
+
+1. **发消息后左侧无会话记录**:`SharePageDetailPage.tsx` 的"我的会话"列表只在挂载时调一次 `listSessions`,发消息后不刷新。网关 Slice 22 已 bind session 到 DB,但前端没重新拉列表 → 看不到新会话。
+2. **新建会话一次性弹出多个**:`handleNewSession` 用 `sessionBusy` state 做守卫,但 `setSessionBusy(true)` 是异步的。React 18 批处理 → 快速点击时 `sessionBusy` 还未更新 → 守卫失效 → 多次调 `precreateSession` → 创建多个 session。
+3. **切换会话再切回来显示 0 条**:网关 Slice 22 bind session 时 `message_count=0`,`_sync_message_count_after_sse` 调 RAGFlow GET history 同步,但对 RAGFlow 新建的空 session 返回空历史 → count 仍 0。
+
+### What to build
+
+**端到端行为**:用户在 iframe 发消息 → 网关 bind session → 前端检测到新 session → 刷新"我的会话"列表 → 用户看到新会话出现且消息数正确。点击"新建会话"按钮 → 只创建一个(防抖)。
+
+1. **前端会话列表实时刷新**:`SharePageDetailPage.tsx` 在 iframe 加载后定时轮询(如每 5s)或通过 postMessage 检测 iframe 内新消息 → 重新调 `listSessions` 刷新左侧列表。
+2. **新建会话防抖**:`handleNewSession` 用 `useRef` 做同步守卫(ref 赋值是同步的,非 state 异步),防止快速点击绕过 `sessionBusy` 守卫。
+3. **消息数准确同步**:网关 `_sync_message_count_after_sse` 对 RAGFlow 新建空 session(GET history 返回空)的场景,改为 SSE 流完成后 `message_count += 1`(每轮对话 +1),不依赖 GET history。
+
+### Acceptance criteria
+
+- [ ] 用户在 iframe 首次发消息后,左侧"我的会话"列表在 5s 内出现新会话(标题"新会话",消息数 1)
+- [ ] 点击"新建会话"按钮,无论点击多快,只创建一个 session(不弹多个)
+- [ ] 连续发 2+ 条消息后,左侧列表对应会话显示正确的消息数(非 0)
+- [ ] 既有 pytest 全绿(无回归;基线 380 passed + 5 skipped)
+- [ ] 前端 Vitest 全绿
+- [ ] E2E:iframe 内发消息 → 左侧列表实时刷新 → 切换到其他会话再切回 → 消息数正确
+
+### Blocked by
+
+- Issue 22(Slice 22 已修复 403,发消息正常 — 本 slice 在其基础上修列表/防抖/计数)
+
+---
+
+## Issue 24 — Slice 24: iframe 恢复历史会话(RAGFlow 前端读 URL session_id)
+
+### Parent
+
+Issue 22(Slice 22 根因诊断确认:RAGFlow 前端 `use-send-shared-message.ts:77` 的 session_id 来自 SSE 响应,不从 URL `?session_id=` 读 → 刷新/切换会话后 iframe 创建新 session → 历史丢失)。
+
+### 根因(E2E 验证发现)
+
+RAGFlow 前端 `web/src/pages/next-chats/hooks/use-send-shared-message.ts`:
+- 第 24-42 行 `useGetSharedChatSearchParams` 只从 URL 读 `shared_id`/`from`/`locale`/`theme`/`visible_avatar`,**不读 `session_id`**。
+- 第 111-122 行 `fetchSessionId` 在页面加载时发 `question=''` 请求(无 session_id)→ RAGFlow 创建新 session → 前端存 `derivedMessages[0].session_id`。
+- 第 77 行 `sendMessage` 的 `session_id` 来自 `derivedMessages[0].session_id`(SSE 响应),不从 URL 读。
+
+**失败链路**:刷新页面 / 点击历史会话 → iframe 重载 → `fetchSessionId` 创建新 session → 旧 session 的历史不恢复 → 用户看不到之前的对话。
+
+### What to build
+
+**端到端行为**:用户点击左侧历史会话 → iframe URL 带 session_id → RAGFlow 前端读 URL session_id → 跳过 `fetchSessionId`(不创建新 session)→ 用该 session_id 恢复历史 → 用户看到历史消息。
+
+1. **修改 RAGFlow 前端** `use-send-shared-message.ts`:
+   - `useGetSharedChatSearchParams` 加 `sessionId` 字段(从 URL 读 `session_id`)。
+   - `fetchSessionId` 在有 URL session_id 时跳过(不创建新 session),或用该 session_id 调 GET history 恢复 `derivedMessages`。
+2. **portal 前端**:`handleReopen` 恢复 iframe URL 带 session_id(已有 `appendSessionId` 逻辑,确认有效)。
+3. **注意**:这是修改 RAGFlow 源码(`web/src/`),需评估 RAGFlow 升级时的维护成本。修改应尽量小且可选(URL 无 session_id 时保持原行为)。
+
+### Acceptance criteria
+
+- [ ] RAGFlow 前端 `useGetSharedChatSearchParams` 读 URL `session_id` 参数
+- [ ] iframe URL 含 session_id 时,`fetchSessionId` 跳过(不创建新 session)
+- [ ] 用户点击左侧历史会话 → iframe 重载 → 显示该会话的历史消息(非空)
+- [ ] 刷新页面 → iframe 重载 → 显示最近活跃会话的历史消息(非空)
+- [ ] iframe URL 不含 session_id 时,保持原行为(创建新 session,兼容公开分享)
+- [ ] 既有 portal pytest 全绿(无回归)
+- [ ] 前端 Vitest 全绿
+- [ ] E2E:发消息 → 刷新页面 → 历史消息仍在 → 切换会话再切回 → 历史消息仍在
+
+### Blocked by
+
+- Issue 23(Slice 23 修复列表刷新后,用户能看到历史会话列表 — 本 slice 修复点击后恢复历史)
+
+---
+
 ## 后续待办(Issue 16 AC2 遗留)
 
 > Issue 16 AC2「悬浮组件在任意页面右下角加载,点击展开对话窗,能正常对话」— Slice 16 实现了 `/widget/<id>` 骨架 HTML + 可嵌入 snippet + CSP frame-ancestors 放行,但 **悬浮组件实际 UI 渲染(右下角悬浮按钮 + 点击展开对话窗 + iframe 加载 + SSE 对话)尚未实现**。`/widget/<id>` 当前仅返回含 `<div id="widget-root">` 的占位 HTML,需前端构建产物挂载 React 组件。

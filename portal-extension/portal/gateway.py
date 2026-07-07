@@ -566,36 +566,6 @@ async def delete_agent_session_via_ragflow(settings, agent_id: str, session_id: 
     return await delete_session_via_ragflow(settings, agent_id, session_id, ragflow_type="agent")
 
 
-async def _sync_message_count_after_sse(
-    settings,
-    session_store,
-    session_id: str,
-    dialog_id: str,
-    ragflow_type: str = "chat",
-) -> None:
-    """Slice 12:SSE 流成功后调 GET history 取最新消息数,更新 message_count。
-
-    与 ``resume_session``(routes.py)中的 message_count 同步逻辑一致,保证
-    SSE 代理后 message_count 不再滞后(对应 ISSUES.md Issue 12 验收点 4-5)。
-
-    Slice 16:加 ``ragflow_type`` 参数,agent 类型调 agentbot 端点取 history。
-
-    失败处理:GET history 失败(网络抖动/RAGFlow 5xx)只记 ``logger.warning``,
-    不抛异常(流已成功,不能因后续操作失败破坏已完成的 SSE 响应);
-    message_count 保持原值,下次 SSE 成功或 resume_session 时再同步。
-
-    TD2 + TD8:fetch + update 逻辑聚到 ``SessionStore.sync_message_count_from_history``。
-    """
-    try:
-        await session_store.sync_message_count_from_history(settings, dialog_id, session_id, ragflow_type)
-    except Exception as e:
-        logger.warning(
-            "SSE 流成功后调 GET history 失败(message_count 保持原值),session_id=%s error=%s",
-            session_id,
-            e,
-        )
-
-
 async def proxy_sse_to_ragflow(request: Request, dialog_id: str, ragflow_type: str = "chat"):
     """SSE 代理:校验同源 cookie + T_short + grant + session_id 归属 → 用 beta Token 调 RAGFlow bot_api → 流式回传。
 
@@ -834,11 +804,12 @@ def _build_sse_streaming_response(
                             ragflow_resource_id=dialog_id,
                             org_id=org_id,
                         )
-                # 统一同步 message_count(请求体有 session_id 或新绑定均需要)
+                # Slice 23:统一 message_count +1(每轮对话 +1,不依赖 GET history)。
+                # 根因:_sync_message_count_after_sse 调 GET history 取 messages 长度,
+                # 但 RAGFlow 新建空 session 返回空历史 → count 仍 0。改为直接 increment。
+                # resume_session 路径仍用 sync_message_count_from_history(恢复时同步绝对值)。
                 if target_session_id:
-                    await _sync_message_count_after_sse(
-                        settings, session_store, target_session_id, dialog_id, ragflow_type
-                    )
+                    session_store.increment_message_count(target_session_id)
 
     return StreamingResponse(stream_generator(), media_type="text/event-stream")
 
