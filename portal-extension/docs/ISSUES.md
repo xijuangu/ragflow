@@ -937,7 +937,8 @@ RAGFlow 前端 `web/src/pages/next-chats/hooks/use-send-shared-message.ts`:
 - 进入分享页后发送一条消息,左侧会刷新出一个新会话(绑定与刷新已生效)。
 - 点击这个会话后,iframe 内只显示一个 greeting,没有刚才发出的用户消息与 RAGFlow 回复。
 - 左侧消息数显示为 1。用户期望若按 UI 消息条数统计,首轮应包含 greeting + 用户消息 + 助手回复共 3 条。
-- 结论:Issue 25 已解决 greeting 垃圾会话与绑定刷新问题,但历史会话恢复仍未完成;点击会话时 iframe 仍没有加载绑定 session 的真实历史。
+- 管理后台「会话搜索 → 查看正文 → 以管理员身份查看」调用 `/portal/admin/sessions/<session_id>?elevated=true` 返回 502,弹窗显示 `RAGFlow 取回会话失败: HTTP 404`。
+- 结论:Issue 25 已解决 greeting 垃圾会话与绑定刷新问题,但历史会话恢复仍未完成;点击会话和管理员 elevated 查看正文都没有取回绑定 session 的真实 RAGFlow history。
 
 ### What to build
 
@@ -957,6 +958,7 @@ RAGFlow 前端 `web/src/pages/next-chats/hooks/use-send-shared-message.ts`:
 - [ ] 用户点击左侧会话 → iframe 重载 → 显示该会话的真实历史消息:至少包含 greeting、用户问题、RAGFlow 回复
 - [ ] 点击左侧会话不会创建新的 greeting-only session
 - [ ] 切换会话再切回 → 仍显示对应历史消息与引用片段
+- [ ] 管理后台会话搜索中点击「查看正文」并以管理员身份查看 → 返回该会话 messages + reference,不再报 502/`RAGFlow 取回会话失败: HTTP 404`
 - [ ] 刷新页面 → iframe 重载 → 如恢复最近活跃会话,显示真实历史而不是 greeting-only
 - [ ] iframe URL 不含 session_id 时,保持原行为(创建新 session,兼容公开分享)
 - [ ] 既有 portal pytest 全绿(无回归)
