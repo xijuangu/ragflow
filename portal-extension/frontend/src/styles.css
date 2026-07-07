@@ -336,6 +336,9 @@ a:hover {
   border-radius: 6px;
   background: transparent;
   overflow: hidden;
+  /* Slice 31 修复:flex column 容器内的子元素默认 flex-shrink: 1,
+     会话增多时被压缩而不触发滚动条。置 0 保持原高度,让 overflow-y: auto 生效。 */
+  flex-shrink: 0;
 }
 
 .session-item-active {

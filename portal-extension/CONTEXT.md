@@ -78,7 +78,7 @@ portal-extension/
 │   └── test_slice*.py        # 按 slice 组织的 E2E + 单测
 └── docs/
     ├── PRD.md                # 产品需求文档
-    ├── ISSUES.md             # Issue 跟踪(Issue 1-30 + TD1-TD20)
+    ├── ISSUES.md             # Issue 跟踪(Issue 1-36 + TD1-TD20)
     ├── NOTES.md              # 原型验证记录(H1-H9 假设验证)
     ├── HANDOFF-phase3.md     # Phase 3 操作细节(部署命令、环境状态)
     ├── HANDOFF.md            # 早期 handoff
@@ -95,6 +95,7 @@ portal-extension/
 - **路由文件 `routes.py` 在 middleware 重构期间不得修改**
 - **RAGFlow 容器是官方 v0.26.0 镜像**,不含本地 fork 改动。`api/apps/restful_apis/bot_api.py` 的 chatbot sessions 端点(GET/PATCH/DELETE)通过 docker cp 部署,容器重建会丢失
 - **Portal 重启必须先 pkill 旧进程** —— `start.sh` 用 `exec` 不自动 pkill,否则端口被占用,新进程不启动,旧代码继续跑
+- **数据文件必须与代码分离** —— `portal.db` 等运行时数据文件不能放在项目目录内,否则 `rsync --delete` 会删掉(Slice 34 修复前当前位于 `~/portal-extension/portal.db`,有风险)
 
 ## 5. 工程约定
 
@@ -106,6 +107,8 @@ portal-extension/
 - 消息数语义:`message_count = len(RAGFlow history.messages)`(Slice 26 改动,非 Q&A 轮次)
 - Session 归属:网关在 SSE 成功后从响应绑定 `session_id` 到当前用户(Slice 22),不依赖 iframe URL 预带 `session_id`
 - iframe URL 不预带 `session_id`(Slice 22 根因:RAGFlow 前端不读 URL session_id,预创建产生孤儿 session + 后续 403)
+- 部署 rsync 必须排除 `--exclude='*.db'` 与 `--exclude='.env'`(数据文件与配置不得被 `--delete` 清掉)
+- CSS flex column 容器内的滚动子元素需显式 `flex-shrink: 0`,否则会话增多时被压缩而非触发滚动条(Slice 31 修复)
 
 ## 6. 关键技术决策
 
@@ -132,9 +135,11 @@ portal 网关 `_ragflow_bot_segment` 用于 completions(agent → "agentbots"),s
 
 ## 7. 已知限制(待后续 issue 修复)
 
-- **agent 类型 sessions 端点 404**:portal 网关对 agent sessions 用 "agentbots",但 RAGFlow 官方只有 `/agents/<id>/sessions/<sid>`。Slice 30 修复(拆分 segment 函数)
+- **agent 类型 sessions 端点 404**:portal 网关对 agent sessions 用 "agentbots",但 RAGFlow 官方只有 `/agents/<id>/sessions/<sid>`。Slice 30 修复(拆分 segment 函数),但 agent 类型暂时搁置不验收
 - **RAGFlow `web` 侧 Jest 跑不起来**(`umi/test` 模块缺失),靠 `npm run build` 兜底验证
 - **Issue 16 AC2 悬浮组件 UI 未实现**:`/widget/<id>` 仅占位 HTML,React 悬浮组件未建(Phase 2 后续待办)
+- **portal.db 当前在项目目录内**(临时配置 `PORTAL_DB_URL=sqlite:////home/xijuangu/portal-extension/portal.db`),下次 `rsync --delete` 会删数据 → Slice 34 待实施(移到 `~/portal-data/`)
+- **share 页面切换会话后 reference 和引用预览消失**:RAGFlow web 前端三层缺陷叠加,`fetchSessionHistory` 丢弃会话级 reference 数组 + `share/index.tsx` 硬编码 `reference: []` → Slice 36 待实施
 
 ## 8. 教训(Lessons Learned)
 
@@ -145,14 +150,21 @@ portal 网关 `_ragflow_bot_segment` 用于 completions(agent → "agentbots"),s
 - Slice 24 改 RAGFlow 前端读 URL `session_id` 跳过 `fetchSessionId` greeting,与 portal 前端 `handleNewSession` 的 precreate 路径冲突 —— 新建会话无 greeting(Slice 28 修复)
 - RAGFlow 官方 v0.26.0 镜像不含本地 fork 加的 chatbot sessions 端点,docker cp 部署后才能用(Slice 27)
 - `start.sh` 用 `exec` 不自动 pkill 旧进程,必须手动 pkill 再 start(Slice 27 部署时踩坑)
+- `pkill -f "uvicorn portal.main:app"` 会误伤 ssh 会话本身(ssh 命令行含该字符串被匹配),导致 ssh 退出码 255;用 `pgrep -f` 精确匹配 PID 后 kill 可避免(Slice 35 待实施)
+- `PORTAL_DB_URL` 默认 `sqlite://`(in-memory),进程退出即清空 `chat_session_owner` 表,用户「历史会话没了」;必须显式配置文件型 SQLite 或 MySQL(Slice 34 待实施)
+- CSS flex column 容器内的滚动子元素默认 `flex-shrink: 1`,会话增多时被压缩而非触发 `overflow-y: auto`;必须显式 `flex-shrink: 0`(Slice 31 修复)
 
 ## 9. 运维约束
 
 ### 9.1 portal 重启
 
 ```bash
-# 必须先 pkill 旧进程(start.sh 用 exec 不自动 pkill)
-ssh 172.16.10.180 'pkill -f "uvicorn portal.main:app"; sleep 2; nohup bash ~/portal-extension/start.sh > ~/portal-extension/portal.log 2>&1 < /dev/null &'
+# 当前方式(临时):pkill 误伤 ssh 会话(退出码 255,但实际杀进程成功),需分两条命令
+ssh 172.16.10.180 'pkill -f "uvicorn portal.main:app" || true; sleep 2'
+ssh 172.16.10.180 'cd ~/portal-extension && nohup bash start.sh > portal.log 2>&1 < /dev/null & disown'
+
+# Slice 35 待实施:改进为 pgrep 精确匹配 + start.sh 自动清理,单条命令重启
+# ssh 172.16.10.180 'bash ~/portal-extension/start.sh'  # 自动 pkill 旧进程 + 启动新进程
 ```
 
 ### 9.2 RAGFlow bot_api 扩展端点(docker cp 临时替换)
@@ -169,10 +181,27 @@ ssh 172.16.10.180 'pkill -f "uvicorn portal.main:app"; sleep 2; nohup bash ~/por
 - 容器内 `dist.bak.<timestamp>` 是 RAGFlow web dist 回滚点
 - git 分支 `portal-extension` 的每个 slice commit 是 portal 代码回滚点
 
+### 9.5 portal 数据持久化配置(临时,Slice 34 待实施)
+
+服务器 `.env` 必须设置 `PORTAL_DB_URL`,否则默认 `sqlite://`(in-memory)导致每次重启 `chat_session_owner` 表清空(用户「历史会话没了」)。
+
+**当前临时配置**(portal.db 在项目目录内,有 rsync 删除风险):
+```bash
+PORTAL_DB_URL=sqlite:////home/xijuangu/portal-extension/portal.db
+```
+
+**Slice 34 待实施**:移到 `~/portal-data/portal.db`,与代码分离;rsync 加 `--exclude='*.db'` 兜底。
+
+验证命令:
+```bash
+ssh 172.16.10.180 'grep PORTAL_DB_URL ~/portal-extension/.env'
+ssh 172.16.10.180 'ls -la ~/portal-extension/portal.db 2>/dev/null || echo "portal.db 不存在"'
+```
+
 ## 10. 测试策略
 
-- **后端**:pytest,按 slice 组织(`tests/test_slice*.py`),基线 387 passed + 5 skipped
-- **前端**:Vitest,按页面/组件组织(`frontend/tests/*.test.tsx`),基线 73 passed
+- **后端**:pytest,按 slice 组织(`tests/test_slice*.py`),基线 380+ passed + 5 skipped(Slice 28 后)
+- **前端**:Vitest,按页面/组件组织(`frontend/tests/*.test.tsx`),基线 71+ passed
 - **RAGFlow web**:Jest 跑不起来(`umi/test` 缺失),靠 `npm run build` 兜底
 - **E2E**:浏览器手动验收,acceptance criteria 记录在 `docs/ISSUES.md` 各 slice
 - 类型检查:前端 `tsc --noEmit`,后端 `ruff check`

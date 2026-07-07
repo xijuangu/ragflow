@@ -1348,6 +1348,141 @@ None - can start immediately(独立改动,跨 portal 前端 + RAGFlow 前端,无
 
 ---
 
+## Issue 34 — Slice 34: portal 数据持久化保护(代码与数据分离)
+
+### Parent
+
+无(Slice 31 验收时发现 portal.db 配置缺失,临时加 `PORTAL_DB_URL=sqlite:////home/xijuangu/portal-extension/portal.db` 后发现数据文件放在项目目录内会被下次 `rsync --delete` 删除)。
+
+### 背景
+
+Slice 8 已实施 DB 持久化(SessionStore 基于 SQLAlchemy),但服务器 `.env` 一直未设置 `PORTAL_DB_URL`,默认值 `sqlite://`(in-memory)导致每次 portal 重启 `chat_session_owner` 表全清,用户「历史会话没了」。临时修复已加文件型 SQLite 配置,但 `portal.db` 当前位于 `~/portal-extension/portal.db`(项目目录内),下次 `rsync --delete` 部署会把它删掉,数据再次丢失。
+
+### What to build
+
+把 portal 的 SQLite 数据库文件从项目目录内移到独立的 `~/portal-data/` 目录,与代码完全分离。这样 `rsync --delete` 永远不会触碰数据文件。同时 rsync 命令兜底加 `--exclude='*.db'`,双重保险。
+
+具体行为:
+1. 服务器创建 `~/portal-data/` 目录(独立于 `~/portal-extension/`)
+2. 迁移现有 `~/portal-extension/portal.db` → `~/portal-data/portal.db`(若有数据)
+3. 更新 `.env`:`PORTAL_DB_URL=sqlite:////home/xijuangu/portal-data/portal.db`
+4. 部署文档(HANDOFF-phase3.md)固化 rsync exclude 列表,加入 `--exclude='*.db'` 作为兜底
+5. 重启 portal,验证 `chat_session_owner` 表数据保留
+
+### Acceptance criteria
+
+- [ ] portal.db 位于 `~/portal-data/portal.db`,不在 `~/portal-extension/` 项目目录内
+- [ ] `rsync --delete` 部署后 portal.db 保留(`ls -la ~/portal-data/portal.db` 仍存在)
+- [ ] 重启 portal 后历史会话列表不丢失(前端会话列表与重启前一致)
+- [ ] 部署文档(HANDOFF-phase3.md)更新 rsync exclude 列表,含 `--exclude='*.db'`
+- [ ] 既有 portal pytest 全绿(无回归)
+
+### Blocked by
+
+None - can start immediately(运维改动,无代码依赖)
+
+---
+
+## Issue 35 — Slice 35: 部署脚本固化(deploy.sh + start.sh 改进)
+
+### Parent
+
+无(Slice 31 验收期间多次手动 rsync + pkill + nohup 部署,发现三个痛点:① `pkill -f "uvicorn portal.main:app"` 误伤 ssh 会话导致退出码 255;② `start.sh` 用 `exec` 不自动清理旧进程,必须先手动 pkill;③ rsync 命令需手记一长串 `--exclude` 参数,易漏)。
+
+### 背景
+
+当前部署流程(见 HANDOFF-phase3.md §5):
+```bash
+# 1. rsync(需手记 exclude 列表)
+rsync -az --delete --exclude='.git' --exclude='node_modules' --exclude='__pycache__' --exclude='.venv' --exclude='*.pyc' --exclude='.env' ./ 172.16.10.180:~/portal-extension/
+
+# 2. 重启(pkill 误伤 ssh,退出 255;必须分两条命令)
+ssh 172.16.10.180 'pkill -f "uvicorn portal.main:app" || true; sleep 2'
+ssh 172.16.10.180 'cd ~/portal-extension && nohup bash start.sh > portal.log 2>&1 < /dev/null & disown'
+
+# 3. 健康检查(手动 curl)
+ssh 172.16.10.180 'curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8000/portal/share-pages'
+```
+
+痛点:
+- `pkill -f "uvicorn portal.main:app"` 会匹配到 ssh 会话本身(因为 ssh 命令行含该字符串),导致 ssh 连接被杀,退出码 255
+- `start.sh` 用 `exec python -m uvicorn ...`,不自动清理旧进程,端口被占时启动失败
+- rsync exclude 列表每次手敲易漏,漏了会删 `.env` 或 `portal.db`
+
+### What to build
+
+1. **`start.sh` 改进**:启动前自动清理旧 portal 进程,用 `pgrep -f "uvicorn portal.main:app"` 精确匹配进程 ID 后 kill,避免 `pkill` 的字符串匹配误伤 ssh 会话。重启只需一条命令 `bash start.sh`。
+
+   关键实现点:
+   - 用 `pgrep -f "python -m uvicorn portal.main:app"` 而非 `pkill -f`(pgrep 只返回 PID,不会匹配 ssh 命令行)
+   - kill 当前 PID 后等待端口释放(`sleep 2` 或轮询 `lsof -i :8000`)
+   - 保留现有 `source .env` 逻辑
+
+2. **`deploy.sh` 脚本**:固化完整部署流程,单条 `bash deploy.sh` 完成:
+   - rsync 同步代码(含所有 exclude:`.git`/`node_modules`/`__pycache__`/`.venv`/`*.pyc`/`.env`/`*.db`/`portal.log`)
+   - ssh 远程执行 `bash start.sh`(自带 pkill)
+   - 健康检查(curl `/portal/share-pages` 或更轻量端点)
+   - 失败时 tail portal.log 输出最近 20 行辅助排查
+
+3. **部署文档更新**:HANDOFF-phase3.md 的部署命令章节改为 `bash deploy.sh`,保留手动命令作为 fallback 说明。
+
+### Acceptance criteria
+
+- [ ] `start.sh` 自动清理旧进程,重启只需 `bash start.sh` 一条命令
+- [ ] pkill 不误伤 ssh 会话(用 pgrep 精确匹配,退出码 0,不再 255)
+- [ ] `bash deploy.sh` 单条命令完成 rsync + 重启 + 健康检查 + 日志 tail
+- [ ] deploy.sh 的 rsync exclude 列表含 `--exclude='*.db'`(与 Slice 34 一致)和 `--exclude='.env'`
+- [ ] 部署失败时 deploy.sh 输出 portal.log 末尾辅助排查
+- [ ] 部署文档(HANDOFF-phase3.md)更新为 `bash deploy.sh`,保留手动命令 fallback
+- [ ] 既有 portal pytest 全绿(无回归)
+
+### Blocked by
+
+None - can start immediately(独立工程改进,与 Slice 34 互不依赖但建议 34 先做以对齐 rsync exclude 列表)
+
+---
+
+## Issue 36 — Slice 36: 修复 share 页面切换会话后 reference 和引用预览消失
+
+### Parent
+
+无(E2E 验收 Slice 31 时发现:聊天页有参考文档/段落时,不切换会话能看到;一旦切走再切回来,底部 PDF/文档卡片消失,回答中的引用标记 [1][2] 鼠标悬浮也看不到具体引用)。
+
+### 根因(代码调查确认)
+
+**是前端 state 没恢复,不是 history API 不返回。** 后端 `GET /api/v1/chatbots/{id}/sessions/{sid}` 返回会话级 `reference` 数组(每轮一项,含 `chunks` 和 `doc_aggs`),但 share 页面前端有三层缺陷叠加导致这份 reference 被完全丢弃:
+
+1. **`use-send-shared-message.ts` `fetchSessionHistory`**:只取 `ret.data.data.messages`,把 `ret.data.data.reference` 数组整体丢弃,没有存到任何 state
+2. **`share/index.tsx` 第 75-81 行**:调用 `buildMessageItemReference` 时把第二参数硬编码成 `reference: []`,导致即便有会话级 reference 也走不到 fallback 路径
+3. **`utils/chat.ts` `buildMessageListWithUuid`**:用 `omit(x, 'reference')` 主动剥离每条 message 上的 reference 字段,导致 message-level reference 路径也走不到
+
+**对比**:非 share 页面(`single-chat-box.tsx`)正确把 `conversation.reference` 传给 `buildMessageItemReference`,所以 history 恢复后引用预览正常;share 页面写成了 `[]`,是核心 bug。
+
+### What to build
+
+在 `useSendSharedMessage` hook 里把 `ret.data.data.reference` 存到 state(会话级 reference 数组,每轮一项),并在 `share/index.tsx` 把这个会话级 reference 数组传给 `buildMessageItemReference` 的第二参数,与非 share 页面保持一致。
+
+具体行为:
+1. `useSendSharedMessage` 新增 `conversationReference: IReference[]` state,`fetchSessionHistory` 成功后 `setConversationReference(ret.data.data.reference ?? [])`;切换 session_id 时重置为空数组
+2. hook 返回值暴露 `conversationReference`
+3. `share/index.tsx` 把 `conversationReference` 传给 `buildMessageItemReference({ messages: derivedMessages, reference: conversationReference }, message)` 的第二参数(替换硬编码的 `[]`)
+4. `buildMessageListWithUuid` 的 `omit(x, 'reference')` 暂不动(保留 SSE 实时回答的 message.reference 路径 A,history 恢复走路径 B,两条路径都可达)
+5. `npm run build` 兜底验证(Jest 跑不起来)
+
+### Acceptance criteria
+
+- [ ] 切换会话再切回来,参考文档列表(底部 PDF/文档卡片)仍显示
+- [ ] 切换会话再切回来,回答中的 [1][2] 引用标记鼠标悬浮仍显示 chunk content + doc_name
+- [ ] 点击引用悬浮卡片里的文档按钮,PDF 抽屉能正常打开并定位高亮
+- [ ] SSE 实时回答时 reference 仍正常显示(无回归)
+- [ ] RAGFlow web `npm run build` 通过
+
+### Blocked by
+
+None - can start immediately(纯 RAGFlow web 前端改动,无 portal 侧改动,无后端改动)
+
+---
+
 ## 后续待办(Issue 16 AC2 遗留)
 
 > Issue 16 AC2「悬浮组件在任意页面右下角加载,点击展开对话窗,能正常对话」— Slice 16 实现了 `/widget/<id>` 骨架 HTML + 可嵌入 snippet + CSP frame-ancestors 放行,但 **悬浮组件实际 UI 渲染(右下角悬浮按钮 + 点击展开对话窗 + iframe 加载 + SSE 对话)尚未实现**。`/widget/<id>` 当前仅返回含 `<div id="widget-root">` 的占位 HTML,需前端构建产物挂载 React 组件。
