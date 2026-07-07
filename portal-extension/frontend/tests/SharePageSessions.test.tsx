@@ -7,18 +7,18 @@
  *   3. 重新打开后能继续提问(iframe 同源,流式由网关代理 — 此处仅断言 iframe 重载)
  *   4. 重命名会话,列表标题实时更新
  *   5. 删除会话,列表实时移除
- *   6. 新建会话按钮预创建并加载空会话
+ *   6. 新建会话按钮加载空会话并显示 greeting(Slice 28:fullscreen 走 getEmbedUrl)
  *   7. 用户看不到他人会话(后端隔离,前端列表只来自 GET /sessions)
  *
  * 测试通过公开 UI 行为验证,不耦合内部实现。iframe 重载通过 src 属性断言。
  */
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthProvider } from '../src/auth/AuthContext';
 import SharePageDetailPage from '../src/pages/SharePageDetailPage';
-import { mockFetch } from './setup';
+import { getFetchCalls, mockFetch } from './setup';
 
 const EMBED_RESPONSE = {
   iframe_url: '/chats/share?shared_id=dialog-123&auth=pt_T_short_abc&from=chat',
@@ -44,13 +44,6 @@ const SESSIONS_RESPONSE = {
       message_count: 2,
     },
   ],
-};
-
-const PRECREATE_RESPONSE = {
-  session_id: 'sess-new-999',
-  iframe_url:
-    '/chats/share?shared_id=dialog-123&auth=pt_T_short_new&from=chat&session_id=sess-new-999',
-  share_page_id: 'sp_default',
 };
 
 function renderDetail(id = 'sp_default') {
@@ -124,15 +117,14 @@ describe('SharePageDetailPage — 我的会话(Slice 10)', () => {
     expect(src).toContain('auth=pt_T_short_abc');
   });
 
-  it('点击「新建会话」预创建并加载空会话(验收点 6)', async () => {
+  it('点击「新建会话」加载空会话并显示 greeting(Slice 28:fullscreen 走 getEmbedUrl,验收点 6)', async () => {
     const user = userEvent.setup();
-    globalThis.fetch = mockFetch([
+    const fetchMock = mockFetch([
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
       { url: '/share-pages/sp_default/embed-url', status: 200, body: EMBED_RESPONSE },
       { url: '/share-pages/sp_default/sessions', status: 200, body: { sessions: [] } },
-      { url: '/share-pages/sp_default/sessions', method: 'POST', status: 200, body: PRECREATE_RESPONSE },
-      { url: '/share-pages/sp_default/sessions', status: 200, body: { sessions: [] } },
     ]);
+    globalThis.fetch = fetchMock;
 
     renderDetail();
 
@@ -140,11 +132,21 @@ describe('SharePageDetailPage — 我的会话(Slice 10)', () => {
 
     await user.click(screen.getByRole('button', { name: '新建会话' }));
 
-    const iframe = await screen.findByTitle('RAGFlow 对话');
+    // Slice 28:fullscreen 新建会话改调 GET /embed-url(初始挂载 1 次 + 新建 1 次 = 2 次),
+    // 不再调 POST /sessions(precreateSession)
+    await waitFor(() => {
+      const embedCalls = getFetchCalls(fetchMock).filter(
+        (c) => c.url === '/share-pages/sp_default/embed-url' && c.method === 'GET',
+      );
+      expect(embedCalls.length).toBe(2);
+    });
+
+    const iframe = screen.getByTitle('RAGFlow 对话');
     const src = iframe.getAttribute('src') ?? '';
-    // 新建会话用 POST 返回的 iframe_url(已含 session_id)
-    expect(src).toBe(PRECREATE_RESPONSE.iframe_url);
-    expect(src).toContain('session_id=sess-new-999');
+    // iframe_url 不含 session_id(RAGFlow 前端走 fetchSessionId 创建新 session + greeting,
+    // 而非读 URL session_id 恢复空 precreate session)
+    expect(src).toBe(EMBED_RESPONSE.iframe_url);
+    expect(src).not.toContain('session_id=');
   });
 
   it('重命名会话 — prompt + PATCH + 列表标题实时更新(验收点 4)', async () => {

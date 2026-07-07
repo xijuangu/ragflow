@@ -9,7 +9,9 @@
  *   - 列表:GET /share-pages/:id/sessions(标题、时间、消息数)。
  *   - 重新打开:点击会话 → 调 embed-url → 在 iframe URL 追加 &session_id=<sid>
  *     (RAGFlow 前端原生读 URL 参数恢复历史消息 + 引用,无需改 RAGFlow 源码)。
- *   - 新建会话:POST /share-pages/:id/sessions 预创建 → 用返回的 iframe_url(已含 session_id)。
+ *   - 新建会话:Slice 28 起 fullscreen 类型改调 GET embed-url(iframe_url 不含 session_id),
+ *     让 RAGFlow 前端走 fetchSessionId 创建新 session + greeting(原 precreate 会塞 session_id
+ *     导致 Slice 24 后 RAGFlow 前端跳过 greeting 取空 session)。widget 类型仍用 precreate。
  *   - 重命名:PATCH(同步:RAGFlow 成功才更新门户 title)→ 乐观更新本地列表。
  *   - 删除:DELETE(双删)→ confirm → 乐观移除本地列表。
  *   - 用户只看到自己的会话(后端 list_sessions 按 portal_user_id 隔离)。
@@ -147,28 +149,42 @@ export default function SharePageDetailPage() {
     [id, sessionBusy, isWidget],
   );
 
-  /** 新建会话:POST 预创建,用返回的 iframe_url(已含 session_id)重载 iframe。
-   *  Slice 16:widget 类型仍可新建会话(会话进入「我的会话」列表),但 iframe 不重载。
+  /** 新建会话:
+   *  - fullscreen 类型:调 GET /embed-url,用返回的 iframe_url(不含 session_id)重载
+   *    iframe,让 RAGFlow 前端走 fetchSessionId 创建新 session + greeting。
+   *    根因(Slice 28):Slice 24 改了 RAGFlow 前端 use-send-shared-message.ts,URL 带
+   *    session_id → 跳过 greeting → 调 GET history 恢复空 precreate session。改用
+   *    getEmbedUrl 后 iframe_url 不含 session_id,RAGFlow 前端走 fetchSessionId 创建
+   *    新 session + greeting。session 归属由网关 SSE 绑定,Slice 23 轮询会刷新列表,
+   *    故不再调 setActiveSessionId 与 listSessions 刷新。
+   *  - widget 类型:保持原 precreateSession 行为(Slice 16 约定,widget 不重载 iframe)。
    *  Slice 23:用 useRef 做同步守卫(ref 赋值同步,非 state 异步),防止快速点击
-   *           绕过 sessionBusy 守卫导致多次 precreateSession(弹多个会话)。 */
+   *           绕过 sessionBusy 守卫导致多次 precreate(弹多个会话)。 */
   const newSessionLockRef = useRef(false);
   const handleNewSession = useCallback(async () => {
     if (!id || sessionBusy || newSessionLockRef.current) return;
     newSessionLockRef.current = true;
     setSessionBusy(true);
     try {
-      const res = await api.precreateSession(id);
-      setActiveSessionId(res.session_id);
-      if (!isWidget && res.iframe_url) {
-        setIframeUrl(res.iframe_url);
-        setIframeNonce((n) => n + 1);
-      }
-      // 预创建后会话已绑定当前用户,刷新列表使其出现
-      try {
-        const list = await api.listSessions(id);
-        setSessions(list.sessions);
-      } catch {
-        // 列表刷新失败不阻断已加载的 iframe
+      if (isWidget) {
+        // widget 类型:保持原 precreate 行为(Slice 16 — widget 不重载 iframe,
+        // 但仍需创建会话使其进入「我的会话」列表)
+        const res = await api.precreateSession(id);
+        setActiveSessionId(res.session_id);
+        try {
+          const list = await api.listSessions(id);
+          setSessions(list.sessions);
+        } catch {
+          // 列表刷新失败不阻断已加载的 iframe
+        }
+      } else {
+        // fullscreen 类型:调 getEmbedUrl(iframe_url 不含 session_id),
+        // 让 RAGFlow 前端走 fetchSessionId 创建新 session + greeting。
+        const res = await api.getEmbedUrl(id);
+        if (res.iframe_url) {
+          setIframeUrl(res.iframe_url);
+          setIframeNonce((n) => n + 1);
+        }
       }
     } catch (e) {
       setSessionsError(e instanceof ApiError ? e.message : '新建会话失败');

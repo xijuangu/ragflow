@@ -24,13 +24,6 @@ const EMBED_RESPONSE = {
   expires_in: 300,
 };
 
-const PRECREATE_RESPONSE = {
-  session_id: 'sess-new-999',
-  iframe_url:
-    '/chats/share?shared_id=dialog-123&auth=pt_T_short_new&from=chat&session_id=sess-new-999',
-  share_page_id: 'sp_default',
-};
-
 function renderDetail(id = 'sp_default') {
   return render(
     <MemoryRouter initialEntries={[`/share-pages/${id}`]}>
@@ -58,13 +51,10 @@ describe('Slice 23 — 新建会话防抖 + 会话列表轮询', () => {
     vi.restoreAllMocks();
   });
 
-  it('快速点击"新建会话"2 次 → 只调 1 次 POST /sessions(防抖)', async () => {
+  it('快速点击"新建会话"2 次 → 只触发 1 次新建会话请求(防抖)', async () => {
     const fetchMock = mockFetch([
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
       { url: '/share-pages/sp_default/embed-url', status: 200, body: EMBED_RESPONSE },
-      { url: '/share-pages/sp_default/sessions', status: 200, body: { sessions: [] } },
-      { url: '/share-pages/sp_default/sessions', method: 'POST', status: 200, body: PRECREATE_RESPONSE },
-      { url: '/share-pages/sp_default/sessions', method: 'POST', status: 200, body: PRECREATE_RESPONSE },
       { url: '/share-pages/sp_default/sessions', status: 200, body: { sessions: [] } },
     ]);
     globalThis.fetch = fetchMock;
@@ -74,18 +64,20 @@ describe('Slice 23 — 新建会话防抖 + 会话列表轮询', () => {
     await screen.findByTitle('RAGFlow 对话');
 
     // 用 fireEvent.click(同步)快速点击 2 次 — 模拟用户双击绕过 state 守卫
-    // useRef 守卫(ref 赋值同步)应阻止第二次点击进入 precreateSession
+    // useRef 守卫(ref 赋值同步)应阻止第二次点击进入新建会话请求
     const newBtn = screen.getByRole('button', { name: '新建会话' });
     fireEvent.click(newBtn);
     fireEvent.click(newBtn);
 
-    // 等待异步操作完成,断言只调了 1 次 POST /sessions(防抖生效)
+    // 等待异步操作完成,断言只触发 1 次新建会话请求(防抖生效)
+    // Slice 28:fullscreen 新建会话改调 GET /embed-url(初始挂载 1 次 + 新建 1 次 = 2 次)
+    // 若防抖失效,新建会话会调 2 次 → 总 3 次
     await waitFor(() => {
       const calls = getFetchCalls(fetchMock);
-      const postCalls = calls.filter(
-        (c) => c.url === '/share-pages/sp_default/sessions' && c.method === 'POST',
+      const embedCalls = calls.filter(
+        (c) => c.url === '/share-pages/sp_default/embed-url' && c.method === 'GET',
       );
-      expect(postCalls.length).toBe(1);
+      expect(embedCalls.length).toBe(2);
     });
   });
 
