@@ -289,6 +289,11 @@ a:hover {
   border-radius: var(--radius);
   background: var(--card);
   overflow: hidden;
+  /* Slice 31:grid/flex item 默认 min-height: auto 会随内容增长而无法触发滚动,
+     显式置 0 让子级 .session-list 的 overflow-y: auto 生效,会话增多时改在列表内滚动
+     而非挤压整个 sidebar。sidebar-header 始终可见(不在此滚动区内)。 */
+  min-height: 0;
+  height: 100%;
 }
 
 .sidebar-header {
@@ -318,6 +323,9 @@ a:hover {
   padding: 8px;
   overflow-y: auto;
   flex: 1;
+  /* Slice 31:flex item 默认 min-height: auto 不收缩,导致 overflow-y: auto 失效;
+     置 0 后会话超出可见区时在列表内滚动,header 不被挤压。 */
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 4px;
