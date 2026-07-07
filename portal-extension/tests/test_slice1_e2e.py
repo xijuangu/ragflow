@@ -31,7 +31,8 @@ async def test_login_success(client):
     resp = await client.post("/login", json={"username": "admin", "password": "testpass123"})
     assert resp.status_code == 200
     # 会话 cookie 已建立(HTTP-only,同源)
-    assert "session" in resp.cookies
+    # Slice 17:cookie 名为 portal_session(非默认 session,避免与 RAGFlow 同源踩踏)
+    assert "portal_session" in resp.cookies
     # 响应体不应回传密码
     body = resp.json()
     assert "password" not in str(body).lower()
@@ -41,7 +42,7 @@ async def test_login_wrong_password(client):
     """错误密码登录失败,返回 401,不建立会话。"""
     resp = await client.post("/login", json={"username": "admin", "password": "wrong-password"})
     assert resp.status_code == 401
-    assert "session" not in resp.cookies
+    assert "portal_session" not in resp.cookies
 
 
 async def test_login_unknown_user(client):
@@ -122,27 +123,80 @@ async def _login_and_get_t_short(client):
 # ---------------------------------------------------------------------------
 
 
-async def test_proxy_rejects_missing_token(client):
-    """无 Authorization header 调网关 → 401(需先登录通过 cookie 校验,再测 T_short 缺失)。"""
-    # 先登录建立同源 cookie(Slice 3 起 SSE 代理先校验 cookie 再校验 T_short)
-    await client.post("/login", json={"username": "admin", "password": "testpass123"})
+async def test_proxy_passthrough_no_token(client, app, monkeypatch):
+    """Slice 18:无 Authorization header → 透传 RAGFlow(原生分享页场景)。
+
+    旧行为(Slice 1-17):无 T_short → 401。
+    Slice 18:无 T_short → 透传 RAGFlow(原生分享页用户无 portal T_short,带 RAGFlow 自身 auth)。
+    """
+    import httpx
+
+    captured_urls = []
+
+    class _MockAsyncClient(httpx.AsyncClient):
+        def __init__(self, *args, **kwargs):
+            def handler(req: httpx.Request) -> httpx.Response:
+                captured_urls.append(str(req.url))
+                return httpx.Response(
+                    200,
+                    content=b'data: {"code":0}\n\n',
+                    headers={"content-type": "text/event-stream"},
+                )
+
+            kwargs["transport"] = httpx.MockTransport(handler)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr("portal.gateway.httpx.AsyncClient", _MockAsyncClient)
+
     resp = await client.post(
         "/api/v1/chatbots/test-dialog-id-12345/completions",
         json={"question": "测试", "stream": True},
     )
-    assert resp.status_code == 401
+    await resp.aread()
+    assert resp.status_code == 200
+    # 验证请求被透传到 RAGFlow(而非被网关拦截返回 401)
+    assert any("/api/v1/chatbots/test-dialog-id-12345/completions" in u for u in captured_urls), (
+        f"应透传到 RAGFlow,实际 URLs: {captured_urls}"
+    )
 
 
-async def test_proxy_rejects_invalid_token(client):
-    """错误的 T_short 调网关 → 401(需先登录通过 cookie 校验,再测 T_short 无效)。"""
-    # 先登录建立同源 cookie
-    await client.post("/login", json={"username": "admin", "password": "testpass123"})
+async def test_proxy_passthrough_unknown_token(client, app, monkeypatch):
+    """Slice 18:未知的 Bearer token(非 portal T_short)→ 透传 RAGFlow。
+
+    旧行为:任意 Bearer token 不在 TokenStore → 401。
+    Slice 18:token 不在 TokenStore → 非 portal T_short(可能是 RAGFlow beta Token)→ 透传。
+    保留原始 Authorization 透传给 RAGFlow(由 RAGFlow 自身 auth 处理)。
+    """
+    import httpx
+
+    captured_auth = []
+
+    class _MockAsyncClient(httpx.AsyncClient):
+        def __init__(self, *args, **kwargs):
+            def handler(req: httpx.Request) -> httpx.Response:
+                captured_auth.append(req.headers.get("Authorization", ""))
+                return httpx.Response(
+                    200,
+                    content=b'data: {"code":0}\n\n',
+                    headers={"content-type": "text/event-stream"},
+                )
+
+            kwargs["transport"] = httpx.MockTransport(handler)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr("portal.gateway.httpx.AsyncClient", _MockAsyncClient)
+
     resp = await client.post(
         "/api/v1/chatbots/test-dialog-id-12345/completions",
         json={"question": "测试", "stream": True},
         headers={"Authorization": "Bearer not-a-real-token"},
     )
-    assert resp.status_code == 401
+    await resp.aread()
+    assert resp.status_code == 200
+    # 验证原始 Authorization 被透传(非 portal beta Token 替换)
+    assert captured_auth == ["Bearer not-a-real-token"], (
+        f"应保留原始 Authorization 透传,实际: {captured_auth}"
+    )
 
 
 async def test_proxy_rejects_expired_token(client, app):

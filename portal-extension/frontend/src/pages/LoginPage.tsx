@@ -88,7 +88,7 @@ export default function LoginPage() {
         <button
           type="button"
           className="btn btn-secondary btn-block"
-          onClick={() => { window.location.href = '/sso/login'; }}
+          onClick={() => { window.location.href = `${import.meta.env.BASE_URL}sso/login`; }}
         >
           SSO 登录
         </button>

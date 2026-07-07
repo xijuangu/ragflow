@@ -186,7 +186,10 @@ export class ApiError extends Error {
   }
 }
 
-const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? '';
+// 生产部署:前端跑在 /portal/ 子路径,API 请求需带 /portal 前缀(由 nginx 重写去掉前缀转给后端)。
+// 开发环境:VITE_API_BASE 为空,请求走相对路径,由 vite proxy 转发。
+const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined)
+  ?? (import.meta.env.PROD ? '/portal' : '');
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {

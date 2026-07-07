@@ -43,6 +43,7 @@ from portal.gateway import (
     fetch_session_history_via_ragflow,
     precreate_agent_session_via_ragflow,
     precreate_session_via_ragflow,
+    proxy_bot_json_to_ragflow,
     proxy_sse_public_to_ragflow,
     proxy_sse_to_ragflow,
     rename_agent_session_via_ragflow,
@@ -858,8 +859,38 @@ async def proxy_agentbot_completions(agent_id: str, request: Request):
 
     校验链与 chatbot 一致(同源 cookie + grant + T_short + 归属 + agent_id 一致),
     任一失败 → 403/401。详见 proxy_sse_to_ragflow 文档。
+
+    Slice 18:无 T_short 或非 portal T_short → 透传 RAGFlow(原生分享页场景)。
     """
     return await proxy_sse_to_ragflow(request, agent_id, ragflow_type="agent")
+
+
+# ---------------------------------------------------------------------------
+# Slice 18:分享页辅助端点代理(/info, /inputs)— 网关成为分享页 API 统一入口
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/v1/chatbots/{dialog_id}/info")
+async def proxy_chatbot_info(dialog_id: str, request: Request):
+    """Chatbot /info 代理端点(Slice 18)— 分享页挂载时 RAGFlow 前端调此端点取对话配置。
+
+    B1 根因:RAGFlow 分享页挂载调 `GET /api/v1/chatbots/{id}/info`(要求 AUTH_BETA),
+    原网关只代理 /completions,T_short 直达 RAGFlow 被拒 → 401 → 前端跳登录页。
+    Slice 18:网关统一代理 /info,有 T_short → 换 beta Token;无 T_short → 透传 RAGFlow。
+
+    校验链同 SSE 代理(cookie + grant + T_short validate → 换 beta Token),JSON 响应原样回传。
+    """
+    return await proxy_bot_json_to_ragflow(request, dialog_id, suffix="info", ragflow_type="chat")
+
+
+@router.get("/api/v1/agentbots/{agent_id}/inputs")
+async def proxy_agentbot_inputs(agent_id: str, request: Request):
+    """Agentbot /inputs 代理端点(Slice 18)— Agent 分享页挂载时取输入配置。
+
+    与 chatbot /info 对应:agentbot 用 /inputs 而非 /info(RAGFlow agentbot_api 端点差异)。
+    校验链与 chatbot /info 一致,JSON 响应原样回传。
+    """
+    return await proxy_bot_json_to_ragflow(request, agent_id, suffix="inputs", ragflow_type="agent")
 
 
 # ---------------------------------------------------------------------------

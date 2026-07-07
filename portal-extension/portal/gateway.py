@@ -553,23 +553,24 @@ async def proxy_sse_to_ragflow(request: Request, dialog_id: str, ragflow_type: s
       关闭 is_public 立即 403),session 归属校验改为 u_anonymous。
       这是为了 iframe 兼容:iframe 内 RAGFlow 前端固定调 /api/v1/chatbots/{dialog}/completions,
       公开分享页的 iframe 用公开 T_short,需走此标准路径(不能强制 cookie)。
+
+    Slice 18 扩展:无 T_short 或 token 不在 TokenStore(非 portal T_short)→ 透传 RAGFlow。
+      原生分享页场景:用户直接访问 RAGFlow /chats/share?shared_id=xxx,RAGFlow 前端用
+      自身 beta Token(非 portal T_short)调 /completions,nginx 路由到 portal,portal
+      透传 RAGFlow(保留原始 Authorization + Cookie),RAGFlow 用自身 auth 处理。
+      关键:区分「T_short 不存在」(token 不在 TokenStore → 透传)vs「T_short 无效」
+      (token 在 TokenStore 但 revoked/expired → 401),前者透传,后者 401。
     """
     settings = request.app.state.settings
     token_store = request.app.state.token_store
     # 提取 T_short(先于 cookie 校验,用于判断走标准链还是公开链)
     t_short = extract_t_short(request)
-    if not t_short:
-        # 无 T_short:走标准链(需 cookie,否则 get_current_user 抛 403)
-        # 继续走标准校验流程,让 get_current_user 处理 403
-        await get_current_user(request)
-        raise HTTPException(status_code=401, detail="缺少 Authorization 令牌")
-    # 查记录(不校验有效性),用于判断 scope
-    record = token_store.get_record(t_short)
+    record = token_store.get_record(t_short) if t_short else None
+    # Slice 18:无 T_short 或 token 不在 TokenStore(非 portal T_short)→ 透传 RAGFlow
+    # (原生分享页场景:用户带 RAGFlow 自身 beta Token,无 portal 会话)
     if record is None:
-        # 令牌不存在:走标准链(让 get_current_user 处理 cookie,再返回 401)
-        # 但为了不改变标准链的错误顺序,直接返回 401
-        await get_current_user(request)
-        raise HTTPException(status_code=401, detail="令牌无效或已过期")
+        body = await request.body()
+        return _build_sse_passthrough_response(settings, request, body, dialog_id, ragflow_type)
 
     # Slice 15:公开 T_short 走公开校验链(iframe 兼容 — 公开分享页的 iframe 调标准路径)
     if record.scope == "public":
@@ -677,7 +678,7 @@ def _build_sse_streaming_response(
     (/api/v1/chatbots/<id>/completions)。
     """
     # Slice 16:agent 类型走 agentbot 端点,chat 类型走 chatbot 端点
-    bot_segment = "agentbots" if ragflow_type == "agent" else "chatbots"
+    bot_segment = _ragflow_bot_segment(ragflow_type)
     upstream_url = f"{settings.ragflow_host.rstrip('/')}/api/v1/{bot_segment}/{dialog_id}/completions"
     upstream_headers = _build_upstream_headers(settings.ragflow_beta_token, content_type="application/json")
 
@@ -706,6 +707,137 @@ def _build_sse_streaming_response(
                 )
 
     return StreamingResponse(stream_generator(), media_type="text/event-stream")
+
+
+def _build_passthrough_headers(request: Request) -> dict:
+    """Slice 18:构造透传请求头 — 保留原始 Authorization 与 Cookie(RAGFlow 自身鉴权)。
+
+    仅转发白名单 header(避免转发 hop-by-hop header 或 portal 内部 header)。
+    """
+    headers = {}
+    for key in ("Authorization", "Cookie", "Content-Type", "Accept"):
+        val = request.headers.get(key)
+        if val:
+            headers[key] = val
+    return headers
+
+
+def _build_sse_passthrough_response(
+    settings,
+    request: Request,
+    body: bytes,
+    dialog_id: str,
+    ragflow_type: str = "chat",
+) -> StreamingResponse:
+    """Slice 18:SSE 透传 — 无 T_short 时原样转发 RAGFlow(原生分享页场景)。
+
+    保留原始 Authorization(RAGFlow 自身 beta Token)与 Cookie(RAGFlow session),
+    原样转发请求,流式回传响应。不更新 last_active_at / message_count(非 portal 会话)。
+
+    与 ``_build_sse_streaming_response`` 的区别:
+      - 用原始 Authorization(非 portal beta Token);
+      - 不做 session 归属校验或 message_count 更新;
+      - 上游连接失败时返回 SSE 错误事件(与标准链一致)。
+    """
+    bot_segment = _ragflow_bot_segment(ragflow_type)
+    upstream_url = f"{settings.ragflow_host.rstrip('/')}/api/v1/{bot_segment}/{dialog_id}/completions"
+    passthrough_headers = _build_passthrough_headers(request)
+
+    async def stream_generator():
+        try:
+            async with _build_upstream_client(timeout=None) as client:
+                async with client.stream("POST", upstream_url, content=body, headers=passthrough_headers) as upstream:
+                    async for chunk in upstream.aiter_bytes():
+                        yield chunk
+        except httpx.RequestError:
+            yield 'data: {"error": "上游服务不可用"}\n\n'.encode("utf-8")
+
+    return StreamingResponse(stream_generator(), media_type="text/event-stream")
+
+
+async def proxy_bot_json_to_ragflow(
+    request: Request,
+    resource_id: str,
+    suffix: str,
+    ragflow_type: str = "chat",
+):
+    """Slice 18:非 SSE 代理(GET /info, GET /inputs)— JSON 响应原样回传。
+
+    校验链与 SSE 代理(``proxy_sse_to_ragflow``)一致,但:
+      - GET 请求无 body,无 session_id 归属校验;
+      - 响应为 JSON(非 SSE 流),用 ``Response`` 回传;
+      - 无 last_active_at / message_count 更新。
+
+    路由分发(同 SSE):
+      - 无 T_short 或 token 不在 TokenStore → 透传 RAGFlow(保留原始 auth);
+      - T_short 在 TokenStore 但 revoked/expired → 401;
+      - T_short 有效 → 校验 grant + 归属 → 换 beta Token 转发 RAGFlow。
+
+    ``suffix`` 为 ``"info"``(chatbot)或 ``"inputs"``(agentbot),对应 RAGFlow 端点路径。
+    """
+    from fastapi.responses import Response
+
+    settings = request.app.state.settings
+    token_store = request.app.state.token_store
+    bot_segment = _ragflow_bot_segment(ragflow_type)
+    upstream_url = f"{settings.ragflow_host.rstrip('/')}/api/v1/{bot_segment}/{resource_id}/{suffix}"
+
+    t_short = extract_t_short(request)
+    record = token_store.get_record(t_short) if t_short else None
+    # Slice 18:无 T_short 或非 portal T_short → 透传 RAGFlow
+    if record is None:
+        passthrough_headers = _build_passthrough_headers(request)
+        try:
+            async with _build_upstream_client() as client:
+                resp = await client.get(upstream_url, headers=passthrough_headers)
+            return Response(
+                content=resp.content,
+                status_code=resp.status_code,
+                media_type=resp.headers.get("content-type", "application/json"),
+            )
+        except httpx.RequestError:
+            raise HTTPException(status_code=502, detail="上游服务不可用")
+
+    # T_short 在 TokenStore → 校验链
+    if record.scope == "public":
+        # 公开 T_short:校验 T_short 有效性 + is_public + enabled + dialog_id
+        validated = token_store.validate(t_short)
+        if validated is None:
+            raise HTTPException(status_code=401, detail="令牌无效或已过期")
+        seed = request.app.state.seed
+        share_page = seed.get_share_page(validated.share_page_id)
+        if not share_page:
+            raise HTTPException(status_code=403, detail="分享页不存在")
+        if not share_page.is_public:
+            raise HTTPException(status_code=403, detail="公开分享已关闭")
+        if not share_page.enabled:
+            raise HTTPException(status_code=403, detail="分享页已禁用")
+        if share_page.ragflow_resource_id != resource_id:
+            raise HTTPException(status_code=401, detail="令牌与目标资源不匹配")
+    else:
+        # 标准 T_short:cookie + grant + T_short 有效性 + dialog_id 一致
+        await get_current_user(request)
+        seed = request.app.state.seed
+        _assert_grant_exists(seed, record.portal_user_id, record.share_page_id)
+        validated = token_store.validate(t_short)
+        if validated is None:
+            raise HTTPException(status_code=401, detail="令牌无效或已过期")
+        share_page = seed.get_share_page(validated.share_page_id)
+        if not share_page or share_page.ragflow_resource_id != resource_id:
+            raise HTTPException(status_code=401, detail="令牌与目标资源不匹配")
+
+    # 校验通过 → 用 beta Token 调 RAGFlow
+    upstream_headers = _build_upstream_headers(settings.ragflow_beta_token)
+    try:
+        async with _build_upstream_client() as client:
+            resp = await client.get(upstream_url, headers=upstream_headers)
+        return Response(
+            content=resp.content,
+            status_code=resp.status_code,
+            media_type=resp.headers.get("content-type", "application/json"),
+        )
+    except httpx.RequestError:
+        raise HTTPException(status_code=502, detail="上游服务不可用")
 
 
 async def proxy_sse_public_to_ragflow(request: Request, share_page_id: str, session_id: str):

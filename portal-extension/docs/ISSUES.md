@@ -647,6 +647,84 @@ PRD D9 决定一期仅全屏 Chat,字段已预留(`embed_type` / `ragflow_type`)
 
 ---
 
+## Phase 3 — 同源部署修复(2026-07-06 真实环境验证发现)
+
+> Phase 1(Issue 1-7)与 Phase 2(Issue 8-16)已实现。真实环境(172.16.10.180)部署采用「portal 前端 `/portal/` 子路径 + RAGFlow 占 :80 + nginx 反代」同源架构后,发现 3 个互相耦合的运行时 bug:
+>
+> - **B1**:portal iframe 内 RAGFlow 分享页仍跳 RAGFlow 登录页(根因:分享页挂载调 `GET /api/v1/chatbots/{id}/info` 要求 AUTH_BETA,网关只代理了 `/completions`,T_short 直达 RAGFlow 被拒 → 401 → 前端 `redirectToLogin()`)。
+> - **B2**:登录 RAGFlow 后刷新 `/portal/`,portal 登出(根因:同源下两端都用默认 cookie 名 `session`,RAGFlow 登录覆盖 portal session cookie,签名互不兼容)。
+> - **B3**:直接访问 RAGFlow 原生分享页 `http://172.16.10.180/chats/share?shared_id=xxx` 发消息 403「未登录」(根因:nginx 把所有 `/api/v1/.../completions` 路由到 portal,portal 要求 portal 会话,原生分享页用户无 portal 会话)。
+>
+> 关键认知:PRD L120-128 原始令牌注入设计只覆盖了 `/completions` 代理,**漏掉了分享页挂载时的 `/info` 端点**——这是 B1 的设计层根因;B3 是子路径部署引入的回归。Slice 17 修 B2(独立),Slice 18 统一修 B1+B3(网关成为分享页 API 唯一入口,按 T_short 决定换 Token 或透传)。
+
+## Issue 17 — Slice 17: Portal 会话 cookie 隔离(修复 B2 同源 cookie 踩踏)
+
+### Parent
+
+无(Phase 3 起点)。关联 PRD:`/PRD.md` L21(同源架构)。
+
+### What to build
+
+给 portal `SessionMiddleware` 传独立 cookie 名(如 `portal_session`),与 RAGFlow 的 `session` cookie 不再互相覆盖。
+
+当前 [portal/main.py:89](file:///Users/xijuangu/Developer/Work/thqh_projects/rag/ragflow/portal-extension/portal/main.py#L89) `app.add_middleware(SessionMiddleware, secret_key=settings.session_secret)` 未传 `session_cookie` 参数,Starlette 默认 `session_cookie="session"`;RAGFlow(`api/apps/__init__.py`)同样未配 `SESSION_COOKIE_NAME`,Quart/Flask 默认也是 `session`。两端同源(`172.16.10.180:80`)下共享 cookie jar,RAGFlow 登录写入的 `session` 覆盖 portal 的 `session`,portal 用自身 `secret_key` 解签名失败 → 会话丢失 → `get_current_user` 抛 403 → 前端显示登出。
+
+行为:portal 的会话 cookie 改名为 `portal_session`,RAGFlow 继续用 `session`,两者互不干扰。
+
+### Acceptance criteria
+
+- [ ] `portal/main.py` `SessionMiddleware` 显式传 `session_cookie="portal_session"`(或配置项)
+- [ ] 在 `http://172.16.10.180/` 登录 RAGFlow 后,刷新 `/portal/` 仍保持 portal 登录态
+- [ ] 在 `/portal/` 登录 portal 后,刷新 `/` RAGFlow 登录态不受影响
+- [ ] 单测覆盖:portal 会话 cookie 名为 `portal_session`(非默认 `session`)
+- [ ] 既有 350 个 pytest 全绿(无回归)
+
+### Blocked by
+
+None - can start immediately
+
+---
+
+## Issue 18 — Slice 18: 网关统一代理分享页 API + nginx 路由分流(修复 B1 + B3)
+
+### Parent
+
+无(Phase 3)。关联 PRD:`/PRD.md` L120-128(令牌注入机制)、L131-133(beta Token 选用)。
+
+### What to build
+
+网关成为 RAGFlow 分享页 API 的**唯一入口**:nginx 把所有 `/api/v1/chatbots/*` 与 `/api/v1/agentbots/*` 路由到 portal;portal 对每个请求按 Authorization 是否含有效 `T_short` 决定行为——有则校验(grant + 归属)+ 换真实 beta Token 转发 RAGFlow,无则**原样透传** RAGFlow(让 RAGFlow 用自身 auth/session 处理)。这统一修复 B1(`/info` 端点补上)与 B3(原生分享页无 T_short 时透传,不再 403)。
+
+端到端行为:
+- **portal iframe 路径**:分享页挂载调 `GET /api/v1/chatbots/{id}/info`,Authorization 带 `Bearer <T_short>` → 网关校验 T_short + grant + 归属 → 换 beta Token 调 RAGFlow `/info` → 200 返回 iframe。`POST .../completions` 同理(已有 SSE 代理,纳入统一分发)。
+- **RAGFlow 原生分享页路径**:用户直接访问 `/chats/share?shared_id=xxx`(不经 portal),分享页挂载调 `GET /info`,Authorization 无 T_short(或带 RAGFlow 自身 beta Token)→ 网关**透传** RAGFlow → RAGFlow 用自身 auth 处理 → 200。`POST .../completions` 同理透传。
+- 网关对 `agent` 类型同样处理(`/api/v1/agentbots/{id}/inputs` + `/completions`;RAGFlow agentbot_api 无 `/info` 端点,故不代理)。
+
+实现要点(决策性部分,非逐行规格):
+- 网关新增 `GET /api/v1/chatbots/{id}/info` 与 `GET /api/v1/agentbots/{id}/inputs` 代理端点,校验链沿用现有 SSE 代理(cookie + grant + T_short validate → 换 beta Token → 转发 RAGFlow,JSON 响应原样回传)。
+- 网关对所有 `/api/v1/chatbots/*` 与 `/api/v1/agentbots/*` 请求增加透传分支:**无 T_short,或 T_short 不在 TokenStore(非 portal 签发,可能是 RAGFlow 自身 beta Token)→ 原样转发 RAGFlow**(保留原始 Authorization / Cookie)。注意区分:T_short 在 TokenStore 但已 revoked/expired → 401(非透传,令牌曾有效但失效)。
+- nginx 配置:新增通用规则 `location ~ ^/api/v1/(chatbots|agentbots)/` `proxy_pass http://<portal>:8000;`,**保留**原 `~ ^/api/v1/(chatbots|agentbots)/[^/]+/completions$` 专用规则(SSE 需 `proxy_buffering off`);portal 成为这些路径的唯一入口,由 portal 决定换 Token 或透传。
+- SSE 端点(`.../completions`)保留 `proxy_buffering off` 等流式配置;非 SSE 端点(`/info`、`/inputs`)走普通代理。
+
+> 注:PRD L120-128 原设计假定「SSE 请求被代理就够了」,忽略了分享页挂载时的 `/info` 等辅助端点。本 slice 补齐设计盲点,并把网关升级为分享页 API 统一入口(按 T_short 决定换 Token 或透传),同时消除子路径部署引入的 B3 回归。
+
+### Acceptance criteria
+
+- [ ] portal 嵌入的 iframe 加载 RAGFlow 分享页,显示对话 UI(不再跳 RAGFlow 登录页)
+- [ ] iframe 内 `GET /api/v1/chatbots/{id}/info` 返回 200(经网关换 beta Token)
+- [ ] iframe 内发消息,`POST .../completions` SSE 流式回复正常
+- [ ] **直接**访问 RAGFlow 原生分享页 `http://172.16.10.180/chats/share?shared_id=xxx`(不经 portal,无 portal 会话),发消息返回 200 不再 403
+- [ ] 原生分享页的 `GET /info`(无 T_short)透传 RAGFlow,返回 200
+- [ ] `ragflow_type=agent` 的分享页同样工作(`/agentbots/{id}/inputs` + `/completions`;RAGFlow agentbot 无 `/info`)
+- [ ] 单测覆盖:网关对「有 T_short」与「无 T_short」两条分支的分发逻辑
+- [ ] 既有 pytest 全绿(无回归;基线 350,Slice 17/18 新增 16 → 366 passed + 5 skipped)
+
+### Blocked by
+
+- Issue 17(Slice 17 cookie 隔离 — 避免 E2E 验证时 B2 干扰会话状态)
+
+---
+
 ## 后续待办(Issue 16 AC2 遗留)
 
 > Issue 16 AC2「悬浮组件在任意页面右下角加载,点击展开对话窗,能正常对话」— Slice 16 实现了 `/widget/<id>` 骨架 HTML + 可嵌入 snippet + CSP frame-ancestors 放行,但 **悬浮组件实际 UI 渲染(右下角悬浮按钮 + 点击展开对话窗 + iframe 加载 + SSE 对话)尚未实现**。`/widget/<id>` 当前仅返回含 `<div id="widget-root">` 的占位 HTML,需前端构建产物挂载 React 组件。

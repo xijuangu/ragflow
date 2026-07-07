@@ -417,21 +417,40 @@ async def test_chat_sse_proxy_still_uses_chatbot_endpoint(client, app, monkeypat
 # ===========================================================================
 
 
-async def test_agent_sse_rejects_invalid_t_short(client, app, monkeypatch):
-    """Agent SSE 代理:无效 T_short → 401(校验链生效)。"""
-    await _login(client)
-    create = await client.post(
-        "/admin/share-pages",
-        json={"name": "Agent 校验", "ragflow_resource_id": "agent-val-001", "ragflow_type": "agent"},
-    )
-    assert create.status_code == 201
-    # 不预创建 session,直接用无效 T_short 调 agent SSE
+async def test_agent_sse_passthrough_unknown_token(client, app, monkeypatch):
+    """Slice 18:Agent SSE 代理 — 未知的 Bearer token → 透传 RAGFlow agentbot 端点。
+
+    旧行为:Bearer token 不在 TokenStore → 401。
+    Slice 18:token 不在 TokenStore → 非 portal T_short → 透传 RAGFlow。
+    """
+    captured_urls = []
+
+    class _MockAsyncClient(httpx.AsyncClient):
+        def __init__(self, *args, **kwargs):
+            def handler(req: httpx.Request) -> httpx.Response:
+                captured_urls.append(str(req.url))
+                return httpx.Response(
+                    200,
+                    content=b'data: {"code":0}\n\n',
+                    headers={"content-type": "text/event-stream"},
+                )
+
+            kwargs["transport"] = httpx.MockTransport(handler)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr("portal.gateway.httpx.AsyncClient", _MockAsyncClient)
+
     resp = await client.post(
         "/api/v1/agentbots/agent-val-001/completions",
         json={"question": "test", "stream": True},
         headers={"Authorization": "Bearer invalid-t-short"},
     )
-    assert resp.status_code == 401
+    await resp.aread()
+    assert resp.status_code == 200
+    # 验证透传到 agentbot 端点
+    assert any("/api/v1/agentbots/agent-val-001/completions" in u for u in captured_urls), (
+        f"应透传到 agentbot 端点,实际 URLs: {captured_urls}"
+    )
 
 
 async def test_agent_sse_rejects_missing_grant(client, app, monkeypatch):

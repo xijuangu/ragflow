@@ -4,7 +4,9 @@ import react from '@vitejs/plugin-react';
 // https://vitejs.dev/config/
 // 开发时 Vite dev server (默认 5173) 代理后端 API 到 FastAPI (默认 8000),
 // 保证前端请求 /login、/share-pages 等路径时同源(cookie 自动携带)。
-export default defineConfig({
+// 生产构建:前端挂在 /portal/ 子路径(与 RAGFlow 共享 :80,通过 nginx 反代分离)。
+export default defineConfig(({ mode }) => ({
+  base: mode === 'production' ? '/portal/' : '/',
   plugins: [react()],
   server: {
     port: 5173,
@@ -22,4 +24,4 @@ export default defineConfig({
     outDir: 'dist',
     sourcemap: false,
   },
-});
+}));

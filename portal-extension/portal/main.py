@@ -26,6 +26,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
@@ -85,7 +86,13 @@ def create_app() -> FastAPI:
 
     app = FastAPI(title="RAGFlow 权限门户", version="0.2.0", lifespan=lifespan)
     # 同源 HTTP-only 签名会话 cookie
-    app.add_middleware(SessionMiddleware, secret_key=settings.session_secret)
+    # Slice 17:cookie 名改为 portal_session(非默认 session),避免同源部署下
+    # 与 RAGFlow 的 session cookie 互相覆盖(B2:登录 RAGFlow 后刷新 portal 登出)
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=settings.session_secret,
+        session_cookie="portal_session",
+    )
 
     # PRD D10:同源嵌入 — 所有响应加 X-Frame-Options: SAMEORIGIN,
     # 阻止分享页被任意外部站点 iframe 规避门户登录态。
@@ -105,6 +112,25 @@ def create_app() -> FastAPI:
             response.headers["X-Frame-Options"] = "SAMEORIGIN"
         return response
 
+    # 前端 dist 路径(SPA 静态托管 + 路由兜底共用,提前定义供中间件引用)
+    _frontend_dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+
+    # SPA 路由兜底:浏览器导航(GET + Accept: text/html)命中后端 API 返回 JSON 时,
+    # 改返回 index.html,让 React Router 处理前端路由(含未登录 401/403 → SPA 自动跳 /login)。
+    # 解决刷新 /portal/share-pages 等前端路由直接返回 JSON 的问题。
+    # fetch 调用默认 Accept: */* 不含 text/html,不会触发此兜底,API 正常返回 JSON。
+    @app.middleware("http")
+    async def spa_html_fallback(request: Request, call_next):
+        response = await call_next(request)
+        if (_frontend_dist.is_dir()
+                and request.method == "GET"
+                and "text/html" in request.headers.get("accept", "")
+                and "application/json" in response.headers.get("content-type", "")):
+            index_path = _frontend_dist / "index.html"
+            if index_path.exists():
+                return FileResponse(index_path)
+        return response
+
     # 配置、DB 后端存储、内存令牌表挂到 app.state,供路由读取
     app.state.settings = settings
     app.state.db_engine = engine
@@ -122,7 +148,6 @@ def create_app() -> FastAPI:
     app.include_router(router)
     # Slice 9:静态托管前端 SPA(放在路由注册之后,html=True 兜底 SPA 路由)。
     # 只有 frontend/dist 存在时才挂载(开发时 Vite dev server 不需要此挂载)。
-    _frontend_dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
     if _frontend_dist.is_dir():
         app.mount("/", StaticFiles(directory=str(_frontend_dist), html=True), name="frontend")
 
