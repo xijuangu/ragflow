@@ -1151,6 +1151,7 @@ Issue 27(部署端点)+ Issue 28(新建会话修复)代码与部署均就绪后,
 
 - Issue 27(Slice 27 先修复 404)
 - Issue 28(Slice 28 先修复新建会话 greeting)
+- Issue 31(Slice 31 先修复会话列表滚动条,验收时确认 UI 完整可用)
 
 ---
 
@@ -1202,6 +1203,42 @@ agent 的 sessions 端点 RAGFlow 用 `/agents/`(非 `/agentbots/`),导致 porta
 ### Blocked by
 
 None - can start immediately(独立改动,与 Slice 28 无文件冲突)
+
+---
+
+## Issue 31 — Slice 31: 会话列表添加滚动条(会话增多时不再挤压)
+
+### Parent
+
+无(E2E 验收 Slice 28 时发现的使用性问题)。
+
+### 根因(E2E 验证发现)
+
+`SharePageDetailPage` 会话列表 CSS 缺少 flex 收缩约束,会话增多时列表持续扩展而非滚动,导致每个会话项被挤压。
+
+- `.sessions-sidebar`(`styles.css:285`):`display: flex; flex-direction: column; overflow: hidden` —— 缺 `min-height: 0`
+- `.session-list`(`styles.css:315`):`overflow-y: auto; flex: 1; display: flex; flex-direction: column` —— `overflow-y: auto` 已设,但不生效
+
+**根因**:flex column 容器的子元素默认 `min-height: auto`,会随内容增长而非触发滚动。需给滚动子元素(或容器)加 `min-height: 0`,才能让 `overflow-y: auto` 生效。这是 flex 布局的经典陷阱。
+
+### What to build
+
+修复 `frontend/src/styles.css` 的 `.sessions-sidebar` 和/或 `.session-list`,加 `min-height: 0` 让 flex item 能正确收缩并触发垂直滚动。改动范围:1-2 个 CSS 属性,无逻辑改动。
+
+可选增强:测试覆盖会话列表项超过视口高度时的滚动行为(jsdom 测试 `scrollTop > 0` 或 `overflow-y: auto` 计算样式)。
+
+### Acceptance criteria
+
+- [ ] 会话列表项超过视口高度时,出现垂直滚动条
+- [ ] 会话增多时,每个会话项高度不变,不被挤压
+- [ ] 会话少时(少于视口),无滚动条(不浪费空间)
+- [ ] sidebar 头部(「我的会话」+「新建会话」按钮)始终可见,不随列表滚动
+- [ ] iframe 区域不受影响(不被列表挤压)
+- [ ] 既有前端 Vitest 全绿
+
+### Blocked by
+
+None - can start immediately(纯 CSS 修复,与后端无关)
 
 ---
 
