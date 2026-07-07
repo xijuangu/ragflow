@@ -49,6 +49,12 @@ class Settings:
     portal_db_url: str  # Slice 8:DB 连接 URL(SQLite/MySQL 由 URL scheme 决定)
     # Slice 12:双删重试定时任务间隔(秒);<=0 禁用定时任务(管理员仍可手动触发)
     retry_delete_interval_seconds: int = 300
+    # Slice 19:浏览器访问 RAGFlow 的 origin(用于构造 iframe URL)。
+    # 默认空 = 同源(iframe URL 用相对路径 /chats/share,API 请求走 nginx → portal)。
+    # 非 same-origin 部署时设为浏览器可访问的 RAGFlow origin(如 http://172.16.10.180)。
+    # 注意:ragflow_host 用于 portal 内部调用(直连 RAGFlow 后端,如 :8080);
+    # ragflow_browser_origin 用于浏览器访问(走 nginx :80,API 请求经 portal 代理)。
+    ragflow_browser_origin: str = ""
     # Slice 14:OIDC SSO 配置(默认禁用,OIDC_ENABLED=false 时 SSO 端点返回 404)
     oidc_enabled: bool = False
     oidc_issuer: str = ""
@@ -86,6 +92,7 @@ def load_settings() -> Settings:
         user2_password=os.environ.get("PORTAL_USER2_PASSWORD", ""),
         session_secret=os.environ.get("PORTAL_SESSION_SECRET", "dev-insecure-secret-change-me"),
         ragflow_host=os.environ.get("RAGFLOW_HOST", "http://localhost:9380"),
+        ragflow_browser_origin=os.environ.get("RAGFLOW_BROWSER_ORIGIN", ""),
         ragflow_beta_token=os.environ.get("RAGFLOW_BETA_TOKEN", ""),
         ragflow_dialog_id=os.environ.get("RAGFLOW_DIALOG_ID", ""),
         t_short_ttl_seconds=int(os.environ.get("T_SHORT_TTL_SECONDS", "300")),

@@ -508,11 +508,14 @@ async def _invoke_upstream(fn: Callable[[], Awaitable[T]], action: str) -> T:
 # ---------------------------------------------------------------------------
 
 
-def _build_iframe_url(ragflow_host: str, resource_id: str, t_short: str, session_id: str, ragflow_type: str) -> str:
-    """按 ragflow_type 构造 iframe URL(chat → /chat/share,agent → /agent/share)。"""
+def _build_iframe_url(ragflow_browser_origin: str, resource_id: str, t_short: str, session_id: str, ragflow_type: str) -> str:
+    """按 ragflow_type 构造 iframe URL(chat → /chats/share,agent → /agent/share)。
+
+    Slice 19:参数为 ragflow_browser_origin(非 ragflow_host),用于浏览器访问。
+    """
     if ragflow_type == "agent":
-        return build_agent_iframe_url(ragflow_host, resource_id, t_short, session_id)
-    return build_iframe_url(ragflow_host, resource_id, t_short, session_id)
+        return build_agent_iframe_url(ragflow_browser_origin, resource_id, t_short, session_id)
+    return build_iframe_url(ragflow_browser_origin, resource_id, t_short, session_id)
 
 
 async def _precreate_session(settings, resource_id: str, ragflow_type: str) -> str:
@@ -615,8 +618,9 @@ async def get_embed_url(share_page_id: str, request: Request, user=Depends(get_c
             "expires_in": settings.t_short_ttl_seconds,
         }
     # fullscreen 类型:按 ragflow_type 构造 iframe URL(TD15:统一走 _build_iframe_url)
+    # Slice 19:用 ragflow_browser_origin(浏览器访问,走 nginx),非 ragflow_host(内部调用,直连 :8080)
     iframe_url = _build_iframe_url(
-        settings.ragflow_host, share_page.ragflow_resource_id, t_short, "", share_page.ragflow_type
+        settings.ragflow_browser_origin, share_page.ragflow_resource_id, t_short, "", share_page.ragflow_type
     )
     return {
         "iframe_url": iframe_url,
@@ -669,8 +673,9 @@ async def precreate_session(share_page_id: str, request: Request, user=Depends(g
     token_store = request.app.state.token_store
     t_short = token_store.issue(user.id, share_page.id, settings.t_short_ttl_seconds)
     # TD15:统一走 _build_iframe_url 分发(消除 if ragflow_type == "agent" 分支)
+    # Slice 19:用 ragflow_browser_origin(浏览器访问,走 nginx),非 ragflow_host(内部调用,直连 :8080)
     iframe_url = _build_iframe_url(
-        settings.ragflow_host, share_page.ragflow_resource_id, t_short, session_id, share_page.ragflow_type
+        settings.ragflow_browser_origin, share_page.ragflow_resource_id, t_short, session_id, share_page.ragflow_type
     )
     return {
         "session_id": session_id,
@@ -1660,7 +1665,7 @@ async def public_get_embed_url(share_page_id: str, request: Request):
     token_store = request.app.state.token_store
     # 签发公开 T_short(scope='public',portal_user_id='u_anonymous')
     t_short = token_store.issue("u_anonymous", share_page.id, settings.t_short_ttl_seconds, scope="public")
-    iframe_url = build_iframe_url(settings.ragflow_host, share_page.ragflow_resource_id, t_short)
+    iframe_url = build_iframe_url(settings.ragflow_browser_origin, share_page.ragflow_resource_id, t_short)
     return {
         "iframe_url": iframe_url,
         "share_page_id": share_page.id,
@@ -1692,7 +1697,7 @@ async def public_precreate_session(share_page_id: str, request: Request):
     # 签发公开 T_short 并构造含 session_id 的 iframe URL
     token_store = request.app.state.token_store
     t_short = token_store.issue("u_anonymous", share_page.id, settings.t_short_ttl_seconds, scope="public")
-    iframe_url = build_iframe_url(settings.ragflow_host, share_page.ragflow_resource_id, t_short, session_id)
+    iframe_url = build_iframe_url(settings.ragflow_browser_origin, share_page.ragflow_resource_id, t_short, session_id)
     return {
         "session_id": session_id,
         "iframe_url": iframe_url,

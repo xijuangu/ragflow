@@ -289,18 +289,29 @@ describe('Slice 16 — SharePageDetailPage widget 类型展示 snippet', () => {
   });
 
   it('agent 类型详情页加载 /agent/share 路径的 iframe', async () => {
+    // Slice 21:fullscreen 类型挂载调 precreateSession(返回带 session_id 的 iframe_url)
     const agentIframeUrl =
-      'http://ragflow.local/agent/share?shared_id=agent-001&auth=T_short_xyz&from=agent';
+      '/agent/share?shared_id=agent-001&auth=pt_T_short_xyz&from=agent&session_id=sess-agent-001';
     globalThis.fetch = mockFetch([
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
       {
         url: '/share-pages/sp_agent/embed-url',
         status: 200,
         body: {
-          iframe_url: agentIframeUrl,
+          iframe_url: '',
           ragflow_type: 'agent',
           share_page_id: 'sp_agent',
           expires_in: 300,
+        },
+      },
+      {
+        url: '/share-pages/sp_agent/sessions',
+        method: 'POST',
+        status: 200,
+        body: {
+          session_id: 'sess-agent-001',
+          iframe_url: agentIframeUrl,
+          share_page_id: 'sp_agent',
         },
       },
       {

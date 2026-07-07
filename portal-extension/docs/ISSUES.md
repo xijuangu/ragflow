@@ -796,6 +796,42 @@ Slice 17(cookie 隔离)+ Slice 18(网关统一代理 + 透传)+ Slice 19(T_short
 
 ---
 
+## Issue 21 — Slice 21: portal 前端改用预创建 session 端点(修复 /completions 403)
+
+### Parent
+
+Issue 18(Slice 18 网关代理上线后,浏览器 E2E 暴露的 session 归属 403 回归)。
+
+### What to build
+
+portal 前端目前调 `GET /share-pages/{id}/embed-url`(不预创建 session),iframe URL 无 `session_id` 参数。iframe 加载后,首次 `POST /api/v1/chatbots/{id}/completions`(无 session_id)成功 — 网关跳过 session 归属校验,RAGFlow 创建 session 并在 SSE 首帧返回 session_id。但**网关没把这个新 session 绑定到 `chat_session_owner`**(绑定只在 portal 的 `precreate_session` 路由做)。
+
+后续 `POST /completions` 请求带 RAGFlow 返回的 session_id → 网关校验链步骤 3 `_assert_session_ownership` → `session_store.get(session_id)` 返回 None(session 从未绑定)→ **403「会话不存在或无权访问」**。
+
+**修复方向**:portal 前端改为调 `POST /share-pages/{id}/sessions`(预创建 session 端点),而非 `GET /share-pages/{id}/embed-url`。预创建端点:
+1. 调 RAGFlow 创建空 session,从 SSE 首帧解析 session_id;
+2. 绑定 session_id 到 `chat_session_owner`(portal_user_id = 当前用户,ragflow_resource_id = dialog_id);
+3. 签发 T_short 并构造**带 session_id 参数**的 iframe URL。
+
+iframe 加载后,RAGFlow 前端从 URL 读 session_id,首问直接带 session_id → 网关归属校验通过(session 已绑定)→ 200。
+
+### Acceptance criteria
+
+- [ ] portal 前端「进入分享页」操作调 `POST /share-pages/{id}/sessions`(预创建),而非 `GET /share-pages/{id}/embed-url`
+- [ ] 返回的 iframe URL 含 `session_id` 参数(与 `auth`/`shared_id`/`from` 并列)
+- [ ] iframe 内首次发消息,`POST /completions` 请求体含 session_id,网关归属校验通过,返回 200
+- [ ] 多轮对话:连续发 2+ 条消息,每次 `/completions` 均返回 200,不 403
+- [ ] F12 Network:`/api/v1/chatbots/{id}/completions` 第二次及后续请求返回 200(非 403)
+- [ ] portal 日志无 403「会话不存在或无权访问」
+- [ ] 既有 pytest 全绿(无回归;基线 375 passed + 5 skipped)
+- [ ] 前端单测覆盖:embed-url 按钮调预创建端点(若前端有 Vitest 测试)
+
+### Blocked by
+
+- Issue 19(Slice 19 — iframe URL 路径 + pt_ 前缀 + browser_origin 已修复,本 slice 在其基础上修 session 归属)
+
+---
+
 ## 后续待办(Issue 16 AC2 遗留)
 
 > Issue 16 AC2「悬浮组件在任意页面右下角加载,点击展开对话窗,能正常对话」— Slice 16 实现了 `/widget/<id>` 骨架 HTML + 可嵌入 snippet + CSP frame-ancestors 放行,但 **悬浮组件实际 UI 渲染(右下角悬浮按钮 + 点击展开对话窗 + iframe 加载 + SSE 对话)尚未实现**。`/widget/<id>` 当前仅返回含 `<div id="widget-root">` 的占位 HTML,需前端构建产物挂载 React 组件。

@@ -211,34 +211,48 @@ def _get_client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
-def build_iframe_url(ragflow_host: str, dialog_id: str, t_short: str, session_id: str = "") -> str:
+def build_iframe_url(ragflow_browser_origin: str, dialog_id: str, t_short: str, session_id: str = "") -> str:
     """构造 iframe URL:auth 参数放 T_short,shared_id 放 dialog_id。
 
     URL 格式(对应 RAGFlow 前端原生注入点):
-      {RAGFLOW_HOST}/chat/share?shared_id={dialog_id}&auth={T_short}&from=chat[&session_id=...]
+      {RAGFLOW_BROWSER_ORIGIN}/chats/share?shared_id={dialog_id}&auth={T_short}&from=chat[&session_id=...]
 
     Slice 2:可选 session_id 参数注入 iframe URL(解决 RAGFlow 双步行为,
     首问直接带 session_id,RAGFlow 正常处理 question)。
+
+    Slice 19:路径从 /chat/share(单数)修正为 /chats/share(复数) —
+    RAGFlow 路由 Routes.ChatShare = '/chats/share'(web/src/routes.tsx:64)。
+    旧路径 /chat/share 落到 catch-all → 渲染 404 页面(用户看到"闪一下 RAGFlow 页面")。
+
+    Slice 19:ragflow_browser_origin 参数(非 ragflow_host)。空字符串 = 同源,
+    返回相对路径 /chats/share(浏览器用当前 origin,API 请求走 nginx → portal 代理)。
+    非 same-origin 部署时传完整 origin(如 http://172.16.10.180)。
+    关键:iframe URL 必须走浏览器可访问的 origin(经 nginx),不能直连 RAGFlow 后端
+    (如 :8080),否则 iframe 内 API 请求绕过 portal,RAGFlow 不认 pt_ T_short → 102 错误。
     """
     params = {"shared_id": dialog_id, "auth": t_short, "from": "chat"}
     if session_id:
         params["session_id"] = session_id
-    return f"{ragflow_host.rstrip('/')}/chat/share?{urlencode(params)}"
+    base = ragflow_browser_origin.rstrip("/") if ragflow_browser_origin else ""
+    return f"{base}/chats/share?{urlencode(params)}"
 
 
-def build_agent_iframe_url(ragflow_host: str, agent_id: str, t_short: str, session_id: str = "") -> str:
+def build_agent_iframe_url(ragflow_browser_origin: str, agent_id: str, t_short: str, session_id: str = "") -> str:
     """构造 RAGFlow Agent iframe URL(Slice 16 — agent 类型)。
 
     URL 格式(对应 RAGFlow Agent 分享页注入点):
-      {RAGFLOW_HOST}/agent/share?shared_id={agent_id}&auth={T_short}&from=agent[&session_id=...]
+      {RAGFLOW_BROWSER_ORIGIN}/agent/share?shared_id={agent_id}&auth={T_short}&from=agent[&session_id=...]
 
-    与 build_iframe_url 的区别:路径为 /agent/share(而非 /chat/share),from=agent。
+    与 build_iframe_url 的区别:路径为 /agent/share(而非 /chats/share),from=agent。
     shared_id 放 agent_id(复用 share_page.ragflow_resource_id 字段)。
+
+    Slice 19:ragflow_browser_origin 参数(非 ragflow_host)。空 = 同源相对路径。
     """
     params = {"shared_id": agent_id, "auth": t_short, "from": "agent"}
     if session_id:
         params["session_id"] = session_id
-    return f"{ragflow_host.rstrip('/')}/agent/share?{urlencode(params)}"
+    base = ragflow_browser_origin.rstrip("/") if ragflow_browser_origin else ""
+    return f"{base}/agent/share?{urlencode(params)}"
 
 
 def build_widget_url(portal_origin: str, share_page_id: str) -> str:

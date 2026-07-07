@@ -50,28 +50,37 @@ export default function SharePageDetailPage() {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [sessionBusy, setSessionBusy] = useState(false);
 
-  // 初始加载:embed-url + 会话列表
+  // 初始加载:embed-url(判断 embed_type)+ 会话列表
+  // Slice 21:fullscreen 类型改调 precreateSession(预创建 session,绑定归属),
+  //           避免 iframe 首次 /completions 后 session 未绑定 → 后续 403。
+  //           widget 类型仍用 embed-url(返回 snippet,不需 session 归属)。
   useEffect(() => {
     if (!id) return;
     let cancelled = false;
 
     (async () => {
       try {
-        const res = await api.getEmbedUrl(id);
+        // 先调 embed-url 判断 embed_type(widget 类型直接用 snippet,不预创建)
+        const embedRes = await api.getEmbedUrl(id);
         if (cancelled) return;
         // Slice 16:widget 类型返回 widget_url + snippet(无 iframe_url)
-        if (res.embed_type === 'widget' || res.snippet) {
+        if (embedRes.embed_type === 'widget' || embedRes.snippet) {
           setIsWidget(true);
-          setSnippet(res.snippet ?? null);
-          setWidgetUrl(res.widget_url ?? null);
+          setSnippet(embedRes.snippet ?? null);
+          setWidgetUrl(embedRes.widget_url ?? null);
           setIframeUrl(null);
-        } else {
-          setIsWidget(false);
-          setIframeUrl(res.iframe_url ?? null);
-          setSnippet(null);
-          setWidgetUrl(null);
-          setIframeNonce((n) => n + 1);
+          return;
         }
+        // Slice 21:fullscreen 类型调预创建 session(返回带 session_id 的 iframe_url,
+        // session 已绑定到当前用户 → 后续 /completions 归属校验通过)
+        const preRes = await api.precreateSession(id);
+        if (cancelled) return;
+        setIsWidget(false);
+        setActiveSessionId(preRes.session_id);
+        setIframeUrl(preRes.iframe_url ?? null);
+        setSnippet(null);
+        setWidgetUrl(null);
+        setIframeNonce((n) => n + 1);
       } catch (e) {
         if (cancelled) return;
         setEmbedError(e instanceof ApiError ? e.message : '加载分享页失败');
@@ -295,7 +304,7 @@ export default function SharePageDetailPage() {
                 </pre>
               </div>
             )}
-            {/* fullscreen 类型:渲染 iframe(chat 走 /chat/share,agent 走 /agent/share) */}
+            {/* fullscreen 类型:渲染 iframe(chat 走 /chats/share,agent 走 /agent/share) */}
             {!isWidget && iframeUrl && (
               <iframe
                 key={iframeNonce}
