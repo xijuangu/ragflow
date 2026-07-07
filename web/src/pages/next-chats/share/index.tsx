@@ -37,7 +37,6 @@ const ChatContainer = () => {
     stopOutputMessage,
     scrollRef,
     messageContainerRef,
-    removeAllMessagesExceptFirst,
   } = useSendSharedMessage();
   const sendDisabled = useSendButtonDisabled(value);
   const { data: chatInfo } = useFetchExternalChatInfo();
@@ -56,11 +55,7 @@ const ChatContainer = () => {
 
   return (
     <>
-      <EmbedContainer
-        title={chatInfo.title}
-        avatar={chatInfo.avatar}
-        handleReset={removeAllMessagesExceptFirst}
-      >
+      <EmbedContainer title={chatInfo.title} avatar={chatInfo.avatar}>
         <div className="flex flex-1 flex-col p-2.5 h-[90vh] m-3">
           <div
             className={
