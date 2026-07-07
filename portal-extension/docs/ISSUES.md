@@ -1152,6 +1152,7 @@ Issue 27(部署端点)+ Issue 28(新建会话修复)代码与部署均就绪后,
 - Issue 27(Slice 27 先修复 404)
 - Issue 28(Slice 28 先修复新建会话 greeting)
 - Issue 31(Slice 31 先修复会话列表滚动条,验收时确认 UI 完整可用)
+- Issue 32(Slice 32 先移除 iframe Reset 按钮,避免历史不一致)
 
 ---
 
@@ -1239,6 +1240,46 @@ None - can start immediately(独立改动,与 Slice 28 无文件冲突)
 ### Blocked by
 
 None - can start immediately(纯 CSS 修复,与后端无关)
+
+---
+
+## Issue 32 — Slice 32: 移除 iframe 右上角重置按钮(前端重置导致历史不一致)
+
+### Parent
+
+无(E2E 验收 Slice 28 时发现)。
+
+### 根因(E2E 验证发现)
+
+RAGFlow 分享页 `web/src/pages/next-chats/share/index.tsx:62` 把 `removeAllMessagesExceptFirst`(仅前端清空 `derivedMessages`,不调后端)传给 `EmbedContainer` 的 `handleReset` prop,渲染右上角「Reset」按钮。
+
+用户点击「Reset」:
+1. 前端 `derivedMessages` 被清空(只剩 greeting)→ 界面显示重置成功
+2. 但后端 `API4Conversation` 的 `message` 数组不变 → session_id 不变
+3. 继续对话 → RAGFlow 在原 session 追加新消息(因 session_id 未变)
+4. 刷新页面 → Slice 24 的 `fetchSessionId` / GET history 从 RAGFlow 取回完整历史(含「重置前」+「重置后」所有消息)→ 旧消息恢复,新消息接在后面
+
+**根因**:前端重置与后端状态不一致。RAGFlow 的 `removeAllMessagesExceptFirst` 设计用于原生 Chat(本地状态,刷新不恢复),不适用于 iframe 分享页(刷新从后端恢复历史)。
+
+### What to build
+
+不传 `handleReset` 给 `EmbedContainer`(`EmbedContainer` 的 `handleReset?` 是可选 prop,不传则按钮无 onClick 或不渲染)。改动范围:RAGFlow `web/src/pages/next-chats/share/index.tsx` 删除/注释 `handleReset={removeAllMessagesExceptFirst}` 一行。
+
+**替代方案(不采用)**:让 Reset 按钮真正调后端删除当前 session + 创建新 session。但这需 portal 网关配合(签发新 session_id + iframe URL 重载),改动大且 portal 已有「新建会话」按钮覆盖此场景。直接移除更简单,且避免用户误操作。
+
+**门户已有「新建会话」按钮**(`SharePageDetailPage` 左侧 sidebar 顶部),功能完整(Slice 28 修复后显示 greeting + 创建新 session),iframe 内的 Reset 按钮冗余且有副作用,应移除。
+
+### Acceptance criteria
+
+- [ ] iframe 右上角不再显示「Reset」按钮(或按钮无 onClick,不触发前端重置)
+- [ ] 用户无法触发前端重置,不会出现「重置前+重置后」历史不一致
+- [ ] 门户左侧「新建会话」按钮仍正常工作(Slice 28 覆盖此场景)
+- [ ] RAGFlow `web` `npm run build` 通过
+- [ ] 容器内 `/ragflow/web/dist` 替换 + nginx reload 后,浏览器验证 Reset 按钮消失
+
+### Blocked by
+
+None - can start immediately(独立 RAGFlow web 改动)
 
 ---
 
