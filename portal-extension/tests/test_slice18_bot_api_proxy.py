@@ -119,6 +119,62 @@ async def test_chatbot_info_response_passed_through(client, app, monkeypatch):
     assert body["data"]["prologue"] == "欢迎"
 
 
+async def test_chatbot_session_history_with_tshort_uses_beta_token(client, app, monkeypatch):
+    """有 T_short 调 /sessions/{session_id} → 校验归属后换 beta Token 取 RAGFlow history。"""
+    t_short, dialog_id = await _login_and_get_t_short(client)
+    session_id = "slice24-history-proxy-001"
+    app.state.session_store.bind(
+        session_id=session_id,
+        share_page_id="sp_default",
+        portal_user_id="u_admin",
+        ragflow_resource_id=dialog_id,
+    )
+    captured = []
+    _mock_upstream_json(
+        monkeypatch,
+        200,
+        {"code": 0, "data": {"messages": [{"role": "assistant", "content": "hi"}], "reference": []}},
+        captured,
+    )
+
+    resp = await client.get(
+        f"/api/v1/chatbots/{dialog_id}/sessions/{session_id}",
+        headers={"Authorization": f"Bearer {t_short}"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["messages"][0]["content"] == "hi"
+    beta_token = os.environ["RAGFLOW_BETA_TOKEN"]
+    assert captured[0]["authorization"] == f"Bearer {beta_token}"
+    assert f"/api/v1/chatbots/{dialog_id}/sessions/{session_id}" in captured[0]["url"]
+
+
+async def test_chatbot_session_history_rejects_other_user_session(client, app, monkeypatch):
+    """用户 B 持自己的 T_short 读取用户 A 的 session history → 403。"""
+    t_short, dialog_id = await _login_and_get_t_short(client)
+    session_id = "slice24-history-proxy-foreign"
+    app.state.session_store.bind(
+        session_id=session_id,
+        share_page_id="sp_default",
+        portal_user_id="u_admin",
+        ragflow_resource_id=dialog_id,
+    )
+    assert t_short
+
+    await _login(client, username="user2", password="testpass123")
+    resp = await client.get("/share-pages/sp_default/embed-url")
+    assert resp.status_code == 200
+    user2_t_short = _extract_params(resp.json()["iframe_url"])["auth"][0]
+    _mock_upstream_json(monkeypatch, 200, {"code": 0, "data": {"messages": []}})
+
+    resp = await client.get(
+        f"/api/v1/chatbots/{dialog_id}/sessions/{session_id}",
+        headers={"Authorization": f"Bearer {user2_t_short}"},
+    )
+
+    assert resp.status_code == 403
+
+
 # ===========================================================================
 # 验收点 5:原生分享页 GET /info(无 T_short)透传 RAGFlow,返回 200
 # ===========================================================================

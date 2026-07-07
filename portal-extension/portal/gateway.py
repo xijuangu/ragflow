@@ -863,12 +863,23 @@ def _build_sse_streaming_response(
                             pending_greeting_session_ids.discard(target_session_id)
                     else:
                         session_store.update_last_active(target_session_id)
-                # Slice 23:统一 message_count +1(每轮对话 +1,不依赖 GET history)。
-                # 根因:_sync_message_count_after_sse 调 GET history 取 messages 长度,
-                # 但 RAGFlow 新建空 session 返回空历史 → count 仍 0。改为直接 increment。
-                # resume_session 路径仍用 sync_message_count_from_history(恢复时同步绝对值)。
+                # Slice 26:message_count 表示 RAGFlow history.messages 条数,不再表示问答轮次。
+                # GET history 失败不破坏已成功的 SSE 流,但也不写入错误的 +1 计数。
                 if target_session_id and not is_greeting:
-                    session_store.increment_message_count(target_session_id)
+                    try:
+                        await session_store.sync_message_count_from_history(
+                            settings,
+                            dialog_id,
+                            target_session_id,
+                            ragflow_type,
+                        )
+                    except Exception as exc:  # noqa: BLE001 - SSE 已成功,计数同步只能降级为告警。
+                        logger.warning(
+                            "failed to sync message_count from RAGFlow history after SSE: session_id=%s dialog_id=%s error=%s",
+                            target_session_id,
+                            dialog_id,
+                            exc,
+                        )
 
     return StreamingResponse(stream_generator(), media_type="text/event-stream")
 
@@ -998,6 +1009,81 @@ async def proxy_bot_json_to_ragflow(
     try:
         async with _build_upstream_client() as client:
             resp = await client.get(upstream_url, headers=upstream_headers)
+        return Response(
+            content=resp.content,
+            status_code=resp.status_code,
+            media_type=resp.headers.get("content-type", "application/json"),
+        )
+    except httpx.RequestError:
+        raise HTTPException(status_code=502, detail="上游服务不可用")
+
+
+async def proxy_session_history_to_ragflow(
+    request: Request,
+    resource_id: str,
+    session_id: str,
+    ragflow_type: str = "chat",
+):
+    """Slice 24:GET /sessions history 代理 — shared iframe 用 URL session_id 恢复历史。
+
+    与 /info JSON 代理类似,但标准 T_short 需要额外校验 session 归属,避免用户用
+    自己的 T_short 读取他人的 RAGFlow history。
+    """
+    from fastapi.responses import Response
+
+    settings = request.app.state.settings
+    token_store = request.app.state.token_store
+    bot_segment = _ragflow_bot_segment(ragflow_type)
+    upstream_url = f"{settings.ragflow_host.rstrip('/')}/api/v1/{bot_segment}/{resource_id}/sessions/{session_id}"
+
+    t_short = extract_t_short(request)
+    record = token_store.get_record(t_short) if t_short else None
+    if record is None and _is_portal_token(t_short):
+        raise HTTPException(status_code=401, detail="令牌无效或已过期")
+    if record is None:
+        try:
+            async with _build_upstream_client() as client:
+                resp = await client.get(upstream_url, headers=_build_passthrough_headers(request))
+            return Response(
+                content=resp.content,
+                status_code=resp.status_code,
+                media_type=resp.headers.get("content-type", "application/json"),
+            )
+        except httpx.RequestError:
+            raise HTTPException(status_code=502, detail="上游服务不可用")
+
+    seed = request.app.state.seed
+    session_store = getattr(request.app.state, "session_store", None)
+    if record.scope == "public":
+        validated = token_store.validate(t_short)
+        if validated is None:
+            raise HTTPException(status_code=401, detail="令牌无效或已过期")
+        share_page = seed.get_share_page(validated.share_page_id)
+        if not share_page:
+            raise HTTPException(status_code=403, detail="分享页不存在")
+        if not share_page.is_public:
+            raise HTTPException(status_code=403, detail="公开分享已关闭")
+        if not share_page.enabled:
+            raise HTTPException(status_code=403, detail="分享页已禁用")
+        if share_page.ragflow_resource_id != resource_id:
+            raise HTTPException(status_code=401, detail="令牌与目标资源不匹配")
+        if session_store is not None:
+            _assert_session_ownership(session_store, session_id, record.portal_user_id, resource_id)
+    else:
+        await get_current_user(request)
+        _assert_grant_exists(seed, record.portal_user_id, record.share_page_id)
+        validated = token_store.validate(t_short)
+        if validated is None:
+            raise HTTPException(status_code=401, detail="令牌无效或已过期")
+        share_page = seed.get_share_page(validated.share_page_id)
+        if not share_page or share_page.ragflow_resource_id != resource_id:
+            raise HTTPException(status_code=401, detail="令牌与目标资源不匹配")
+        if session_store is not None:
+            _assert_session_ownership(session_store, session_id, record.portal_user_id, resource_id)
+
+    try:
+        async with _build_upstream_client() as client:
+            resp = await client.get(upstream_url, headers=_build_upstream_headers(settings.ragflow_beta_token))
         return Response(
             content=resp.content,
             status_code=resp.status_code,

@@ -1,32 +1,45 @@
-"""Slice 23/25 后端测试 — 网关 SSE 流完成后 message_count += 1(不依赖 GET history)。
+"""Slice 23/25/26 后端测试 — 网关 SSE 流完成后同步 RAGFlow history 消息数。
 
 覆盖验收点(ISSUES.md Issue 23):
-  1. SSE 流成功后,已绑定 session 的 message_count +1(每轮对话 +1)。
-  2. 新绑定 session(真实首问场景)的 message_count 也 +1。
-  3. 连续 2 轮对话后,message_count = 2(非 0)。
-  4. GET history 失败时不影响 message_count +1(increment 不依赖 GET history)。
+  1. SSE 流成功后,已绑定 session 的 message_count 同步为 history.messages 长度。
+  2. 新绑定 session(真实首问场景)的 message_count 也同步为 history.messages 长度。
+  3. 连续 2 轮对话后,message_count 按 history.messages 绝对值同步。
+  4. GET history 失败时不影响 SSE,但不写错误的 +1 计数。
   5. Issue 25:greeting 请求(question='')不绑定 session,也不增加 message_count。
 
-根因(Issue 23):
-  网关 _sync_message_count_after_sse 调 GET history 取 messages 长度同步 count,
-  但 RAGFlow 新建空 session 返回空历史 → count 仍 0。改为 SSE 流完成后直接 +1。
+Issue 26:
+  message_count 语义从"问答轮次"改为"RAGFlow history.messages 条数"。
 """
 import httpx
 
 
-def _mock_ragflow_sse_success(monkeypatch, session_id: str = "s1", message_id: str = "m1"):
+def _messages(count: int) -> list[dict]:
+    return [{"id": f"m{i}", "role": "assistant" if i % 2 == 0 else "user", "content": str(i)} for i in range(count)]
+
+
+def _mock_ragflow_sse_success(
+    monkeypatch,
+    session_id: str = "s1",
+    message_id: str = "m1",
+    history_counts: int | list[int] = 3,
+):
     """辅助:mock 网关 httpx.AsyncClient,上游 SSE 返回成功流(含 session_id)。"""
+    counts = history_counts if isinstance(history_counts, list) else [history_counts]
+    calls = {"history": 0}
 
     class _MockAsyncClient(httpx.AsyncClient):
         def __init__(self, *args, **kwargs):
             sse_body = (
                 f'data: {{"answer":"流式","session_id":"{session_id}","id":"{message_id}","final":true}}\n\n'
             ).encode("utf-8")
-            # GET history 也走此 client,返回空 messages(RAGFlow 新建空 session 场景)
             def handler(req: httpx.Request) -> httpx.Response:
                 if "/sessions/" in str(req.url) and req.method == "GET":
-                    # GET history 返回空 messages(模拟 RAGFlow 新建空 session)
-                    return httpx.Response(200, json={"session_id": session_id, "messages": []})
+                    index = min(calls["history"], len(counts) - 1)
+                    calls["history"] += 1
+                    return httpx.Response(
+                        200,
+                        json={"session_id": session_id, "messages": _messages(counts[index]), "reference": []},
+                    )
                 # SSE /completions
                 return httpx.Response(
                     200, content=sse_body, headers={"content-type": "text/event-stream"}
@@ -52,12 +65,12 @@ async def _login_and_get_t_short(client):
 
 
 # ---------------------------------------------------------------------------
-# 验收点 1:SSE 流成功后,已绑定 session 的 message_count +1。
+# 验收点 1:SSE 流成功后,已绑定 session 的 message_count 同步为 history.messages 长度。
 # ---------------------------------------------------------------------------
 
 
 async def test_sse_success_increments_message_count_for_bound_session(client, app, monkeypatch):
-    """请求体有已绑定 session_id → SSE 流成功后 message_count +1(非依赖 GET history)。"""
+    """请求体有已绑定 session_id → SSE 流成功后 message_count 同步为 history.messages 长度。"""
     t_short, dialog_id = await _login_and_get_t_short(client)
     session_id = "slice23-bound-001"
     # 预先绑定 session(message_count=0)
@@ -79,16 +92,16 @@ async def test_sse_success_increments_message_count_for_bound_session(client, ap
 
     owner = app.state.session_store.get(session_id)
     assert owner is not None
-    assert owner.message_count == 1, f"SSE 流成功后 message_count 应 +1,实际 {owner.message_count}"
+    assert owner.message_count == 3, f"SSE 流成功后 message_count 应为 3,实际 {owner.message_count}"
 
 
 # ---------------------------------------------------------------------------
-# 验收点 2:新绑定 session(真实首问场景)的 message_count 也 +1。
+# 验收点 2:新绑定 session(真实首问场景)的 message_count 也同步为 history.messages 长度。
 # ---------------------------------------------------------------------------
 
 
 async def test_sse_success_increments_message_count_for_newly_bound_session(client, app, monkeypatch):
-    """请求体无 session_id → 网关从 SSE 响应绑定 session → message_count +1。"""
+    """请求体无 session_id → 网关从 SSE 响应绑定 session → message_count 同步为 history.messages 长度。"""
     t_short, dialog_id = await _login_and_get_t_short(client)
     ragflow_session_id = "slice23-new-002"
     _mock_ragflow_sse_success(monkeypatch, session_id=ragflow_session_id)
@@ -104,7 +117,7 @@ async def test_sse_success_increments_message_count_for_newly_bound_session(clie
 
     owner = app.state.session_store.get(ragflow_session_id)
     assert owner is not None, "网关应从 SSE 响应绑定 session"
-    assert owner.message_count == 1, f"新绑定 session message_count 应 +1,实际 {owner.message_count}"
+    assert owner.message_count == 3, f"新绑定 session message_count 应为 3,实际 {owner.message_count}"
 
 
 async def test_greeting_sse_does_not_bind_or_increment_message_count(client, app, monkeypatch):
@@ -130,7 +143,7 @@ async def test_greeting_sse_does_not_bind_or_increment_message_count(client, app
 
 
 async def test_two_rounds_sse_increments_message_count_to_two(client, app, monkeypatch):
-    """连续 2 轮对话 → message_count = 2(每轮 +1,非依赖 GET history)。"""
+    """连续 2 轮对话 → message_count 按 RAGFlow history.messages 绝对值同步。"""
     t_short, dialog_id = await _login_and_get_t_short(client)
     session_id = "slice23-two-rounds-003"
     app.state.session_store.bind(
@@ -139,7 +152,7 @@ async def test_two_rounds_sse_increments_message_count_to_two(client, app, monke
         portal_user_id="u_admin",
         ragflow_resource_id=dialog_id,
     )
-    _mock_ragflow_sse_success(monkeypatch, session_id=session_id)
+    _mock_ragflow_sse_success(monkeypatch, session_id=session_id, history_counts=[3, 5])
 
     # 第 1 轮
     resp1 = await client.post(
@@ -161,16 +174,16 @@ async def test_two_rounds_sse_increments_message_count_to_two(client, app, monke
 
     owner = app.state.session_store.get(session_id)
     assert owner is not None
-    assert owner.message_count == 2, f"2 轮对话后 message_count 应 = 2,实际 {owner.message_count}"
+    assert owner.message_count == 5, f"2 轮对话后 message_count 应 = 5,实际 {owner.message_count}"
 
 
 # ---------------------------------------------------------------------------
-# 验收点 4:GET history 失败时不影响 message_count +1。
+# 验收点 4:GET history 失败时不影响 SSE,但不写错误的 +1 计数。
 # ---------------------------------------------------------------------------
 
 
 async def test_get_history_failure_does_not_block_increment(client, app, monkeypatch):
-    """GET history 失败 → message_count 仍 +1(increment 不依赖 GET history)。"""
+    """GET history 失败 → SSE 正常返回,但 message_count 不应被错误 +1。"""
     t_short, dialog_id = await _login_and_get_t_short(client)
     session_id = "slice23-history-fail-004"
     app.state.session_store.bind(
@@ -208,4 +221,4 @@ async def test_get_history_failure_does_not_block_increment(client, app, monkeyp
 
     owner = app.state.session_store.get(session_id)
     assert owner is not None
-    assert owner.message_count == 1, f"GET history 失败时 message_count 仍应 +1,实际 {owner.message_count}"
+    assert owner.message_count == 0, f"GET history 失败时 message_count 不应错误 +1,实际 {owner.message_count}"

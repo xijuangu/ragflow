@@ -207,6 +207,7 @@ export interface IExternalChatInfo {
 
 export interface IMessage extends Message {
   id: string;
+  session_id?: string;
   reference?: IReference; // the latest news has reference
   conversationId?: string; // To distinguish which conversation the message belongs to
 }

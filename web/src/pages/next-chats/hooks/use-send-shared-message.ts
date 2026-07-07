@@ -7,15 +7,43 @@ import {
   useSendMessageWithSse,
 } from '@/hooks/logic-hooks';
 import { useFetchExternalChatInfo } from '@/hooks/use-chat-request';
-import { Message } from '@/interfaces/database/chat';
+import { IMessage, Message } from '@/interfaces/database/chat';
+import { buildMessageListWithUuid } from '@/utils/chat';
+import request from '@/utils/next-request';
 import { get } from 'lodash';
 import trim from 'lodash/trim';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import { v4 as uuid } from 'uuid';
 
 const isCompletionError = (res: any) =>
   res && (res?.response.status !== 200 || res?.data?.code !== 0);
+
+interface SharedSessionHistory {
+  messages?: Message[];
+}
+
+export const buildSharedSessionHistoryUrl = (
+  from: SharedFrom,
+  conversationId: string | null,
+  sessionId: string,
+) => {
+  const botType = from === SharedFrom.Agent ? 'agentbots' : 'chatbots';
+  return `/api/v1/${botType}/${conversationId}/sessions/${sessionId}`;
+};
+
+export const buildSharedSessionMessages = (
+  history: SharedSessionHistory | undefined,
+  sessionId: string,
+): IMessage[] => {
+  const messages = buildMessageListWithUuid(history?.messages) as IMessage[];
+  if (messages.length === 0) {
+    return messages;
+  }
+  return messages.map((message, index) =>
+    index === 0 ? { ...message, session_id: sessionId } : message,
+  );
+};
 
 export const useSendButtonDisabled = (value: string) => {
   return trim(value) === '';
@@ -24,16 +52,21 @@ export const useSendButtonDisabled = (value: string) => {
 export const useGetSharedChatSearchParams = () => {
   const [searchParams] = useSearchParams();
   const data_prefix = 'data_';
-  const data = Object.fromEntries(
-    Array.from(searchParams.entries())
-      .filter(([key]) => key.startsWith(data_prefix))
-      .map(([key, value]) => [key.replace(data_prefix, ''), value]),
+  const data = useMemo(
+    () =>
+      Object.fromEntries(
+        Array.from(searchParams.entries())
+          .filter(([key]) => key.startsWith(data_prefix))
+          .map(([key, value]) => [key.replace(data_prefix, ''), value]),
+      ),
+    [searchParams],
   );
   return {
     from: searchParams.get('from') as SharedFrom,
     sharedId: searchParams.get('shared_id'),
     locale: searchParams.get('locale'),
     theme: searchParams.get('theme'),
+    sessionId: searchParams.get('session_id'),
     data: data,
     visibleAvatar: searchParams.get('visible_avatar')
       ? searchParams.get('visible_avatar') !== '1'
@@ -45,6 +78,7 @@ export const useSendSharedMessage = () => {
   const {
     from,
     sharedId: conversationId,
+    sessionId,
     data: data,
   } = useGetSharedChatSearchParams();
   const { handleInputChange, value, setValue } = useHandleMessageInputChange();
@@ -60,6 +94,7 @@ export const useSendSharedMessage = () => {
     messageContainerRef,
     removeAllMessages,
     removeAllMessagesExceptFirst,
+    setDerivedMessages,
   } = useSelectDerivedMessages();
   const [hasError, setHasError] = useState(false);
 
@@ -74,7 +109,7 @@ export const useSendSharedMessage = () => {
         conversation_id: id ?? conversationId,
         quote: true,
         question: message.content,
-        session_id: get(derivedMessages, '0.session_id'),
+        session_id: sessionId ?? get(derivedMessages, '0.session_id'),
         reasoning: enableThinking,
         internet: enableInternet,
         ...(chatInfo?.llm_id ? { model_name: chatInfo.llm_id } : {}),
@@ -94,6 +129,7 @@ export const useSendSharedMessage = () => {
       setValue,
       removeLatestMessage,
       chatInfo,
+      sessionId,
     ],
   );
 
@@ -115,11 +151,34 @@ export const useSendSharedMessage = () => {
       message.error(ret?.data.message ?? 'Unknown error');
       setHasError(true);
     }
-  }, [send, completionUrl]);
+  }, [send, completionUrl, data]);
+
+  const fetchSessionHistory = useCallback(async () => {
+    if (!sessionId) {
+      return;
+    }
+    const url = buildSharedSessionHistoryUrl(from, conversationId, sessionId);
+    try {
+      const ret = await request.get(url);
+      if (ret?.data?.code !== 0) {
+        message.error(ret?.data?.message ?? 'Unknown error');
+        setHasError(true);
+        return;
+      }
+      setDerivedMessages(buildSharedSessionMessages(ret.data.data, sessionId));
+    } catch (error: any) {
+      message.error(error?.response?.data?.message ?? 'Unknown error');
+      setHasError(true);
+    }
+  }, [conversationId, from, sessionId, setDerivedMessages]);
 
   useEffect(() => {
-    fetchSessionId();
-  }, [fetchSessionId]);
+    if (sessionId) {
+      fetchSessionHistory();
+    } else {
+      fetchSessionId();
+    }
+  }, [fetchSessionHistory, fetchSessionId, sessionId]);
 
   useEffect(() => {
     if (answer.answer) {

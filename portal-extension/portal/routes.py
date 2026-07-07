@@ -44,6 +44,7 @@ from portal.gateway import (
     precreate_agent_session_via_ragflow,
     precreate_session_via_ragflow,
     proxy_bot_json_to_ragflow,
+    proxy_session_history_to_ragflow,
     proxy_sse_public_to_ragflow,
     proxy_sse_to_ragflow,
     rename_agent_session_via_ragflow,
@@ -898,6 +899,18 @@ async def proxy_agentbot_inputs(agent_id: str, request: Request):
     return await proxy_bot_json_to_ragflow(request, agent_id, suffix="inputs", ragflow_type="agent")
 
 
+@router.get("/api/v1/chatbots/{dialog_id}/sessions/{session_id}")
+async def proxy_chatbot_session_history(dialog_id: str, session_id: str, request: Request):
+    """Chatbot session history 代理(Slice 24)— shared iframe 按 URL session_id 恢复历史。"""
+    return await proxy_session_history_to_ragflow(request, dialog_id, session_id, ragflow_type="chat")
+
+
+@router.get("/api/v1/agentbots/{agent_id}/sessions/{session_id}")
+async def proxy_agentbot_session_history(agent_id: str, session_id: str, request: Request):
+    """Agentbot session history 代理(Slice 24)— shared iframe 按 URL session_id 恢复历史。"""
+    return await proxy_session_history_to_ragflow(request, agent_id, session_id, ragflow_type="agent")
+
+
 # ---------------------------------------------------------------------------
 # Slice 16:widget 独立 HTML 页面端点
 # ---------------------------------------------------------------------------
@@ -1509,13 +1522,15 @@ async def admin_get_session(
         share_page_id=owner.share_page_id,
     )
     settings = request.app.state.settings
+    share_page = request.app.state.seed.get_share_page(owner.share_page_id)
+    ragflow_type = share_page.ragflow_type if share_page is not None else "chat"
     history = await _invoke_upstream(
-        lambda: fetch_session_history_via_ragflow(settings, owner.ragflow_resource_id, session_id),
+        lambda: _fetch_session_history(settings, owner.ragflow_resource_id, session_id, ragflow_type),
         "取回会话失败",
     )
     # 同步 message_count(TD2 + TD8:聚到 sync_message_count_from_history)
     await session_store.sync_message_count_from_history(
-        settings, owner.ragflow_resource_id, session_id, history=history
+        settings, owner.ragflow_resource_id, session_id, ragflow_type, history=history
     )
     # 合并元数据与正文
     return {

@@ -414,10 +414,10 @@ class SessionStore(_StoreBase):
         return self._transact(_do)
 
     def increment_message_count(self, session_id: str, delta: int = 1) -> bool:
-        """Slice 23:SSE 流成功后消息数 +delta(每轮对话 +1,不依赖 GET history)。
+        """将会话消息数按 delta 增量更新。
 
-        根因:``_sync_message_count_after_sse`` 调 GET history 取 messages 长度同步 count,
-        但 RAGFlow 新建空 session 返回空历史 → count 仍 0。改为 SSE 流完成后直接 +1。
+        保留给需要增量语义的旧调用方;Slice 26 后 SSE 路径改用
+        ``sync_message_count_from_history`` 同步 RAGFlow history.messages 绝对长度。
         返回 True 表示 session 存在并已更新;False 表示 session 不存在(已绑定场景不会发生)。
         """
 
