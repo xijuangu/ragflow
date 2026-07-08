@@ -363,7 +363,7 @@ class SessionStore(_StoreBase):
                 ChatSessionOwnerModel.portal_user_id == portal_user_id,
                 ChatSessionOwnerModel.share_page_id == share_page_id,
                 ChatSessionOwnerModel.deleted_at.is_(None),
-            )
+            ).order_by(ChatSessionOwnerModel.last_active_at.desc())
             return [_session_owner_from_orm(r) for r in session.scalars(stmt)]
 
     def update_last_active(self, session_id: str) -> bool:
