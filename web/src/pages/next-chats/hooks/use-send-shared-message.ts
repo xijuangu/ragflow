@@ -7,7 +7,7 @@ import {
   useSendMessageWithSse,
 } from '@/hooks/logic-hooks';
 import { useFetchExternalChatInfo } from '@/hooks/use-chat-request';
-import { IMessage, Message } from '@/interfaces/database/chat';
+import { IMessage, IReference, Message } from '@/interfaces/database/chat';
 import { buildMessageListWithUuid } from '@/utils/chat';
 import request from '@/utils/next-request';
 import { get } from 'lodash';
@@ -21,6 +21,7 @@ const isCompletionError = (res: any) =>
 
 interface SharedSessionHistory {
   messages?: Message[];
+  reference?: IReference[];
 }
 
 export const buildSharedSessionHistoryUrl = (
@@ -97,6 +98,9 @@ export const useSendSharedMessage = () => {
     setDerivedMessages,
   } = useSelectDerivedMessages();
   const [hasError, setHasError] = useState(false);
+  const [conversationReference, setConversationReference] = useState<
+    IReference[]
+  >([]);
 
   const sendMessage = useCallback(
     async (
@@ -145,6 +149,7 @@ export const useSendSharedMessage = () => {
   );
 
   const fetchSessionId = useCallback(async () => {
+    setConversationReference([]);
     const payload = { question: '' };
     const ret = await send(completionUrl, { ...payload, ...data });
     if (isCompletionError(ret)) {
@@ -166,6 +171,7 @@ export const useSendSharedMessage = () => {
         return;
       }
       setDerivedMessages(buildSharedSessionMessages(ret.data.data, sessionId));
+      setConversationReference(ret.data.data.reference ?? []);
     } catch (error: any) {
       message.error(error?.response?.data?.message ?? 'Unknown error');
       setHasError(true);
@@ -222,6 +228,7 @@ export const useSendSharedMessage = () => {
     sendLoading: !done,
     loading: false,
     derivedMessages,
+    conversationReference,
     hasError,
     stopOutputMessage,
     scrollRef,
