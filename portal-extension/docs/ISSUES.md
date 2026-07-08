@@ -1738,6 +1738,29 @@ None - can start immediately(后端 routes.py 1 处 + 前端 GroupsAdminPage.tsx
 
 **验收状态:代码层通过(2026-07-08)— 部署后需 E2E 浏览器验收确认 admin SPA 全部页面加载正常**
 
+### 补充:部署后 E2E 验收发现的真正根因(2026-07-08)
+
+部署 Slice 43 后,用户报告 admin 后台"全部失败",且 flaky("来回点来回成功失败")。diagnosing-bugs 流程定位真正根因(与 member_count/members 无关,那是另一个已修的 bug):
+
+**真正根因:浏览器 HTTP 缓存污染 API fetch。**
+
+- 后端 `app.mount("/", StaticFiles(directory=dist, html=True))`(main.py:152)对导航请求(`Accept: text/html`)返回 SPA `index.html`(200 text/html),且**响应无 `Cache-Control` / `Vary: Accept` 头**。
+- API URL(`/portal/admin/users` 等)与 SPA 路由 URL 重叠(前端 `API_BASE='/portal'`,client.ts:191)。
+- 用户访问/刷新 `/portal/admin/users`(导航)→ 浏览器缓存该 URL 的 HTML 响应。
+- 之后 `useAdminList` fetch 同 URL → **命中缓存返回 HTML** → `JSON.parse(html)` 抛 SyntaxError → catch → `setError("加载X失败")` → 显示 alert-error。
+- flaky = 缓存有时命中(HTML→失败)有时不命中(直连后端 JSON→成功),取决于浏览器缓存淘汰/验证策略。
+
+**诊断铁证**(diagnosing-bugs Phase 1 red-capable 循环):
+- Playwright 快速切换 40 次:修复前 33/40 显示 alert-error "加载X失败";`request` 加 `cache: 'no-store'` 后 0/40 失败。
+- `page.evaluate(fetch('/portal/admin/users', {cache:'no-store'}))` → 200 application/json(合法 JSON);默认 fetch → 200 text/html(index.html)。
+- `curl -H "Accept: text/html" /portal/admin/users` → 200 text/html;`curl -H "Accept: */*"` → JSON(后端 API 响应)。证明后端根据 Accept 返回不同内容,且 HTML 响应无缓存控制头。
+
+**修复**:前端 `request` 函数(client.ts:194-204)加 `cache: 'no-store'`,强制每次 fetch 直连后端,绕过被导航 HTML 污染的缓存。
+
+**验证**:部署新 dist 后,Playwright 快速切换 40 次 + goto 12 次,**0 失败**(mainLen=210,有内容)。
+
+**遗留架构隐患(未在本 slice 修)**:API URL 与 SPA 路由 URL 重叠是设计缺陷。根治方案应让 API 走 `/portal/api/*` 前缀(CONTEXT.md §7 第 76 行本就标注 `API_BASE='/portal/api'`,但代码实际是 `/portal'`),需后端路由加 `/api` 前缀。本 slice 用 `cache: 'no-store'` 作最小修复,根治留待后续 slice。
+
 ---
 
 ## 后续待办(Issue 16 AC2 遗留)
