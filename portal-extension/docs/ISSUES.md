@@ -1483,6 +1483,124 @@ None - can start immediately(纯 RAGFlow web 前端改动,无 portal 侧改动,�
 
 ---
 
+## Issue 37 — Slice 37: 新建会话时清除旧会话高亮(portal 前端)
+
+### Parent
+
+无(Slice 34/36 验收时发现:点击进入一个会话后左侧列表该项高亮,再点「新建会话」进入新会话页,旧高亮仍未取消)。
+
+### 根因(代码调查确认)
+
+`SharePageDetailPage.tsx` 的 `handleNewSession` 在 fullscreen 分支(约第 180-188 行)只重载了 iframe(`setIframeUrl` + `setIframeNonce`),**没有调用 `setActiveSessionId(null)`** 清除当前高亮。对比:`handleReopen` 第 136 行会 `setActiveSessionId(sessionId)` 设置高亮;widget 分支第 173 行也设了 `res.session_id`。唯独 fullscreen 新建会话漏了清除动作,导致旧会话高亮残留。
+
+fullscreen 类型新建会话时不 precreate session(网关在 SSE 时绑定 session_id,轮询刷新列表),所以新建瞬间新 session_id 未知,正确行为是清除高亮(无高亮),待用户首次提问后新 session 由轮询加入列表。
+
+### What to build
+
+在 `handleNewSession` 的 fullscreen 分支(else 分支)重载 iframe 前,调用 `setActiveSessionId(null)` 清除旧会话高亮。改动范围:1 行代码。
+
+### Acceptance criteria
+
+- [ ] 点击进入会话 A → A 高亮 → 点击「新建会话」→ A 的高亮立即消失(无高亮项)
+- [ ] 新会话页加载后(iframe 重载)无任何会话项高亮
+- [ ] 在新会话首次提问后,新 session 经轮询出现在列表(可暂不高亮,因 session_id 未与 iframe 同步)
+- [ ] widget 类型新建会话高亮行为不变(仍高亮 res.session_id)
+- [ ] 既有 portal Vitest 全绿(无回归)
+
+### Blocked by
+
+None - can start immediately(1 行前端改动,无后端依赖)
+
+---
+
+## Issue 38 — Slice 38: 消除页面级滚动条,菜单栏固定不滚动(portal 前端 CSS)
+
+### Parent
+
+无(Slice 34/36 验收时发现:整个分享页详情页出现一个页面级滚动条,滚动时顶部菜单栏 AppHeader 也被滚走;窗口越小越明显)。
+
+### 根因(CSS 调查确认)
+
+`frontend/src/styles.css` 布局层扣减量与溢出控制不一致,导致内容总高超过视口产生页面级滚动:
+
+1. `.app-layout`(第 36-40 行)用 `min-height: 100vh`(非 `height: 100vh`),内容溢出时撑高整个布局而非被截断
+2. `.detail-grid`(第 277-283 行)高度硬编码 `height: calc(100vh - 160px)`,但实际扣减应为 header(~48px)+ app-main padding(48px)+ back-link(~33px)+ page-title(~45px)≈ 174px,160px 不足 → 内容溢出约 14px+
+3. `.app-header`(第 42-49 行)非 sticky/fixed,页面滚动时被滚走
+
+**根因**:`.app-layout` 的 `min-height` + `.detail-grid` 的硬编码 `calc` 扣减不足 + header 非固定,三者叠加。这是典型的「用 calc 硬算高度」而非「用 flex 自适应剩余空间」的布局陷阱。
+
+### What to build
+
+改用 flex 自适应布局,让 `.detail-grid` 自动填满 `.app-main` 的剩余空间,而非用 `calc(100vh - 160px)` 硬算:
+
+1. `.app-layout`:改为 `height: 100vh; overflow: hidden`(防止页面级滚动)
+2. `.app-header`:加 `flex-shrink: 0`(不被压缩,配合 app-layout 的 height: 100vh 实现固定)
+3. `.app-main`:改为 `display: flex; flex-direction: column; overflow: hidden`(内部纵向布局,自身不滚动)
+4. `.detail-grid`:去掉 `height: calc(100vh - 160px)`,改为 `flex: 1; min-height: 0`(自适应 app-main 剩余空间,配合内部 sidebar/iframe 各自滚动)
+
+可选:同时去掉 `.iframe-container` 的 `height: calc(100vh - 64px)`(第 245 行,已被 `.detail-grid .iframe-container { height: 100% }` 覆盖,但保留 calc 易误导)。
+
+### Acceptance criteria
+
+- [ ] 窗口缩小到合理尺寸(如 800x600)时,整个页面不出现页面级滚动条
+- [ ] 顶部菜单栏 AppHeader 始终固定可见,不随内容滚动
+- [ ] 会话列表超出时在 sidebar 内部滚动(Slice 31 既有行为不回归)
+- [ ] iframe 区域超出时在 iframe 容器内部滚动,不撑破布局
+- [ ] 返回列表链接 + 页面标题始终可见(不被滚走)
+- [ ] 既有 portal Vitest 全绿(无回归)
+
+### Blocked by
+
+None - can start immediately(纯 CSS 改动,无逻辑改动)
+
+---
+
+## Issue 39 — Slice 39: 修复 SSE 流式输出时输入框抖动(RAGFlow web 前端)
+
+### Parent
+
+无(Slice 34/36 验收时发现:AI 流式输出回复期间,底部输入框抽搐抖动)。
+
+### 根因(代码调查确认)
+
+RAGFlow web 分享页消息容器缺少 `min-h-0`,是经典 flexbox 溢出陷阱。对比普通聊天页正确,分享页错误:
+
+1. **`share/index.tsx` 第 61-65 行**:消息容器 `flex flex-1 flex-col overflow-auto scrollbar-auto` **缺 `min-h-0`**
+2. **对比 `single-chat-box.tsx` 第 92 行**:同位置有 `p-5 flex-1 overflow-auto min-h-0 scrollbar-auto`(正确)
+3. `agent/share/index.tsx` 第 128 行同样缺失 `min-h-0`(相同问题)
+
+**机制**:flex 子项默认 `min-height: auto`(内容固有高度)。SSE 流式输出时每个 chunk 更新 `derivedMessages` → 消息内容增长 → 容器被内容撑大(而非触发 `overflow-auto` 滚动)→ 向下挤压底部输入区 → 浏览器重算布局时输入区弹回 → 形成「下推-弹回」抖动循环。普通聊天页有 `min-h-0` 约束容器高度,内容超出时正确滚动,输入区位置稳定,故不抖动。
+
+**加剧因素(可选优化,非主因)**:
+- `logic-hooks.ts` 第 419-429 行 `useScrollToBottom` 在每个 chunk 调度 `rAF + setTimeout(100ms) + scrollToBottom`,chunk 频率快于 100ms 时堆积大量 pending 定时器
+- `message-input/next.tsx` 第 225 行 `autoSize` 是 inline 对象字面量,每次渲染新引用 → `textarea.tsx` 的 `adjustHeight` effect 每次重建并执行 layout thrashing
+- `utils.ts` 第 47 行 `buildMessageItemReference` 在无 reference 时返回新 `{}` 对象,破坏 `MessageItem.memo`,导致所有消息项在每个 chunk 重渲染
+
+### What to build
+
+**核心修复(必须)**:为分享页消息容器添加 `min-h-0`:
+- `ragflow/web/src/pages/next-chats/share/index.tsx` 第 63 行 className 末尾加 `min-h-0`
+- `ragflow/web/src/pages/agent/share/index.tsx` 第 128 行 className 末尾加 `min-h-0`(同问题)
+
+**可选优化(建议,提升流畅度)**:
+- `ragflow/web/src/hooks/logic-hooks.ts` 第 419-429 行:用 `useRef` 标记 pending 滚动,避免重复调度 `scrollToBottom`
+- `ragflow/web/src/components/message-input/next.tsx` 第 225 行:把 `autoSize={{ minRows: 2, maxRows: 8 }}` 提取为模块级常量,稳定引用
+- `ragflow/web/src/pages/next-chats/utils.ts` 第 47 行:把空引用返回值提取为模块级常量 `EMPTY_REFERENCE`,让 `MessageItem.memo` 正确跳过未变化项
+
+### Acceptance criteria
+
+- [ ] SSE 流式输出期间,底部输入框不抖动(位置稳定)
+- [ ] 消息区内容增长时正常滚动到底部(滚动行为不回归)
+- [ ] 普通聊天页(single-chat-box)行为不回归
+- [ ] agent 分享页同步修复(加 `min-h-0`)
+- [ ] RAGFlow web `npm run build` 通过
+
+### Blocked by
+
+None - can start immediately(纯 RAGFlow web 前端改动,无 portal 侧改动,无后端改动)
+
+---
+
 ## 后续待办(Issue 16 AC2 遗留)
 
 > Issue 16 AC2「悬浮组件在任意页面右下角加载,点击展开对话窗,能正常对话」— Slice 16 实现了 `/widget/<id>` 骨架 HTML + 可嵌入 snippet + CSP frame-ancestors 放行,但 **悬浮组件实际 UI 渲染(右下角悬浮按钮 + 点击展开对话窗 + iframe 加载 + SSE 对话)尚未实现**。`/widget/<id>` 当前仅返回含 `<div id="widget-root">` 的占位 HTML,需前端构建产物挂载 React 组件。
