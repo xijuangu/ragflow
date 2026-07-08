@@ -1688,6 +1688,56 @@ None - can start immediately(纯 portal 后端改动,无前端改动,无 RAGFlow
 
 ---
 
+## Issue 43 — Slice 43: 修复创建用户组后管理后台渲染崩溃(admin_create_group 返回缺字段)
+
+### Parent
+
+无(2026-07-08 验收 Slice 37/38 后,用户创建用户组发现管理后台全部页面报「加载失败」)。
+
+> 编号说明:Issue 41/42 预留给 Slice 39/40 验收失败的后续(SSE 输入框抖动重新调查 / 标题自动命名根因重新调查),本 issue 编号为 43。
+
+### 根因(代码调查 + 服务器日志确认)
+
+后端 `admin_create_group`(routes.py 第 1093-1102 行)创建用户组后,用 `_group_to_dict`(routes.py 第 150-158 行)序列化返回对象,该函数只返回 4 个字段(`id`/`name`/`created_at`/`org_id`),**不含 `member_count` 和 `members`**。
+
+对比 `admin_list_groups`(routes.py 第 1105-1125 行)在列表响应中**手动补了**这两个字段(`d["member_count"] = len(members)` / `d["members"] = list(members)`)。
+
+前端 `AdminGroup` interface(client.ts 第 87-93 行)**要求** `member_count: number` 和 `members: string[]`,`GroupsAdminPage.tsx` 第 65 行 `handleCreate` 把 POST 响应直接 append 到 `groups` state,渲染时:
+- 第 185 行 `{g.member_count} 成员` → 新组显示 `undefined 成员`
+- 第 190 行 `g.members.length === 0` → `g.members` 为 undefined,`.length` 抛 TypeError
+- 第 194 行 `g.members.map(...)` → 同样抛 TypeError
+
+React render 阶段抛错导致整个 `GroupsAdminPage` 组件树崩溃,用户感知为「加载用户组失败」;由于 admin SPA 侧边栏导航在崩溃后无法正常切换,进一步被感知为「用户管理/授权/会话搜索/审计日志全部加载失败」。
+
+**服务器 portal.log 确认**:创建组后所有 admin GET 端点均返回 200,无 5xx 错误,排除后端 API 层失败。
+
+**测试盲区**:`test_slice4_e2e.py` 第 139-145 行 `test_admin_create_group_returns_details` 只断言 `name`/`id`/`created_at`,不断言 `member_count`/`members`,故此 bug 长期潜伏。
+
+### What to build
+
+三层修复(同一根因,后端根治 + 前端兜底 + 测试补强):
+
+1. **后端根治**:让 `admin_create_group` 返回与 `admin_list_groups` 完全一致的字段(补 `member_count: 0` 和 `members: []`)。建议抽 `_group_to_dict_with_members(group, seed)` helper 复用,避免 `admin_list_groups` 与 `admin_create_group` 重复补字段的代码。
+
+2. **前端兜底**:`GroupsAdminPage.tsx` `handleCreate` 对返回对象补默认值(`member_count ?? 0`、`members ?? []`),防御未来后端再漏字段不会导致渲染崩溃。
+
+3. **测试补强**:`test_slice4_e2e.py` `test_admin_create_group_returns_details` 补断言 `body["member_count"] == 0` 和 `body["members"] == []`,防止后端再次漏字段回归。
+
+### Acceptance criteria
+
+- [ ] 创建用户组后,用户组页正常显示新组(显示「0 成员」,不崩溃不白屏)
+- [ ] 创建用户组后,用户管理/授权/会话搜索/审计日志 4 个页面均可正常加载切换(不报「加载失败」)
+- [ ] 后端 `POST /admin/groups` 响应 JSON 含 `member_count: 0` 和 `members: []`
+- [ ] `GroupsAdminPage.tsx` `handleCreate` 对 `member_count`/`members` 做了 `?? 默认值` 兜底
+- [ ] `test_slice4_e2e.py` 断言 `member_count == 0` 和 `members == []`
+- [ ] 既有 portal pytest 全绿(无回归)+ 既有前端 Vitest 全绿(无回归)
+
+### Blocked by
+
+None - can start immediately(后端 routes.py 1 处 + 前端 GroupsAdminPage.tsx 1 处 + 测试 1 处,改动小,无外部依赖)
+
+---
+
 ## 后续待办(Issue 16 AC2 遗留)
 
 > Issue 16 AC2「悬浮组件在任意页面右下角加载,点击展开对话窗,能正常对话」— Slice 16 实现了 `/widget/<id>` 骨架 HTML + 可嵌入 snippet + CSP frame-ancestors 放行,但 **悬浮组件实际 UI 渲染(右下角悬浮按钮 + 点击展开对话窗 + iframe 加载 + SSE 对话)尚未实现**。`/widget/<id>` 当前仅返回含 `<div id="widget-root">` 的占位 HTML,需前端构建产物挂载 React 组件。
