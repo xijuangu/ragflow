@@ -1601,6 +1601,59 @@ None - can start immediately(纯 RAGFlow web 前端改动,无 portal 侧改动,�
 
 ---
 
+## Issue 40 — Slice 40: 会话列表最新在上 + 标题用首问内容(portal 后端)
+
+### Parent
+
+无(Slice 34/36 验收时发现:① 新会话出现在列表底部而非顶部;② 会话标题默认「新会话」,无法区分,建议用用户首条消息作为标题)。
+
+### 根因(代码调查确认)
+
+两个问题根因都在 portal 后端会话元数据管理:
+
+**问题 1:列表排序**
+`portal/models.py` 的 `SessionStore.list_for_user`(第 355-367 行)查询时**没有 `order_by`**,SQL 默认顺序无保证(实际按插入顺序,旧在上)。对比:管理员 `list_all_sessions`(第 516 行)有 `rows.sort(key=lambda r: r.created_at, reverse=True)` 按创建时间倒序,但用户列表漏了。应按 `last_active_at` 倒序(最近活跃在最上),符合用户「最新会话在最上面」的直觉。
+
+**问题 2:标题默认「新会话」**
+`portal/models.py` 的 `SessionStore.bind`(第 307-330 行)默认 `title=title or "新会话"`。网关在 SSE 成功后(`gateway.py` 第 879-892 行)首次 bind session 时,只传 `session_id`/`share_page_id`/`portal_user_id`/`ragflow_resource_id`/`org_id`,**没传 title**,故走默认「新会话」。SSE 成功后也只调 `update_last_active` + `sync_message_count_from_history`,**没有用首问 `request_question` 更新 title**。
+
+对比:用户手动重命名(Slice 5)走 `rename_session_via_ragflow` 同步更新 portal title + RAGFlow `API4Conversation.name`。自动命名应复用此逻辑,保持两侧一致(避免「portal 显示首问,RAGFlow 仍是新会话」的割裂)。
+
+### What to build
+
+**修复 1:列表排序**
+`SessionStore.list_for_user` 的 `select` 语句加 `.order_by(ChatSessionOwnerModel.last_active_at.desc())`,最近活跃的会话排在最前。用 `last_active_at` 而非 `created_at`:用户在旧会话继续提问时,该会话应浮到顶部(符合「最近使用」直觉)。
+
+**修复 2:首问作为标题(双侧同步)**
+在 `gateway.py` 的 SSE 成功后处理(第 879-892 行 `if target_session_id and not is_greeting:` 分支),首次 bind session 后,用首问内容(`request_question`)更新标题:
+1. 截断首问(前 50 字符,避免过长)作为新 title
+2. 调 `session_store.rename(target_session_id, new_title)` 更新 portal 侧 title
+3. 调 `rename_session_via_ragflow(settings, dialog_id, target_session_id, new_title, ragflow_type)` 同步 RAGFlow 侧 `API4Conversation.name`
+4. RAGFlow 失败时:portal 侧已改,记 warning 日志(降级,不阻断已成功的 SSE 流;与 Slice 5 手动重命名「RAGFlow 失败抛 502」不同——此处 SSE 已成功,不应因 title 同步失败而让用户看到错误)
+
+**边界情况**:
+- 首问为空(is_greeting=True):不 bind、不改 title(已有逻辑)
+- 首问超 50 字符:截断 + 省略号(如「请问关于xxx的...」)
+- 首问含换行:取首行 + 省略号
+- session 已存在(非首次 bind):不改 title(用户可能已手动重命名,不覆盖)
+
+### Acceptance criteria
+
+- [ ] 新会话(首次提问后)出现在列表最上方,旧会话依次在下
+- [ ] 在旧会话继续提问后,该会话浮到列表最上方(last_active_at 更新即重排)
+- [ ] 新会话标题为用户首条消息内容(截断到 50 字符,含换行取首行)
+- [ ] portal title 与 RAGFlow `API4Conversation.name` 一致(双侧同步)
+- [ ] 用户手动重命名后,再次提问不覆盖手动命名的 title(只首次 bind 时自动命名)
+- [ ] greeting 请求(空首问)不触发自动命名
+- [ ] RAGFlow name 同步失败时,portal 侧 title 仍更新,日志记录 warning(不阻断 SSE)
+- [ ] 既有 portal pytest 全绿(无回归)+ 新增排序/命名测试通过
+
+### Blocked by
+
+None - can start immediately(纯 portal 后端改动,无前端改动,无 RAGFlow 侧代码改动,复用既有 rename_session_via_ragflow)
+
+---
+
 ## 后续待办(Issue 16 AC2 遗留)
 
 > Issue 16 AC2「悬浮组件在任意页面右下角加载,点击展开对话窗,能正常对话」— Slice 16 实现了 `/widget/<id>` 骨架 HTML + 可嵌入 snippet + CSP frame-ancestors 放行,但 **悬浮组件实际 UI 渲染(右下角悬浮按钮 + 点击展开对话窗 + iframe 加载 + SSE 对话)尚未实现**。`/widget/<id>` 当前仅返回含 `<div id="widget-root">` 的占位 HTML,需前端构建产物挂载 React 组件。
