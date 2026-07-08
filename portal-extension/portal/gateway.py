@@ -801,6 +801,19 @@ async def _proxy_sse_public_core(
     )
 
 
+def _derive_title_from_question(question: str | None, max_len: int = 50) -> str:
+    """Slice 40:从首问派生会话标题 — 取首行,截断到 max_len 字符,超长加省略号。
+
+    空字符串/None → 返回空(调用方判断为空则跳过 rename)。
+    """
+    if not question:
+        return ""
+    first_line = question.split("\n", 1)[0].strip()
+    if len(first_line) <= max_len:
+        return first_line
+    return first_line[:max_len] + "..."
+
+
 def _build_sse_streaming_response(
     settings,
     body: bytes,
@@ -888,6 +901,22 @@ def _build_sse_streaming_response(
                         )
                         if pending_greeting_session_ids is not None:
                             pending_greeting_session_ids.discard(target_session_id)
+                        # Slice 40:首次 bind 后用首问内容作为标题(双侧同步)。
+                        # 只在首次 bind 分支内执行 — 已存在 session 走 else 不改 title
+                        # (保护用户手动重命名)。RAGFlow 失败只 warning,不抛 502
+                        # (SSE 已成功,不应因 title 同步失败让用户看到错误)。
+                        new_title = _derive_title_from_question(request_question)
+                        if new_title:
+                            try:
+                                session_store.rename(target_session_id, new_title)
+                                await rename_session_via_ragflow(
+                                    settings, dialog_id, target_session_id, new_title, ragflow_type
+                                )
+                            except Exception as exc:  # noqa: BLE001 - SSE 已成功,title 同步降级
+                                logger.warning(
+                                    "failed to sync session title after SSE: session_id=%s title=%s error=%s",
+                                    target_session_id, new_title, exc,
+                                )
                     else:
                         session_store.update_last_active(target_session_id)
                 # Slice 26:message_count 表示 RAGFlow history.messages 条数,不再表示问答轮次。
