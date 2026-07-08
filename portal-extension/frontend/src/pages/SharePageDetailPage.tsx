@@ -182,6 +182,7 @@ export default function SharePageDetailPage() {
         // 让 RAGFlow 前端走 fetchSessionId 创建新 session + greeting。
         const res = await api.getEmbedUrl(id);
         if (res.iframe_url) {
+          setActiveSessionId(null);
           setIframeUrl(res.iframe_url);
           setIframeNonce((n) => n + 1);
         }
