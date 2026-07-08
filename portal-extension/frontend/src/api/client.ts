@@ -194,11 +194,6 @@ const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined)
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     credentials: 'include',
-    // cache: 'no-store' — API URL(/portal/admin/users 等)与 SPA 路由 URL 重叠,
-    // 首次导航(Accept: text/html)会让后端 StaticFiles(html=True)返回 index.html
-    // 并被浏览器缓存;之后 API fetch 同 URL 会命中缓存返回 HTML,JSON.parse 抛错
-    // → 显示"加载失败"。no-store 强制每次直连后端,绕过缓存(诊断见 commit)。
-    cache: 'no-store',
     headers: { 'Content-Type': 'application/json' },
     ...options,
   });

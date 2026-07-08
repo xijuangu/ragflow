@@ -30,6 +30,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
 from portal.config import load_settings
@@ -40,6 +41,29 @@ from portal.routes import router
 from portal.tasks import _retry_delete_loop
 
 logger = logging.getLogger(__name__)
+
+
+class NoCacheHtmlMiddleware(BaseHTTPMiddleware):
+    """Slice 44:给 text/html 响应加 ``no-store`` + ``Vary: Accept`` 头。
+
+    根因(Slice 43 诊断):StaticFiles(html=True) 对浏览器导航请求(Accept: text/html)
+    返回 SPA ``index.html``(200 text/html)且响应**无 Cache-Control / Vary 头**。
+    API URL(如 ``/portal/admin/users``)与 SPA 路由 URL 重叠,用户访问/刷新该 URL
+    (导航)→ 浏览器缓存 HTML → 之后 API fetch 同 URL 命中缓存返回 HTML
+    → ``JSON.parse(html)`` 抛错 → admin 后台 flaky "加载失败"。
+
+    本中间件从后端层面禁止缓存任何 text/html 导航响应(``no-store`` 让浏览器
+    每次直连后端),并加 ``Vary: Accept`` 区分导航(API fetch 的 Accept 是 ``*/*``
+    不含 text/html,不会命中 HTML 缓存条目)。JSON API 响应不受影响。
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        ct = response.headers.get("content-type", "")
+        if "text/html" in ct:
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+            response.headers["Vary"] = "Accept"
+        return response
 
 
 def _create_engine_from_url(db_url: str):
@@ -146,6 +170,11 @@ def create_app() -> FastAPI:
     # Slice 15:公开分享页 IP 限流器(内存滑动窗口,每 IP 每分钟 N 次)
     app.state.rate_limiter = IPRateLimiter(settings.public_rate_limit_per_min)
     app.include_router(router)
+    # Slice 44:给所有 text/html 响应加 no-store + Vary: Accept,从后端层面根治
+    # 浏览器缓存导航 HTML 污染同 URL API fetch 的问题(根因见 NoCacheHtmlMiddleware 文档)。
+    # 注册在 include_router 之后、StaticFiles mount 之前(中间件对整个 app 生效,
+    # 顺序不影响功能,此处就近 router 注册放置)。JSON API 响应不受影响。
+    app.add_middleware(NoCacheHtmlMiddleware)
     # Slice 9:静态托管前端 SPA(放在路由注册之后,html=True 兜底 SPA 路由)。
     # 只有 frontend/dist 存在时才挂载(开发时 Vite dev server 不需要此挂载)。
     if _frontend_dist.is_dir():
