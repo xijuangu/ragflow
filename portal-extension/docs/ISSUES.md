@@ -1501,15 +1501,17 @@ fullscreen 类型新建会话时不 precreate session(网关在 SSE 时绑定 se
 
 ### Acceptance criteria
 
-- [ ] 点击进入会话 A → A 高亮 → 点击「新建会话」→ A 的高亮立即消失(无高亮项)
-- [ ] 新会话页加载后(iframe 重载)无任何会话项高亮
-- [ ] 在新会话首次提问后,新 session 经轮询出现在列表(可暂不高亮,因 session_id 未与 iframe 同步)
-- [ ] widget 类型新建会话高亮行为不变(仍高亮 res.session_id)
-- [ ] 既有 portal Vitest 全绿(无回归)
+- [x] 点击进入会话 A → A 高亮 → 点击「新建会话」→ A 的高亮立即消失(无高亮项)(2026-07-08 验收通过)
+- [x] 新会话页加载后(iframe 重载)无任何会话项高亮(2026-07-08 验收通过)
+- [x] 在新会话首次提问后,新 session 经轮询出现在列表(可暂不高亮,因 session_id 未与 iframe 同步)(2026-07-08 验收通过)
+- [x] widget 类型新建会话高亮行为不变(仍高亮 res.session_id)(2026-07-08 验收通过)
+- [x] 既有 portal Vitest 全绿(无回归)(76 passed)
 
 ### Blocked by
 
 None - can start immediately(1 行前端改动,无后端依赖)
+
+**验收状态:通过(2026-07-08)**
 
 ---
 
@@ -1542,16 +1544,18 @@ None - can start immediately(1 行前端改动,无后端依赖)
 
 ### Acceptance criteria
 
-- [ ] 窗口缩小到合理尺寸(如 800x600)时,整个页面不出现页面级滚动条
-- [ ] 顶部菜单栏 AppHeader 始终固定可见,不随内容滚动
-- [ ] 会话列表超出时在 sidebar 内部滚动(Slice 31 既有行为不回归)
-- [ ] iframe 区域超出时在 iframe 容器内部滚动,不撑破布局
-- [ ] 返回列表链接 + 页面标题始终可见(不被滚走)
-- [ ] 既有 portal Vitest 全绿(无回归)
+- [x] 窗口缩小到合理尺寸(如 800x600)时,整个页面不出现页面级滚动条(2026-07-08 验收通过)
+- [x] 顶部菜单栏 AppHeader 始终固定可见,不随内容滚动(2026-07-08 验收通过)
+- [x] 会话列表超出时在 sidebar 内部滚动(Slice 31 既有行为不回归)(2026-07-08 验收通过)
+- [x] iframe 区域超出时在 iframe 容器内部滚动,不撑破布局(2026-07-08 验收通过)
+- [x] 返回列表链接 + 页面标题始终可见(不被滚走)(2026-07-08 验收通过)
+- [x] 既有 portal Vitest 全绿(无回归)(76 passed)
 
 ### Blocked by
 
 None - can start immediately(纯 CSS 改动,无逻辑改动)
+
+**验收状态:通过(2026-07-08)**
 
 ---
 
@@ -1589,15 +1593,29 @@ RAGFlow web 分享页消息容器缺少 `min-h-0`,是经典 flexbox 溢出陷阱
 
 ### Acceptance criteria
 
-- [ ] SSE 流式输出期间,底部输入框不抖动(位置稳定)
-- [ ] 消息区内容增长时正常滚动到底部(滚动行为不回归)
-- [ ] 普通聊天页(single-chat-box)行为不回归
-- [ ] agent 分享页同步修复(加 `min-h-0`)
-- [ ] RAGFlow web `npm run build` 通过
+- [ ] SSE 流式输出期间,底部输入框不抖动(位置稳定)— **2026-07-08 验收失败:加 `min-h-0` 后仍抽搐,根因判断有误或存在其他加剧因素(见下方验收记录)**
+- [x] 消息区内容增长时正常滚动到底部(滚动行为不回归)
+- [x] 普通聊天页(single-chat-box)行为不回归
+- [x] agent 分享页同步修复(加 `min-h-0`)
+- [x] RAGFlow web `npm run build` 通过
 
 ### Blocked by
 
 None - can start immediately(纯 RAGFlow web 前端改动,无 portal 侧改动,无后端改动)
+
+**验收状态:失败(2026-07-08)— `min-h-0` 核心修复未消除抖动**
+
+### 验收记录(2026-07-08)
+
+部署 `share/index.tsx` + `agent/share/index.tsx` 加 `min-h-0` 后浏览器 E2E 验证,SSE 流式输出期间输入框**仍然抽搐抖动**。说明 `min-h-0` 缺失非唯一根因(或非根因),Issue 39 的根因分析不完整。
+
+**待排查方向**(原 issue「加剧因素」可能实际是主因):
+1. `logic-hooks.ts` `useScrollToBottom` 在每个 chunk 调度 `rAF + setTimeout(100ms) + scrollToBottom`,chunk 频率快于 100ms 时堆积大量 pending 定时器形成「惊群」滚动
+2. `message-input/next.tsx` 的 `autoSize` inline 对象导致 `textarea.tsx` 的 `adjustHeight` effect 每次重建并执行 layout thrashing(`height='auto'` 写 → rAF 读 `scrollHeight` 强制布局 → 写回高度)
+3. `utils.ts` `buildMessageItemReference` 返回新空对象破坏 `MessageItem.memo`,所有消息项在每个 chunk 重渲染
+4. 需要浏览器 DevTools Performance 录制确认实际瓶颈(布局抖动 vs 定时器堆积 vs 重渲染)
+
+**下一步**:新建 Slice 41 重新调查根因(需浏览器 Performance trace),本 issue 不关闭。
 
 ---
 
@@ -1639,18 +1657,34 @@ None - can start immediately(纯 RAGFlow web 前端改动,无 portal 侧改动,�
 
 ### Acceptance criteria
 
-- [ ] 新会话(首次提问后)出现在列表最上方,旧会话依次在下
-- [ ] 在旧会话继续提问后,该会话浮到列表最上方(last_active_at 更新即重排)
-- [ ] 新会话标题为用户首条消息内容(截断到 50 字符,含换行取首行)
-- [ ] portal title 与 RAGFlow `API4Conversation.name` 一致(双侧同步)
-- [ ] 用户手动重命名后,再次提问不覆盖手动命名的 title(只首次 bind 时自动命名)
-- [ ] greeting 请求(空首问)不触发自动命名
-- [ ] RAGFlow name 同步失败时,portal 侧 title 仍更新,日志记录 warning(不阻断 SSE)
-- [ ] 既有 portal pytest 全绿(无回归)+ 新增排序/命名测试通过
+- [x] 新会话(首次提问后)出现在列表最上方,旧会话依次在下(2026-07-08 验收通过)
+- [x] 在旧会话继续提问后,该会话浮到列表最上方(last_active_at 更新即重排)(2026-07-08 验收通过)
+- [ ] 新会话标题为用户首条消息内容(截断到 50 字符,含换行取首行)— **2026-07-08 验收失败:标题仍为「law-test-01」(RAGFlow dialog name),非首问内容(见下方验收记录)**
+- [ ] portal title 与 RAGFlow `API4Conversation.name` 一致(双侧同步)— **2026-07-08 验收失败:标题未更新为首问,待排查**
+- [ ] 用户手动重命名后,再次提问不覆盖手动命名的 title(只首次 bind 时自动命名)— 未测(因 AC3 失败,跳过)
+- [ ] greeting 请求(空首问)不触发自动命名 — 未测
+- [ ] RAGFlow name 同步失败时,portal 侧 title 仍更新,日志记录 warning(不阻断 SSE)— 未测
+- [x] 既有 portal pytest 全绿(无回归)+ 新增排序/命名测试通过(415 passed, 5 skipped)
 
 ### Blocked by
 
 None - can start immediately(纯 portal 后端改动,无前端改动,无 RAGFlow 侧代码改动,复用既有 rename_session_via_ragflow)
+
+**验收状态:部分通过(2026-07-08)— 排序修复通过,标题自动命名失败**
+
+### 验收记录(2026-07-08)
+
+**排序修复(修复 1)通过**:`list_for_user` 加 `order_by(last_active_at.desc())` 后,新会话出现在列表最上方,旧会话提问后浮顶,行为符合预期。
+
+**标题自动命名(修复 2)失败**:新会话标题仍为「law-test-01」,而非首问内容。「law-test-01」是 RAGFlow `dialog` 表中该知识库的 `name`(DB 查询确认:`SELECT id,name FROM dialog` 返回 `('b4f88272768011f1a3bdc51e5c67581c','law-test-01')`)。
+
+**待排查方向**:
+1. portal 前端 `SharePageDetailPage.tsx` 会话列表项显示的 title 可能来自 RAGFlow 侧(经 `/sessions` 端点拉取的 `API4Conversation.name`)而非 portal `ChatSessionOwnerModel.title`——若 RAGFlow 侧 name 未被更新,前端显示的仍是 law-test-01
+2. `gateway.py` 的 `rename_session_via_ragflow` 调用可能未生效(PATCH 请求 404/500,但 warning 日志被忽略)——需查 portal.log 确认是否有 warning
+3. `gateway.py` 首次 bind 分支可能未进入(session 已被之前的某次请求 bind 过,走 else 分支不改 title)——需查 portal.db `chat_session_owner.title` 字段确认 portal 侧 title 是否更新
+4. RAGFlow `API4Conversation.name` 可能在 session 创建时默认继承 dialog name,而 portal 的 rename PATCH 请求被 RAGFlow 拒绝(如端点不存在或参数不对)
+
+**下一步**:新建 Slice 42 重新调查标题命名根因(需查 portal.log + portal.db + RAGFlow API4Conversation 表),本 issue 不关闭。
 
 ---
 
