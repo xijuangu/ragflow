@@ -165,6 +165,7 @@ portal 网关 `_ragflow_bot_segment` 用于 completions(agent → "agentbots"),s
 - `start.sh` 用 `exec` 不自动 pkill 旧进程,必须手动 pkill 再 start(Slice 27 部署时踩坑;**Slice 35 已修复**:start.sh 内置 pgrep 自动清理)
 - `pkill -f "uvicorn portal.main:app"` 会误伤 ssh 会话本身(ssh 命令行含该字符串被匹配),导致 ssh 退出码 255;用 `pgrep -f` 精确匹配 PID 后 kill 可避免(**Slice 35 已实施**,start.sh + deploy.sh 固化)
 - **pkill + nohup 不能放在同一条 ssh 命令中**:pkill 杀掉 ssh 后 `nohup start.sh` 不会执行,portal 进程不启动 → 502。必须分两条 ssh 命令(§9.1)。Slice 40 部署踩坑两次(**Slice 35 deploy.sh 已固化流程**)
+- **ssh 远程执行 nohup 后台命令挂起**(uvicorn 长期进程):纯 `setsid`/`nohup & disown` 在 uvicorn 上仍挂起 —— ssh 远端 shell 退出后仍等待继承 stdout fd(portal.log)的后台进程。**解法**:用 `ssh -f` 从客户端侧后台化 ssh 进程,远端 shell 立即退出,ssh 不等待(Slice 35 deploy.sh 优化)
 - **API URL 与 SPA 路由 URL 重叠导致浏览器缓存污染**(Slice 43 诊断 + Slice 44 根治):`StaticFiles(html=True)` 对导航请求(`Accept: text/html`)返回 SPA index.html 且无 `Cache-Control` 头,被浏览器缓存后污染同 URL 的 API fetch(`JSON.parse(html)` 抛错 → "加载失败")。**Slice 44 方案 B 根治**:加 `NoCacheHtmlMiddleware` 对 text/html 响应加 `Cache-Control: no-store` + `Vary: Accept`,JSON 响应不受影响,前端 `cache:'no-store'` workaround 已移除。未改 API 路径(router 不加 prefix),263 处测试零改动
 - **`.env` 缺失导致「密码错误」**:`start.sh` 的 `source .env` 失败但脚本无 `set -e`,`PORTAL_ADMIN_PASSWORD` 取空 → 密码哈希为空 → 任何密码都失败。部署后必须验证 `/login` 返回 200(§9.6)
 - `PORTAL_DB_URL` 默认 `sqlite://`(in-memory),进程退出即清空 `chat_session_owner` 表,用户「历史会话没了」;必须显式配置文件型 SQLite 或 MySQL(Slice 34 已实施:`~/portal-data/portal.db`)
@@ -175,13 +176,18 @@ portal 网关 `_ragflow_bot_segment` 用于 completions(agent → "agentbots"),s
 
 ### 9.1 portal 重启与部署
 
-**Slice 35 已固化部署脚本**(commit 831fd0c):单条 `bash deploy.sh` 完成 rsync + 重启 + 健康检查 + 日志 tail。`start.sh` 用 `pgrep -f` 精确匹配旧进程后 kill(替代 `pkill`,不误伤 ssh 会话)。
+**Slice 35 已固化部署脚本**(commit 831fd0c,后优化 ssh -f 解决挂起):单条 `bash deploy.sh` 完成 rsync + 重启 + 健康检查 + 日志 tail,不挂起。`start.sh` 用 `pgrep -f` 精确匹配旧进程后 kill(替代 `pkill`,不误伤 ssh 会话)。
 
 **推荐:一键部署**(在本地 `ragflow/portal-extension/` 目录):
 ```bash
 bash deploy.sh
 ```
-deploy.sh 内部流程:rsync 后端代码(含完整 exclude 保护 `.env`/`.venv`/`*.db`/`portal.log`)→ rsync 前端 dist(本地无 dist 则提示先 `npm run build`)→ ssh 远程执行 `nohup bash start.sh </dev/null & disown` → 循环 curl 健康检查(200/401 视为就绪)→ 失败时 tail portal.log。
+deploy.sh 内部流程:
+1. rsync 后端代码(含完整 exclude 保护 `.env`/`.venv`/`*.db`/`portal.log`)
+2. rsync 前端 dist(本地无 dist 则提示先 `npm run build`)
+3. `ssh -f` 远程执行 `nohup bash start.sh </dev/null &`(关键:用 `ssh -f` 让 ssh 本身后台化,解决远端 uvicorn 长期进程持有 stdout fd 导致 ssh 挂起的问题;纯 `setsid`/`nohup &` 在 uvicorn 长期进程上仍挂起)
+4. 循环 curl 健康检查(200=完全就绪 / 401=后端就绪 dist 未部署,最多 5 次 2s 间隔)
+5. 失败时 `tail -20 portal.log` 辅助排查
 
 **start.sh 完整内容**(版本控制,`~/portal-extension/start.sh`,Slice 35 改进后):
 ```bash
@@ -201,15 +207,23 @@ fi
 exec python -m uvicorn portal.main:app --host 0.0.0.0 --port 8000
 ```
 
+**deploy.sh 远程重启核心行**(ssh -f 方案):
+```bash
+ssh -f "$REMOTE_HOST" "cd $REMOTE_DIR && nohup bash start.sh > portal.log 2>&1 </dev/null &" </dev/null
+```
+
 **手动 fallback**(deploy.sh 失败时,注意仍需分两条 ssh 命令,因 start.sh 内置 pgrep 在 ssh 远程执行时 `bash start.sh` 命令行不含 `uvicorn` 字符串故不会误杀 ssh):
 ```bash
 # 命令 1:杀旧进程(现已由 start.sh 内置,但手动 fallback 仍可用 pkill;ssh 退出 255 是正常的)
 ssh 172.16.10.180 'pkill -f "uvicorn portal.main:app" || true; sleep 2'
-# 命令 2:启动新进程
-ssh 172.16.10.180 'cd ~/portal-extension && nohup bash start.sh > portal.log 2>&1 < /dev/null & disown'
+# 命令 2:启动新进程(也需 ssh -f 避免挂起,或用 nohup & disown)
+ssh -f 172.16.10.180 'cd ~/portal-extension && nohup bash start.sh > portal.log 2>&1 </dev/null &'
 ```
 
-**历史教训(已由 Slice 35 解决)**:`pkill -f "uvicorn portal.main:app"` 会匹配 ssh 命令行本身误伤 ssh(退出 255);pkill + nohup 不能放同一条 ssh 命令(pkill 杀 ssh 后 nohup 不执行 → 502)。现 start.sh 用 pgrep 精确匹配 PID 后 kill,deploy.sh 固化流程,不再踩坑。
+**历史教训(已由 Slice 35 + ssh -f 优化解决)**:
+- `pkill -f "uvicorn portal.main:app"` 会匹配 ssh 命令行本身误伤 ssh(退出 255)→ 改用 start.sh 内置 pgrep
+- pkill + nohup 不能放同一条 ssh 命令(pkill 杀 ssh 后 nohup 不执行 → 502)→ start.sh 内置 pgrep,deploy.sh 只执行 `bash start.sh`
+- **ssh 远程执行 nohup 后台命令挂起**(uvicorn 长期进程持有 stdout fd):纯 `setsid`/`nohup & disown` 在 uvicorn 上仍挂起 → 改用 `ssh -f` 从客户端侧后台化 ssh 进程,远端 shell 立即退出,ssh 不等待
 
 ### 9.2 RAGFlow bot_api 扩展端点(docker cp 临时替换)
 

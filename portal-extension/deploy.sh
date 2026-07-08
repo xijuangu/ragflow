@@ -44,10 +44,15 @@ else
 fi
 
 echo "=== 3. 远程重启 portal(start.sh 内置 pgrep 清理旧进程) ==="
-# nohup + </dev/null 重定向 stdin 避免 ssh 挂起;& disown 让进程脱离 ssh 会话
-# start.sh 会先 pgrep 杀旧 uvicorn,再 exec 启动新进程
-ssh "$REMOTE_HOST" "cd $REMOTE_DIR && nohup bash start.sh > portal.log 2>&1 </dev/null & disown; sleep 1" </dev/null
-echo "远程重启命令已发送"
+# 关键:用 `ssh -f` 让 ssh 本身后台化(执行命令前 fork 到后台,命令完成 ssh 退出)。
+# 纯 `setsid`/`nohup &` 方案在 uvicorn 长期进程上仍挂起 —— ssh 远端 shell 退出后
+# 仍等待继承 stdout fd(portal.log)的后台进程。`ssh -f` 从 ssh 客户端侧解决:
+# ssh 进程立即后台化,远端命令 `nohup ... &` 后台化 uvicorn,远端 shell 退出,
+# ssh 在后台等待命令返回(因 `&` 远端 shell 立即退出)后自行关闭。
+# `</dev/null` 重定向 ssh stdin 避免密码交互挂起(要求密钥认证)。
+# start.sh 会先 pgrep 杀旧 uvicorn,再 exec 启动新进程。
+ssh -f "$REMOTE_HOST" "cd $REMOTE_DIR && nohup bash start.sh > portal.log 2>&1 </dev/null &" </dev/null
+echo "远程重启命令已发送(ssh -f 后台执行,不阻塞)"
 
 echo "=== 4. 健康检查(最多 5 次,每次间隔 2s) ==="
 # 经 nginx /portal/share-pages(Accept: text/html 触发 SPA fallback 返回 200)
