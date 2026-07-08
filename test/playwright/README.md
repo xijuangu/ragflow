@@ -8,6 +8,12 @@ BASE_URL=http://localhost:9222 E2E_ADMIN_EMAIL=admin@ragflow.io E2E_ADMIN_PASSWO
 
 ## Common commands
 
+Run the portal-extension suite only:
+
+```bash
+PORTAL_E2E_BASE_URL=http://172.16.10.180/portal PORTAL_E2E_ADMIN_USERNAME=admin PORTAL_E2E_ADMIN_PASSWORD='<admin-password>' uv run pytest -q test/playwright/portal_extension -s --junitxml=/tmp/playwright-portal.xml
+```
+
 Run smoke subset:
 
 ```bash
@@ -51,6 +57,16 @@ BASE_URL=http://localhost:9222 E2E_ADMIN_EMAIL=admin@ragflow.io E2E_ADMIN_PASSWO
 - `E2E_ADMIN_EMAIL`: login email for authenticated flows.
 - `E2E_ADMIN_PASSWORD`: login password for authenticated flows.
 - `PW_FIXTURE_DEBUG=1`: optional; prints fixture provisioning details.
+
+Portal-extension tests additionally support:
+
+- `PORTAL_E2E_BASE_URL`: full portal base URL, for example `http://172.16.10.180/portal`.
+- `PORTAL_E2E_BASE_PATH`: appended to `BASE_URL` when `PORTAL_E2E_BASE_URL` is not set; defaults to `/portal`.
+- `PORTAL_E2E_ADMIN_USERNAME`: admin username; defaults to `PORTAL_ADMIN_USERNAME` or `admin`.
+- `PORTAL_E2E_ADMIN_PASSWORD`: admin password; required for portal tests.
+- `RAGFLOW_BETA_TOKEN`: optional; when set, the iframe URL assertion verifies this token is not leaked.
+
+The portal admin CRUD test creates a temporary user named `pw-user-<timestamp>`, grants and revokes access for that user, then deletes the user through the admin UI. A final API cleanup runs only for that temporary user if the UI path fails midway.
 
 ## Output and artifacts
 

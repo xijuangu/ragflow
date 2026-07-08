@@ -358,5 +358,16 @@ config.py 还支持可选变量(有默认值,不配不影响运行):`T_SHORT_TTL
 - **后端**:pytest,按 slice 组织(`tests/test_slice*.py`),基线 415 passed + 5 skipped(Slice 40 后)
 - **前端**:Vitest,按页面/组件组织(`frontend/tests/*.test.tsx`),基线 76 passed(Slice 28 后)
 - **RAGFlow web**:Jest 跑不起来(`umi/test` 缺失),靠 `npm run build` 兜底
-- **E2E**:浏览器手动验收,acceptance criteria 记录在 `docs/ISSUES.md` 各 slice
+- **E2E**:Playwright + 浏览器手动验收结合。`test/playwright/portal_extension/` 覆盖 portal 实际使用主路径、6 个管理后台 tab、Slice 44 缓存回归、临时用户创建/禁用/启用/授权/撤销/硬删除;acceptance criteria 仍记录在 `docs/ISSUES.md` 各 slice
 - 类型检查:前端 `tsc --noEmit`,后端 `ruff check`
+
+Portal Playwright 运行命令(需真实已部署环境,本地 agent 不默认执行):
+
+```bash
+PORTAL_E2E_BASE_URL=http://172.16.10.180/portal \
+PORTAL_E2E_ADMIN_USERNAME=admin \
+PORTAL_E2E_ADMIN_PASSWORD='<admin-password>' \
+uv run pytest -q test/playwright/portal_extension -s --junitxml=/tmp/playwright-portal.xml
+```
+
+说明:CRUD 用例只创建 `pw-user-<timestamp>` 临时用户,并在同一测试中通过 UI 撤销授权和硬删除;若中途失败,finally 会用管理员 API 清理该临时用户。

@@ -1892,6 +1892,36 @@ None - can start immediately(Slice 43 的 `cache: 'no-store'` workaround 已止�
 
 ---
 
+## Issue 45 — Slice 45: Portal Playwright 主流程与管理后台自动化验收
+
+### Parent
+
+用户要求“安全稳健地用 Playwright 测试项目主要功能”,且管理后台也需要覆盖。此前 E2E 主要依赖浏览器手动验收和零散 Playwright 诊断脚本。
+
+### What to build
+
+新增 `test/playwright/portal_extension/` 套件,在不替换既有 pytest/Vitest 的前提下固化实际使用主路径:
+
+- 登录 -> 分享页列表 -> 打开分享页 -> iframe/widget shell 加载。
+- iframe URL 含 portal 短 token(`pt_`),不泄露 `RAGFLOW_BETA_TOKEN` 或 `ragflow-` API token。
+- 6 个管理后台 tab 均可加载,无“加载失败”缓存回归。
+- Slice 44 HTML 缓存头与 JSON API 响应类型可由浏览器 request 验证。
+- 管理后台 CRUD 主路径:创建临时用户、禁用、启用、授权、撤销授权、硬删除临时用户。
+
+### Acceptance criteria
+
+- [x] Playwright 用例文件已添加到 `test/playwright/portal_extension/`。
+- [x] 管理后台 6 个 tab 覆盖页面加载与缓存回归。
+- [x] 管理后台包含创建和删除路径,且只操作 `pw-user-<timestamp>` 临时用户。
+- [x] 文档给出真实运行命令与环境变量。
+- [ ] 真实环境执行 `uv run pytest -q test/playwright/portal_extension -s --junitxml=/tmp/playwright-portal.xml` 并记录结果(由用户执行)。
+
+### Notes
+
+本 slice 不默认发送真实 RAGFlow 问答,避免测试运行时产生不可控对话内容和耗时;当前覆盖到 iframe/widget shell 与 token 安全边界。真实发问、引用弹层、PDF 预览仍建议作为后续显式慢用例或人工验收项。
+
+---
+
 ## 后续待办(Issue 16 AC2 遗留)
 
 > Issue 16 AC2「悬浮组件在任意页面右下角加载,点击展开对话窗,能正常对话」— Slice 16 实现了 `/widget/<id>` 骨架 HTML + 可嵌入 snippet + CSP frame-ancestors 放行,但 **悬浮组件实际 UI 渲染(右下角悬浮按钮 + 点击展开对话窗 + iframe 加载 + SSE 对话)尚未实现**。`/widget/<id>` 当前仅返回含 `<div id="widget-root">` 的占位 HTML,需前端构建产物挂载 React 组件。
