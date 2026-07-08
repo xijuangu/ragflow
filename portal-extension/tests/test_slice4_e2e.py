@@ -137,12 +137,19 @@ async def test_admin_get_unknown_user_returns_404(client):
 
 
 async def test_admin_create_group_returns_details(client):
-    """管理员创建用户组 → 201,返回组详情。"""
+    """管理员创建用户组 → 201,返回组详情(含 member_count/members,与列表端点一致)。
+
+    Slice 43:补 member_count/members 断言,防止后端 admin_create_group 漏字段导致
+    前端 GroupsAdminPage 渲染崩溃(原 bug:只返回 id/name/created_at/org_id)。
+    """
     await _login_admin(client)
     body = await _create_group(client, name="engineering")
     assert body["name"] == "engineering"
     assert body["id"]
     assert "created_at" in body
+    # Slice 43:新建组无成员,member_count=0,members=[](与 admin_list_groups 一致)
+    assert body["member_count"] == 0, f"新组 member_count 应为 0,实际: {body.get('member_count')}"
+    assert body["members"] == [], f"新组 members 应为 [],实际: {body.get('members')}"
 
 
 async def test_admin_list_groups(client):

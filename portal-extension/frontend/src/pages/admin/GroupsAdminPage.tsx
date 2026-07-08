@@ -62,7 +62,14 @@ export default function GroupsAdminPage() {
       setCreating(true);
       try {
         const created = await api.createAdminGroup(name);
-        setGroups((prev) => (prev ? [...prev, created] : [created]));
+        // Slice 43:兜底 — 后端可能漏 member_count/members 字段,加默认值防御
+        // 避免渲染时 g.members.length 抛 TypeError 导致整个 admin SPA 崩溃
+        const safeCreated: AdminGroup = {
+          ...created,
+          member_count: created.member_count ?? 0,
+          members: created.members ?? [],
+        };
+        setGroups((prev) => (prev ? [...prev, safeCreated] : [safeCreated]));
         setGroupName('');
       } catch (e) {
         setError(e instanceof ApiError ? e.message : '创建用户组失败');

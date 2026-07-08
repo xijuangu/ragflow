@@ -158,6 +158,19 @@ def _group_to_dict(group: PortalGroup) -> dict:
     }
 
 
+def _group_to_dict_with_members(group: PortalGroup, seed) -> dict:
+    """用户组 → 响应 dict(含 member_count/members)。
+
+    Slice 43:admin_create_group 与 admin_list_groups 共用此 helper,
+    保证创建与列表返回字段一致(避免创建漏 member_count/members 导致前端崩溃)。
+    """
+    d = _group_to_dict(group)
+    members = seed.list_group_members(group.id)
+    d["member_count"] = len(members)
+    d["members"] = list(members)
+    return d
+
+
 def _share_page_to_dict(page: SharePage) -> dict:
     """分享页 → 响应 dict。"""
     return {
@@ -1095,11 +1108,12 @@ async def admin_create_group(body: CreateGroupRequest, request: Request, user=De
     """管理员创建用户组(对应 PRD 用户故事 8)。
 
     Slice 13:org_admin 创建组强制归入本 org;is_admin 归入 'default'。
+    Slice 43:返回 member_count/members(与 admin_list_groups 一致),避免前端崩溃。
     """
     seed = request.app.state.seed
     target_org_id = user.org_id if not user.is_admin else "default"
     group = seed.create_group(name=body.name, org_id=target_org_id)
-    return _group_to_dict(group)
+    return _group_to_dict_with_members(group, seed)
 
 
 @router.get("/admin/groups")
@@ -1111,17 +1125,11 @@ async def admin_list_groups(
     """管理员列出所有用户组(对应 PRD 用户故事 10)。
 
     Slice 13:is_admin 跨 org + ?org_id 筛选;org_admin 只看本 org。
+    Slice 43:用 _group_to_dict_with_members 统一字段构造(与 admin_create_group 一致)。
     """
     seed = request.app.state.seed
     filter_org = _admin_org_filter(user, org_id)
-    groups = []
-    for g in seed.list_groups(org_id=filter_org):
-        d = _group_to_dict(g)
-        # Slice 8:经 SeedData 公开 API 取成员(原直接访问 seed.group_members dict,现 DB 后端)
-        members = seed.list_group_members(g.id)
-        d["member_count"] = len(members)
-        d["members"] = list(members)
-        groups.append(d)
+    groups = [_group_to_dict_with_members(g, seed) for g in seed.list_groups(org_id=filter_org)]
     return {"groups": groups}
 
 

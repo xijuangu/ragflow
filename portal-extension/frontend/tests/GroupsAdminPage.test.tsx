@@ -119,6 +119,38 @@ describe('GroupsAdminPage', () => {
     expect(await screen.findByText('新组')).toBeInTheDocument();
   });
 
+  it('Slice 43 — 后端 POST 响应漏 member_count/members 时兜底不崩溃', async () => {
+    // 回归测试:原 bug admin_create_group 只返回 id/name/created_at/org_id,
+    // 导致 g.members.length 抛 TypeError → React render 崩溃 → 整个 admin SPA 加载失败
+    const user = userEvent.setup();
+    globalThis.fetch = mockFetch([
+      { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
+      { url: '/admin/groups', status: 200, body: GROUPS_RESPONSE },
+      { url: '/admin/users', status: 200, body: USERS_RESPONSE },
+      // 后端漏 member_count/members(模拟原 bug 响应)
+      {
+        url: '/admin/groups',
+        method: 'POST',
+        status: 201,
+        body: { id: 'g_buggy', name: '漏字段组', created_at: 1700000700 },
+      },
+    ]);
+
+    renderPage();
+
+    await screen.findByText('开发组');
+
+    await user.type(screen.getByLabelText('用户组名称'), '漏字段组');
+    await user.click(screen.getByRole('button', { name: '创建用户组' }));
+
+    // 兜底后正常渲染:显示组名 + "0 成员"(member_count 默认 0,members 默认 [])
+    const newGroupRow = await screen.findByTestId('group-row-g_buggy');
+    expect(within(newGroupRow).getByText('漏字段组')).toBeInTheDocument();
+    expect(within(newGroupRow).getByText(/0\s*成员/)).toBeInTheDocument();
+    // 不应出现 "Something went wrong" 之类的崩溃提示
+    expect(screen.queryByText(/something went wrong/i)).not.toBeInTheDocument();
+  });
+
   it('添加成员 — 选择用户并提交后调 POST /admin/groups/:id/members', async () => {
     const user = userEvent.setup();
     globalThis.fetch = mockFetch([

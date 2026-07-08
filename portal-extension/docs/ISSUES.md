@@ -1725,16 +1725,18 @@ React render 阶段抛错导致整个 `GroupsAdminPage` 组件树崩溃,用户�
 
 ### Acceptance criteria
 
-- [ ] 创建用户组后,用户组页正常显示新组(显示「0 成员」,不崩溃不白屏)
-- [ ] 创建用户组后,用户管理/授权/会话搜索/审计日志 4 个页面均可正常加载切换(不报「加载失败」)
-- [ ] 后端 `POST /admin/groups` 响应 JSON 含 `member_count: 0` 和 `members: []`
-- [ ] `GroupsAdminPage.tsx` `handleCreate` 对 `member_count`/`members` 做了 `?? 默认值` 兜底
-- [ ] `test_slice4_e2e.py` 断言 `member_count == 0` 和 `members == []`
-- [ ] 既有 portal pytest 全绿(无回归)+ 既有前端 Vitest 全绿(无回归)
+- [x] 创建用户组后,用户组页正常显示新组(显示「0 成员」,不崩溃不白屏)— 前端 Vitest `Slice 43 — 后端 POST 响应漏 member_count/members 时兜底不崩溃` 回归测试覆盖
+- [x] 创建用户组后,用户管理/授权/会话搜索/审计日志 4 个页面均可正常加载切换(不报「加载失败」)— 后端根治 + 前端兜底,React render 不再崩溃
+- [x] 后端 `POST /admin/groups` 响应 JSON 含 `member_count: 0` 和 `members: []` — `test_admin_create_group_returns_details` 断言覆盖
+- [x] `GroupsAdminPage.tsx` `handleCreate` 对 `member_count`/`members` 做了 `?? 默认值` 兜底 — commit 中实现
+- [x] `test_slice4_e2e.py` 断言 `member_count == 0` 和 `members == []` — commit 中补强
+- [x] 既有 portal pytest 全绿(无回归,415 passed + 5 skipped)+ 既有前端 Vitest 全绿(无回归,77 passed)
 
 ### Blocked by
 
 None - can start immediately(后端 routes.py 1 处 + 前端 GroupsAdminPage.tsx 1 处 + 测试 1 处,改动小,无外部依赖)
+
+**验收状态:代码层通过(2026-07-08)— 部署后需 E2E 浏览器验收确认 admin SPA 全部页面加载正常**
 
 ---
 
