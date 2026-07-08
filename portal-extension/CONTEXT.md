@@ -198,10 +198,42 @@ ssh 172.16.10.180 'grep PORTAL_DB_URL ~/portal-extension/.env'
 ssh 172.16.10.180 'ls -la ~/portal-data/portal.db 2>/dev/null || echo "portal.db 不存在"'
 ```
 
+### 9.6 .env 存在性检查与部署后验证(Slice 40 部署踩坑后补)
+
+**`.env` 缺失是「部署后 admin 密码错误」的首要原因**:`start.sh` 的 `source .env` 失败但脚本无 `set -e`,`PORTAL_ADMIN_PASSWORD` 取空字符串 → admin 密码哈希为空 → 任何密码都「密码错误」(见 `auth.py:34`)。Slice 40 部署后踩坑一次(2026-07-08,.env 完全缺失)。
+
+**部署前必检**:
+```bash
+ssh 172.16.10.180 'test -f ~/portal-extension/.env && echo ".env exists" || echo "FATAL: .env missing"; grep -c "^PORTAL_ADMIN_PASSWORD=" ~/portal-extension/.env 2>/dev/null'
+```
+若 `.env` 缺失或 `PORTAL_ADMIN_PASSWORD=` 行数为 0,**不得启动 portal**,先从备份恢复或重建 .env(需 admin 密码、RAGFLOW_BETA_TOKEN、RAGFLOW_DIALOG_ID 等敏感值,从 RAGFlow MySQL `api_token`/`dialog` 表查得,见 §9.7)。
+
+**部署后必验**(portal 重启后立即执行):
+```bash
+# 1. 进程存活 + 监听 8000
+ssh 172.16.10.180 'pgrep -f "uvicorn portal.main:app" | head -1; ss -tlnp 2>/dev/null | grep :8000'
+# 2. 登录 200(非 401)
+ssh 172.16.10.180 'curl -s -X POST http://localhost:8000/login -H "Content-Type: application/json" -d "{\"username\":\"admin\",\"password\":\"<pwd>\"}" -w "\nHTTP %{http_code}\n"'
+# 3. nginx 200(非 502)
+ssh 172.16.10.180 'curl -s -o /dev/null -w "nginx /portal/ -> %{http_code}\n" http://localhost:80/portal/'
+```
+任一项失败即回滚(检查 .env / 进程 / nginx upstream)。
+
+### 9.7 .env 敏感值获取途径
+
+| 变量 | 获取途径 |
+|---|---|
+| `PORTAL_ADMIN_PASSWORD` | 用户设定(不存仓库) |
+| `PORTAL_SESSION_SECRET` | `python3 -c "import secrets; print(secrets.token_hex(32))"` 生成 |
+| `RAGFLOW_HOST` | `http://172.16.10.180:8080`(容器 80→主机 8080 端口映射) |
+| `RAGFLOW_BETA_TOKEN` | `docker exec docker-ragflow-cpu-1 python3 -c "import pymysql; c=pymysql.connect(host='mysql',user='root',password='<MYSQL_PASSWORD>',database='rag_flow'); cur=c.cursor(); cur.execute('SELECT beta FROM api_token LIMIT 1'); print(cur.fetchone()[0])"`(MYSQL_PASSWORD 从 `~/ragflow/docker/.env` 的 `MYSQL_PASSWORD=` 取) |
+| `RAGFLOW_DIALOG_ID` | 同上,`SELECT id FROM dialog WHERE name='<分享页对应的知识库名>' LIMIT 1` |
+| `PORTAL_DB_URL` | `sqlite:////home/xijuangu/portal-data/portal.db`(Slice 34) |
+
 ## 10. 测试策略
 
-- **后端**:pytest,按 slice 组织(`tests/test_slice*.py`),基线 380+ passed + 5 skipped(Slice 28 后)
-- **前端**:Vitest,按页面/组件组织(`frontend/tests/*.test.tsx`),基线 71+ passed
+- **后端**:pytest,按 slice 组织(`tests/test_slice*.py`),基线 415 passed + 5 skipped(Slice 40 后)
+- **前端**:Vitest,按页面/组件组织(`frontend/tests/*.test.tsx`),基线 76 passed(Slice 28 后)
 - **RAGFlow web**:Jest 跑不起来(`umi/test` 缺失),靠 `npm run build` 兜底
 - **E2E**:浏览器手动验收,acceptance criteria 记录在 `docs/ISSUES.md` 各 slice
 - 类型检查:前端 `tsc --noEmit`,后端 `ruff check`
