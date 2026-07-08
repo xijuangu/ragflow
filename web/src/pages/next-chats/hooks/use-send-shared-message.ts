@@ -149,7 +149,6 @@ export const useSendSharedMessage = () => {
   );
 
   const fetchSessionId = useCallback(async () => {
-    setConversationReference([]);
     const payload = { question: '' };
     const ret = await send(completionUrl, { ...payload, ...data });
     if (isCompletionError(ret)) {
@@ -179,6 +178,8 @@ export const useSendSharedMessage = () => {
   }, [conversationId, from, sessionId, setDerivedMessages]);
 
   useEffect(() => {
+    // 切换 session_id 时先重置会话级 reference,避免 fetchSessionHistory 失败时残留旧会话引用(Issue 36)
+    setConversationReference([]);
     if (sessionId) {
       fetchSessionHistory();
     } else {

@@ -138,8 +138,8 @@ portal 网关 `_ragflow_bot_segment` 用于 completions(agent → "agentbots"),s
 - **agent 类型 sessions 端点 404**:portal 网关对 agent sessions 用 "agentbots",但 RAGFlow 官方只有 `/agents/<id>/sessions/<sid>`。Slice 30 修复(拆分 segment 函数),但 agent 类型暂时搁置不验收
 - **RAGFlow `web` 侧 Jest 跑不起来**(`umi/test` 模块缺失),靠 `npm run build` 兜底验证
 - **Issue 16 AC2 悬浮组件 UI 未实现**:`/widget/<id>` 仅占位 HTML,React 悬浮组件未建(Phase 2 后续待办)
-- **portal.db 当前在项目目录内**(临时配置 `PORTAL_DB_URL=sqlite:////home/xijuangu/portal-extension/portal.db`),下次 `rsync --delete` 会删数据 → Slice 34 待实施(移到 `~/portal-data/`)
-- **share 页面切换会话后 reference 和引用预览消失**:RAGFlow web 前端三层缺陷叠加,`fetchSessionHistory` 丢弃会话级 reference 数组 + `share/index.tsx` 硬编码 `reference: []` → Slice 36 待实施
+- **portal.db 已移到 `~/portal-data/`**(Slice 34 已实施):`PORTAL_DB_URL=sqlite:////home/xijuangu/portal-data/portal.db`,代码与数据分离,rsync 加 `--exclude='*.db'` 兜底
+- **share 页面切换会话后 reference 消失已修复**(Slice 36 已实施):`fetchSessionHistory` 现存 `conversationReference` state,`share/index.tsx` 传给 `buildMessageItemReference`,切换 session_id 时在 useEffect 重置
 
 ## 8. 教训(Lessons Learned)
 
@@ -181,21 +181,21 @@ ssh 172.16.10.180 'cd ~/portal-extension && nohup bash start.sh > portal.log 2>&
 - 容器内 `dist.bak.<timestamp>` 是 RAGFlow web dist 回滚点
 - git 分支 `portal-extension` 的每个 slice commit 是 portal 代码回滚点
 
-### 9.5 portal 数据持久化配置(临时,Slice 34 待实施)
+### 9.5 portal 数据持久化配置(Slice 34 已实施)
 
 服务器 `.env` 必须设置 `PORTAL_DB_URL`,否则默认 `sqlite://`(in-memory)导致每次重启 `chat_session_owner` 表清空(用户「历史会话没了」)。
 
-**当前临时配置**(portal.db 在项目目录内,有 rsync 删除风险):
+**当前配置**(Slice 34 后,portal.db 与代码分离):
 ```bash
-PORTAL_DB_URL=sqlite:////home/xijuangu/portal-extension/portal.db
+PORTAL_DB_URL=sqlite:////home/xijuangu/portal-data/portal.db
 ```
 
-**Slice 34 待实施**:移到 `~/portal-data/portal.db`,与代码分离;rsync 加 `--exclude='*.db'` 兜底。
+portal.db 位于独立的 `~/portal-data/` 目录,`rsync --delete` 不会触碰;部署 rsync 命令兜底加 `--exclude='*.db'`(见 HANDOFF-phase3.md)。
 
 验证命令:
 ```bash
 ssh 172.16.10.180 'grep PORTAL_DB_URL ~/portal-extension/.env'
-ssh 172.16.10.180 'ls -la ~/portal-extension/portal.db 2>/dev/null || echo "portal.db 不存在"'
+ssh 172.16.10.180 'ls -la ~/portal-data/portal.db 2>/dev/null || echo "portal.db 不存在"'
 ```
 
 ## 10. 测试策略
