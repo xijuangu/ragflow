@@ -1763,6 +1763,41 @@ None - can start immediately(后端 routes.py 1 处 + 前端 GroupsAdminPage.tsx
 
 ---
 
+## Issue 44 — Slice 44: API 路由前缀分离,根治 API URL 与 SPA 路由 URL 重叠
+
+### Parent
+
+Slice 43(诊断发现的遗留架构隐患)。
+
+### 背景
+
+Slice 43 诊断 admin 后台 flaky "加载失败" 根因:浏览器 HTTP 缓存污染 API fetch —— API URL(`/portal/admin/users`)与 SPA 路由 URL 重叠,导航请求(`Accept: text/html`)的 HTML 响应被缓存后,API fetch 命中缓存返回 HTML,`JSON.parse` 抛错 → 显示"加载失败"。当前用 `request` 函数加 `cache: 'no-store'` 作 workaround止血,本 slice 做架构根治。
+
+### What to build
+
+让所有 portal API 走 `/portal/api/*` 前缀,与 SPA 路由(`/portal/admin/*`、`/portal/share-pages/*` 等)彻底分离,从根源上消除 URL 重叠。
+
+- **后端**:APIRouter 加 `prefix="/api"`(或挂载时加前缀),StaticFiles(`html=True`)兜底不再覆盖 `/api/*` 路径。CONTEXT.md §7 第 76 行已标注 `API_BASE='/portal/api'`,本 slice 让代码与文档一致。
+- **前端**:`API_BASE` 从 `/portal` 改为 `/portal/api`(client.ts)。CONTEXT.md 已如此标注,代码补齐。
+- **nginx**:现有 `/portal/` rewrite `^/portal/(.*)$ /$1 break` → :8000 已覆盖 `/portal/api/*`,无需改 nginx 配置。
+- **测试**:更新后端 pytest(若有硬编码 `/admin/...` 路径断言)+ 前端 Vitest mock fetch 路径。
+- **验证 workaround 可移除**:从 `request` 函数移除 `cache: 'no-store'`,Playwright 快速切换 40 次仍 0 失败(证明 URL 重叠已根治,不再依赖 workaround)。
+
+### Acceptance criteria
+
+- [ ] 所有 portal API 端点路径以 `/api/` 开头(如 `/api/admin/users`),与 SPA 路由(`/admin/users`)不再重叠
+- [ ] 前端 `API_BASE='/portal/api'`,与 CONTEXT.md §7 标注一致
+- [ ] `cache: 'no-store'` 从 `request` 函数移除后,Playwright 快速切换 40 次 + goto 12 次仍 0 失败(不再依赖 workaround)
+- [ ] 后端 pytest 全绿(路径断言更新后)+ 前端 Vitest 全绿 + tsc 干净
+- [ ] 部署后浏览器 E2E 验收:6 个 admin tab 来回切换无 "加载失败"
+- [ ] CONTEXT.md §7 更新:`API_BASE` 标注与代码一致(若代码改动后文档需同步)
+
+### Blocked by
+
+None - can start immediately(Slice 43 的 `cache: 'no-store'` workaround 已止血,无外部阻塞;本 slice 为架构改进,改动集中在 router prefix + 前端 API_BASE + 测试路径更新)
+
+---
+
 ## 后续待办(Issue 16 AC2 遗留)
 
 > Issue 16 AC2「悬浮组件在任意页面右下角加载,点击展开对话窗,能正常对话」— Slice 16 实现了 `/widget/<id>` 骨架 HTML + 可嵌入 snippet + CSP frame-ancestors 放行,但 **悬浮组件实际 UI 渲染(右下角悬浮按钮 + 点击展开对话窗 + iframe 加载 + SSE 对话)尚未实现**。`/widget/<id>` 当前仅返回含 `<div id="widget-root">` 的占位 HTML,需前端构建产物挂载 React 组件。
