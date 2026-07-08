@@ -280,10 +280,10 @@ async def test_sse_pt_prefix_valid_t_short_swaps_beta_token(client, app, monkeyp
 
 
 async def test_json_info_response_body_passthrough_byte_for_byte(client, app, monkeypatch):
-    """JSON /info 响应体逐字节透传(含 doc_aggs 数组,前端 .find 不再崩溃)。
+    """JSON /info 响应体回传,Slice 42 起 data.title 用 share_page.name 替换;其余字段(doc_aggs 等)保留。
 
-    回归锚点:确保 portal 代理不改写 RAGFlow 响应体(无额外包装、无字段丢失)。
-    上游返回的 JSON 原样回传给浏览器(仅 status + content + content-type 透传)。
+    回归锚点:确保 portal 代理除 title 替换外不改写 RAGFlow 响应体(无额外包装、无字段丢失)。
+    doc_aggs 数组结构必须保留(前端 .find 依赖)。
     """
     t_short, dialog_id = await _login_and_get_t_short(client)
     # 上游返回含 doc_aggs 数组的响应(模拟 RAGFlow /info 真实结构)
@@ -309,11 +309,13 @@ async def test_json_info_response_body_passthrough_byte_for_byte(client, app, mo
         headers={"Authorization": f"Bearer {t_short}"},
     )
     assert resp.status_code == 200
-    # 响应体逐字节相等(无 portal 改写)
-    assert resp.content == upstream_body, (
-        f"响应体应逐字节透传,实际: {resp.content!r}, 期望: {upstream_body!r}"
-    )
-    # doc_aggs 为数组(前端 .find 可用)
     body = json.loads(resp.content)
+    # Slice 42:title 被 share_page.name(sp_default = "默认分享页")替换,
+    # 避免 iframe EmbedContainer 头部泄露 RAGFlow 内部 dialog 名。
+    assert body["data"]["title"] == "默认分享页"
+    # doc_aggs 为数组(前端 .find 可用)— 非标题字段逐字段保留
     assert isinstance(body["data"]["doc_aggs"], list), "doc_aggs 应为数组(前端 .find 依赖)"
     assert len(body["data"]["doc_aggs"]) == 1
+    assert body["data"]["doc_aggs"][0]["doc_id"] == "d1"
+    assert body["data"]["doc_aggs"][0]["doc_name"] == "doc.pdf"
+    assert body["data"]["doc_aggs"][0]["count"] == 3

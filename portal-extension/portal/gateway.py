@@ -1065,8 +1065,20 @@ async def proxy_bot_json_to_ragflow(
     try:
         async with _build_upstream_client() as client:
             resp = await client.get(upstream_url, headers=upstream_headers)
+        # Slice 42:RAGFlow /info 响应的 data.title 是 dialog.name(如内部知识库名 law-test-01),
+        # iframe 内 EmbedContainer 头部会显示此值。用 portal 分享页名称替换,避免泄露内部
+        # dialog 名并保持 UI 与门户一致。仅替换成功响应(JSON 含 data.title);失败响应原样回传。
+        body = resp.content
+        if resp.status_code == 200 and share_page.name:
+            try:
+                data = json.loads(body)
+                if data.get("code") == 0 and isinstance(data.get("data"), dict):
+                    data["data"]["title"] = share_page.name
+                    body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                pass  # 非 JSON 或解析失败,原样回传
         return Response(
-            content=resp.content,
+            content=body,
             status_code=resp.status_code,
             media_type=resp.headers.get("content-type", "application/json"),
         )

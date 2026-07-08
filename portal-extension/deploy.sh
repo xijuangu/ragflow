@@ -46,12 +46,14 @@ fi
 echo "=== 3. 远程重启 portal(start.sh 内置 pgrep 清理旧进程) ==="
 # 关键:用 `ssh -f` 让 ssh 本身后台化(执行命令前 fork 到后台,命令完成 ssh 退出)。
 # 纯 `setsid`/`nohup &` 方案在 uvicorn 长期进程上仍挂起 —— ssh 远端 shell 退出后
-# 仍等待继承 stdout fd(portal.log)的后台进程。`ssh -f` 从 ssh 客户端侧解决:
+# 仍等待继承 stdout fd(portal.log)的后台进程。`ssh -f` 从客户端侧解决:
 # ssh 进程立即后台化,远端命令 `nohup ... &` 后台化 uvicorn,远端 shell 退出,
 # ssh 在后台等待命令返回(因 `&` 远端 shell 立即退出)后自行关闭。
 # `</dev/null` 重定向 ssh stdin 避免密码交互挂起(要求密钥认证)。
+# `>/dev/null 2>&1` 重定向 ssh stdout/stderr —— 后台化的 ssh 不继承调用方 stdout
+# fd,避免 `bash deploy.sh | tail` 管道因 ssh 持有 fd 而 tail 等不到 EOF 永久挂起。
 # start.sh 会先 pgrep 杀旧 uvicorn,再 exec 启动新进程。
-ssh -f "$REMOTE_HOST" "cd $REMOTE_DIR && nohup bash start.sh > portal.log 2>&1 </dev/null &" </dev/null
+ssh -f "$REMOTE_HOST" "cd $REMOTE_DIR && nohup bash start.sh > portal.log 2>&1 </dev/null &" </dev/null >/dev/null 2>&1
 echo "远程重启命令已发送(ssh -f 后台执行,不阻塞)"
 
 echo "=== 4. 健康检查(最多 5 次,每次间隔 2s) ==="

@@ -30,6 +30,11 @@ import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { AudioButton } from '../ui/audio-button';
 
+// Slice 41:autoSize 提为模块级常量,稳定引用。
+// inline 对象字面量每次渲染新建 → textarea.tsx 的 adjustHeight effect(依赖 autoSize)
+// 每个 SSE chunk 触发 → textarea 高度在 minRows/maxRows 间振荡(塌缩-恢复循环)→ 输入框抖动。
+const AUTO_SIZE_CONFIG = { minRows: 2, maxRows: 8 };
+
 export type NextMessageInputOnPressEnterParameter = {
   enableThinking: boolean;
   enableInternet: boolean;
@@ -66,7 +71,6 @@ export function NextMessageInput({
   sendLoading,
   disabled,
   showUploadIcon = true,
-  resize = 'none',
   onUpload,
   onInputChange,
   stopOutputMessage,
@@ -222,7 +226,7 @@ export function NextMessageInput({
           "
           disabled={isUploading || disabled || sendLoading}
           onKeyDown={handleKeyDown}
-          autoSize={{ minRows: 2, maxRows: 8 }}
+          autoSize={AUTO_SIZE_CONFIG}
         />
 
         <div className="flex items-center justify-between gap-2">

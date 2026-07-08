@@ -171,6 +171,8 @@ portal 网关 `_ragflow_bot_segment` 用于 completions(agent → "agentbots"),s
 - `PORTAL_DB_URL` 默认 `sqlite://`(in-memory),进程退出即清空 `chat_session_owner` 表,用户「历史会话没了」;必须显式配置文件型 SQLite 或 MySQL(Slice 34 已实施:`~/portal-data/portal.db`)
 - CSS flex column 容器内的滚动子元素默认 `flex-shrink: 1`,会话增多时被压缩而非触发 `overflow-y: auto`;必须显式 `flex-shrink: 0`(Slice 31 修复)
 - **CSS 同选择器 min-height 冲突**:`.detail-grid` 曾同时声明 `min-height: 0` 和 `min-height: 480px`,后者覆盖前者导致 flex 收缩失效。不要在同一选择器声明冲突属性(Slice 38 /review 修复)
+- **autoSize inline 对象导致 SSE 期间输入框抖动**(Slice 41 诊断 + 修复):`message-input/next.tsx` 的 `autoSize={{ minRows: 2, maxRows: 8 }}` 是 inline 对象字面量,每次渲染创建新引用 → `textarea.tsx` 的 `adjustHeight` effect(依赖 autoSize)每个 SSE chunk 触发 → `style.height='auto'` 塌缩 → rAF 读 scrollHeight → 写回高度,形成 8-10px 高度振荡(用户看到的「抽搐」)。**解法**:提为模块级常量 `AUTO_SIZE_CONFIG` 稳定引用,effect 只在首次挂载触发。**教训**:React 中传给子组件的 inline 对象/数组字面量会破坏 `useCallback`/`useMemo` 引用稳定性,应提为模块级常量。诊断时需建 Playwright red-capable 循环采样 `getBoundingClientRect()`,用 4 模式 probe(css-fix / no-scroll / observe / combined)分离假设
+- **iframe EmbedContainer 标题读 `/info` 端点 dialog.name 而非会话标题**(Slice 42 诊断 + 修复):用户看到的「law-test-01」不是 portal 会话列表标题(读 portal.db `chat_session_owner.title`),而是 RAGFlow iframe 内 `EmbedContainer` 头部显示的值(读 `/info` 端点返回的 `data.title` = RAGFlow `dialog.name`)。portal 的 `proxy_bot_json_to_ragflow` 原样回传 RAGFlow 响应,泄露内部 dialog 名。**解法**:代理返回前解析 JSON,把 `data.title` 替换为 `share_page.name`。**教训**:「标题」在不同层有多个数据源(portal.db title / RAGFlow API4Conversation.name / RAGFlow dialog.name via /info),诊断显示问题需先定位用户看到的值来自哪个数据流,再判断修复点;curl + DB 查询组合是快循环
 
 ## 9. 运维约束
 
@@ -207,10 +209,11 @@ fi
 exec python -m uvicorn portal.main:app --host 0.0.0.0 --port 8000
 ```
 
-**deploy.sh 远程重启核心行**(ssh -f 方案):
+**deploy.sh 远程重启核心行**(ssh -f 方案,`>/dev/null 2>&1` 防管道挂起):
 ```bash
-ssh -f "$REMOTE_HOST" "cd $REMOTE_DIR && nohup bash start.sh > portal.log 2>&1 </dev/null &" </dev/null
+ssh -f "$REMOTE_HOST" "cd $REMOTE_DIR && nohup bash start.sh > portal.log 2>&1 </dev/null &" </dev/null >/dev/null 2>&1
 ```
+> 注意:`>/dev/null 2>&1` 重定向 ssh 自身 stdout/stderr — 后台化的 ssh 不继承调用方 stdout fd,避免 `bash deploy.sh | tail` 管道因 ssh 持有 fd 而 tail 等不到 EOF 永久挂起(Slice 41/42 部署时踩坑)。
 
 **手动 fallback**(deploy.sh 失败时,注意仍需分两条 ssh 命令,因 start.sh 内置 pgrep 在 ssh 远程执行时 `bash start.sh` 命令行不含 `uvicorn` 字符串故不会误杀 ssh):
 ```bash
@@ -224,6 +227,7 @@ ssh -f 172.16.10.180 'cd ~/portal-extension && nohup bash start.sh > portal.log 
 - `pkill -f "uvicorn portal.main:app"` 会匹配 ssh 命令行本身误伤 ssh(退出 255)→ 改用 start.sh 内置 pgrep
 - pkill + nohup 不能放同一条 ssh 命令(pkill 杀 ssh 后 nohup 不执行 → 502)→ start.sh 内置 pgrep,deploy.sh 只执行 `bash start.sh`
 - **ssh 远程执行 nohup 后台命令挂起**(uvicorn 长期进程持有 stdout fd):纯 `setsid`/`nohup & disown` 在 uvicorn 上仍挂起 → 改用 `ssh -f` 从客户端侧后台化 ssh 进程,远端 shell 立即退出,ssh 不等待
+- **`ssh -f` 后台进程继承调用方 stdout fd 导致管道挂起**(Slice 41/42 部署时踩坑):`bash deploy.sh | tail` 中,`ssh -f` 后台化的 ssh 进程继承了 deploy.sh 的 stdout pipe fd,tail 等不到 EOF 永久挂起(部署实际成功但脚本不退出)。**解法**:ssh 命令加 `>/dev/null 2>&1` 重定向自身 stdout/stderr,后台化 ssh 不持有调用方 fd
 
 ### 9.2 RAGFlow bot_api 扩展端点(docker cp 临时替换)
 

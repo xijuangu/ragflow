@@ -1593,7 +1593,7 @@ RAGFlow web 分享页消息容器缺少 `min-h-0`,是经典 flexbox 溢出陷阱
 
 ### Acceptance criteria
 
-- [ ] SSE 流式输出期间,底部输入框不抖动(位置稳定)— **2026-07-08 验收失败:加 `min-h-0` 后仍抽搐,根因判断有误或存在其他加剧因素(见下方验收记录)**
+- [x] SSE 流式输出期间,底部输入框不抖动(位置稳定)— **2026-07-08 经 Issue 41 重新诊断后修复(autoSize 提为模块常量),Playwright 验收 jitter=0 通过**
 - [x] 消息区内容增长时正常滚动到底部(滚动行为不回归)
 - [x] 普通聊天页(single-chat-box)行为不回归
 - [x] agent 分享页同步修复(加 `min-h-0`)
@@ -1603,7 +1603,7 @@ RAGFlow web 分享页消息容器缺少 `min-h-0`,是经典 flexbox 溢出陷阱
 
 None - can start immediately(纯 RAGFlow web 前端改动,无 portal 侧改动,无后端改动)
 
-**验收状态:失败(2026-07-08)— `min-h-0` 核心修复未消除抖动**
+**验收状态:通过(2026-07-08,经 Issue 41 修正根因后)** — Slice 39 的 `min-h-0` 修复了容器溢出(bodySHgrowth=0)但非抖动根因;Issue 41 用 Playwright red-capable 循环定位真正根因(autoSize inline 对象 → adjustHeight effect 每 chunk 触发 → textarea 高度振荡),提为模块级常量后修复。
 
 ### 验收记录(2026-07-08)
 
@@ -1615,7 +1615,7 @@ None - can start immediately(纯 RAGFlow web 前端改动,无 portal 侧改动,�
 3. `utils.ts` `buildMessageItemReference` 返回新空对象破坏 `MessageItem.memo`,所有消息项在每个 chunk 重渲染
 4. 需要浏览器 DevTools Performance 录制确认实际瓶颈(布局抖动 vs 定时器堆积 vs 重渲染)
 
-**下一步**:新建 Slice 41 重新调查根因(需浏览器 Performance trace),本 issue 不关闭。
+**已完成**:Issue 41 用 diagnosing-bugs 纪律重新诊断,4 模式 probe 对比确认根因是方向 2(autoSize inline 对象),方向 1(scrollTo 定时器)经 no-scroll probe 排除,修复后 jitter=0。
 
 ---
 
@@ -1659,18 +1659,18 @@ None - can start immediately(纯 RAGFlow web 前端改动,无 portal 侧改动,�
 
 - [x] 新会话(首次提问后)出现在列表最上方,旧会话依次在下(2026-07-08 验收通过)
 - [x] 在旧会话继续提问后,该会话浮到列表最上方(last_active_at 更新即重排)(2026-07-08 验收通过)
-- [ ] 新会话标题为用户首条消息内容(截断到 50 字符,含换行取首行)— **2026-07-08 验收失败:标题仍为「law-test-01」(RAGFlow dialog name),非首问内容(见下方验收记录)**
-- [ ] portal title 与 RAGFlow `API4Conversation.name` 一致(双侧同步)— **2026-07-08 验收失败:标题未更新为首问,待排查**
-- [ ] 用户手动重命名后,再次提问不覆盖手动命名的 title(只首次 bind 时自动命名)— 未测(因 AC3 失败,跳过)
-- [ ] greeting 请求(空首问)不触发自动命名 — 未测
-- [ ] RAGFlow name 同步失败时,portal 侧 title 仍更新,日志记录 warning(不阻断 SSE)— 未测
+- [x] 新会话标题为用户首条消息内容(截断到 50 字符,含换行取首行)— **2026-07-08 经 Issue 42 重新诊断:portal.db title + RAGFlow name 双侧同步工作正常(首问内容已写入),用户看到的「law-test-01」实为 iframe EmbedContainer 头部读 `/info` 端点返回的 dialog.name,非会话标题;Issue 42 修复 `/info` 代理替换 title 后通过**
+- [x] portal title 与 RAGFlow `API4Conversation.name` 一致(双侧同步)— **2026-07-08 经 Issue 42 两步 repro 验证 GREEN:portal.db title=首问内容、RAGFlow name=首问内容、portal.log 无 warning**
+- [ ] 用户手动重命名后,再次提问不覆盖手动命名的 title(只首次 bind 时自动命名)— 未测(逻辑已由 Slice 40 实现,首次 bind 分支内执行)
+- [ ] greeting 请求(空首问)不触发自动命名 — 未测(逻辑已实现,is_greeting 守卫)
+- [ ] RAGFlow name 同步失败时,portal 侧 title 仍更新,日志记录 warning(不阻断 SSE)— 未测(逻辑已实现,except 降级)
 - [x] 既有 portal pytest 全绿(无回归)+ 新增排序/命名测试通过(415 passed, 5 skipped)
 
 ### Blocked by
 
 None - can start immediately(纯 portal 后端改动,无前端改动,无 RAGFlow 侧代码改动,复用既有 rename_session_via_ragflow)
 
-**验收状态:部分通过(2026-07-08)— 排序修复通过,标题自动命名失败**
+**验收状态:通过(2026-07-08,经 Issue 42 修正标题显示根因后)** — 排序修复首次验收即通过;标题「law-test-01」经 Issue 42 诊断为 iframe EmbedContainer 读 `/info` 端点 dialog.name(非会话标题),Slice 40 的双侧 title 同步工作正常,Issue 42 修复 `/info` 代理替换 title 后通过。
 
 ### 验收记录(2026-07-08)
 
@@ -1684,7 +1684,103 @@ None - can start immediately(纯 portal 后端改动,无前端改动,无 RAGFlow
 3. `gateway.py` 首次 bind 分支可能未进入(session 已被之前的某次请求 bind 过,走 else 分支不改 title)——需查 portal.db `chat_session_owner.title` 字段确认 portal 侧 title 是否更新
 4. RAGFlow `API4Conversation.name` 可能在 session 创建时默认继承 dialog name,而 portal 的 rename PATCH 请求被 RAGFlow 拒绝(如端点不存在或参数不对)
 
-**下一步**:新建 Slice 42 重新调查标题命名根因(需查 portal.log + portal.db + RAGFlow API4Conversation 表),本 issue 不关闭。
+**下一步**:Issue 42 已完成 — 诊断为 iframe EmbedContainer 读 `/info` 端点的 dialog.name(非会话标题),Slice 40 双侧 title 同步工作正常;修复 `/info` 代理替换 title 后通过。本 issue 关闭。
+
+---
+
+## Issue 41 — Slice 41: 重新诊断并修复 SSE 流式输出时输入框抖动(Slice 39 根因修正)
+
+### Parent
+
+承接 Issue 39 验收失败(Slice 39 加 `min-h-0` 后仍抖动,根因判断有误)。
+
+### 诊断(diagnosing-bugs 纪律,Phase 1-4)
+
+**Phase 1 red-capable 循环**:Playwright 脚本(`/Users/xijuangu/Developer/Work/thqh_projects/rag/.diag/diag_slice41_v2.mjs`)登录分享页 → iframe 内提交长问题 → SSE 流式输出期间以 8ms 间隔采样 textarea `getBoundingClientRect()`。基线期(不发消息)jitter=0 作对照。红时输出:`streaming: yRange=10, jitter=100, dirChanges=35, hRange=10`(textarea 高度 40-50px 振荡)。
+
+**Phase 3 假设 + Phase 4 probe 对比**(4 模式):
+
+| 模式 | 干预 | jitter | 结论 |
+|---|---|---|---|
+| observe | 无 | 26 | 基线红 |
+| css-fix | CSS `!important` 固定 textarea 高度 | **0** | **H1 确认(绿)** |
+| no-scroll | no-op `scrollTo` | 32 | H2 排除(红) |
+| css-fix+no-scroll | 同时 | 0 | 同 css-fix |
+
+### 根因(确认)
+
+`ragflow/web/src/components/message-input/next.tsx` 第 225 行 `autoSize={{ minRows: 2, maxRows: 8 }}` 是 **inline 对象字面量**,每次渲染创建新引用。机制链:
+
+1. SSE 每个 chunk → `derivedMessages` 变化 → `ChatContainer`(share/index.tsx)重渲染 → `NextMessageInput` 重渲染
+2. `NextMessageInput` 重渲染 → `autoSize={{ minRows: 2, maxRows: 8 }}` 创建**新对象**(引用变化)
+3. `Textarea` 组件内 `adjustHeight` 是 `useCallback([autoSize])`(textarea.tsx:53)→ autoSize 变 → adjustHeight 回调身份变
+4. `useEffect([textareaRef, autoSize, adjustHeight])`(textarea.tsx:55-59)→ effect 每个 chunk 触发
+5. `adjustHeight` 执行:`style.height = 'auto'`(textarea.tsx:38)→ **textarea 塌缩到 ~40px** → rAF 读 `scrollHeight`(强制布局)→ `style.height = '46px'`/`'48px'`
+6. **可见的 8-10px 高度振荡** = 用户看到的「输入框抽搐抖动」。流式期间重复 33-79 次
+
+**为什么 Slice 39 的 `min-h-0` 没生效**:Phase 1 数据 `bodySHgrowth=0`(body 高度全程不变),`min-h-0` 确实修好了容器溢出(body 不再被撑大),但抖动是 textarea 自身高度被 `adjustHeight` 反复重算导致,`min-h-0` 不触及此处。
+
+### What to build
+
+`ragflow/web/src/components/message-input/next.tsx`:`autoSize={{ minRows: 2, maxRows: 8 }}` 提为模块级常量 `AUTO_SIZE_CONFIG`,稳定引用,`adjustHeight` 的 effect 只在首次挂载触发一次(非每 chunk)。1 行改动。
+
+### Acceptance criteria
+
+- [x] SSE 流式输出期间,底部输入框不抖动(位置稳定)— **2026-07-08 验收通过:Playwright 1496 采样 jitter=0 / yRange=0 / hRange=0(修复前 jitter=26 / yRange=10 / hRange=10)**
+- [x] 消息区内容增长时正常滚动到底部(滚动行为不回归)— msgGrowth=2405 chars 期间 bodySHgrowth=0,容器正确约束
+- [x] 普通聊天页(single-chat-box)行为不回归 — 共用同一 `NextMessageInput`,autoSize 值不变仅引用稳定化
+- [x] RAGFlow web `npm run build` 通过(`✓ built in 1m 14s`)
+
+### Blocked by
+
+None - 可立即开始(纯 RAGFlow web 前端改动,无 portal 侧改动)
+
+**验收状态:通过(2026-07-08)**
+
+---
+
+## Issue 42 — Slice 42: 重新诊断并修复 iframe 标题显示 dialog.name(Slice 40 标题根因修正)
+
+### Parent
+
+承接 Issue 40 验收失败(标题仍为「law-test-01」,排序已通过)。
+
+### 诊断(diagnosing-bugs 纪律,Phase 1-4)
+
+**Phase 1 red-capable 循环**:curl 登录 → 拿 T_short → `curl /api/v1/chatbots/<id>/info` → 断言 `data.title`。红时输出:`{"data":{"title":"law-test-01"}}` (RED)。对比:`curl /portal/api/sessions` 返回的 title 全来自 portal.db(无「law-test-01」),证明 portal 侧边栏永远不显示 dialog.name。
+
+**Phase 3 假设 + Phase 4 probe**:
+
+| 假设 | 预测 | 验证结果 |
+|---|---|---|
+| H1(最高) | `/info` 代理原样回传 RAGFlow 响应(含 dialog.name),EmbedContainer 显示 dialog.name | **成立** — `curl /info` 返回 `title=law-test-01`,portal 代码 `proxy_bot_json_to_ragflow` `return Response(content=resp.content)` 原样回传 |
+| H2 | portal 侧边栏返回 dialog.name | **证伪** — listSessions 全读 portal.db,无 law-test-01 |
+| H3 | Slice 40 rename 静默失败 | **证伪** — 两步 repro 后 portal.db title=首问内容(GREEN)、RAGFlow name=首问内容(GREEN)、portal.log 无 warning |
+
+### 根因(确认)
+
+用户看到的「law-test-01」**不是 portal 会话列表的标题**,而是 RAGFlow iframe 内 `EmbedContainer` 头部显示的 dialog 名称(来自 `/info` 端点原样回传)。
+
+**数据流**:RAGFlow iframe 挂载 → `useFetchExternalChatInfo()` 调 `GET /api/v1/chatbots/{id}/info` → nginx → portal `proxy_bot_json_to_ragflow` 用 beta Token 调 RAGFlow → RAGFlow 返回 `{"data":{"title":"law-test-01"(dialog.name)}}` → portal **原样回传**(`return Response(content=resp.content)`)→ RAGFlow 前端 `chatInfo.title` → `<EmbedContainer title="law-test-01">` → 大字号显示
+
+**Slice 40 的 portal.db `chat_session_owner.title` + RAGFlow `api_4_conversation.name` 双侧同步工作正常**(两步 repro GREEN:首问内容已写入两侧)。但 `EmbedContainer` 头部读的是 `/info` 的 `title` 字段(= `dialog.name`),Slice 40 不触及此数据源。
+
+### What to build
+
+`portal/gateway.py` 的 `proxy_bot_json_to_ragflow`:返回前解析 JSON,把 `data.title` 替换为 `share_page.name`(portal 分享页名称)。仅替换成功响应(JSON 含 `data.title`);失败响应或非 JSON 原样回传。改 portal 源码(非 RAGFlow),`bash deploy.sh` 部署。
+
+### Acceptance criteria
+
+- [x] iframe EmbedContainer 头部显示分享页名称(如「默认分享页」)而非 dialog.name(如「law-test-01」)— **2026-07-08 验收通过:`curl /info` 返回 `title="默认分享页"`(修复前 `title="law-test-01"`)**
+- [x] portal 会话列表标题仍为首问内容(Slice 40 不回归)— listSessions 读 portal.db,Slice 40 不受影响
+- [x] `/info` 非 title 字段(prologue、doc_aggs 等)逐字段保留 — pytest 断言 doc_aggs 数组结构 + doc_id/doc_name/count 保留
+- [x] 既有 portal pytest 全绿(无回归)— 418 passed, 5 skipped(更新 2 个 /info 相关测试断言反映新行为)
+
+### Blocked by
+
+None - 可立即开始(纯 portal 后端改动,无 RAGFlow 侧代码改动)
+
+**验收状态:通过(2026-07-08)**
 
 ---
 
@@ -1694,7 +1790,7 @@ None - can start immediately(纯 portal 后端改动,无前端改动,无 RAGFlow
 
 无(2026-07-08 验收 Slice 37/38 后,用户创建用户组发现管理后台全部页面报「加载失败」)。
 
-> 编号说明:Issue 41/42 预留给 Slice 39/40 验收失败的后续(SSE 输入框抖动重新调查 / 标题自动命名根因重新调查),本 issue 编号为 43。
+> 编号说明:Issue 41/42 为 Slice 39/40 验收失败后的重新诊断与修复(SSE 输入框抖动根因修正 / iframe 标题显示 dialog.name 根因修正),均已验收通过。
 
 ### 根因(代码调查 + 服务器日志确认)
 

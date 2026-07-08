@@ -101,7 +101,7 @@ async def test_chatbot_info_with_tshort_uses_beta_token(client, app, monkeypatch
 
 
 async def test_chatbot_info_response_passed_through(client, app, monkeypatch):
-    """/info 代理的 JSON 响应原样回传(含 RAGFlow 返回的 title 等字段)。"""
+    """/info 代理的 JSON 响应回传,Slice 42 起 data.title 用 share_page.name 替换 dialog.name。"""
     t_short, dialog_id = await _login_and_get_t_short(client)
     _mock_upstream_json(
         monkeypatch,
@@ -115,7 +115,9 @@ async def test_chatbot_info_response_passed_through(client, app, monkeypatch):
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["data"]["title"] == "自定义标题"
+    # Slice 42:title 被 share_page.name(sp_default = "默认分享页")替换,
+    # 避免 iframe EmbedContainer 头部泄露 RAGFlow 内部 dialog 名(如 law-test-01)。
+    assert body["data"]["title"] == "默认分享页"
     assert body["data"]["prologue"] == "欢迎"
 
 
