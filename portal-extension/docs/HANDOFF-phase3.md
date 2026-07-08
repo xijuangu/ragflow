@@ -80,10 +80,12 @@ head -12 frontend/dist/index.html
 
 ```bash
 # 同步前端 dist + 后端改动
-rsync -az --delete ragflow/portal-extension/frontend/dist/ 172.16.10.180:~/portal-extension/frontend/dist/
-rsync -az ragflow/portal-extension/portal/main.py 172.16.10.180:~/portal-extension/portal/main.py
+# Slice 34:portal.db 已移到 ~/portal-data/(代码与数据分离);rsync 兜底加
+#   --exclude='*.db' --exclude='.env',防止 --delete 删数据/覆盖服务器 .env
+rsync -az --delete --exclude='*.db' --exclude='.env' ragflow/portal-extension/frontend/dist/ 172.16.10.180:~/portal-extension/frontend/dist/
+rsync -az --exclude='*.db' --exclude='.env' ragflow/portal-extension/portal/main.py 172.16.10.180:~/portal-extension/portal/main.py
 # (改 routes.py/gateway.py/models.py 时同步对应文件)
-rsync -az ragflow/portal-extension/portal/{gateway.py,models.py,routes.py} 172.16.10.180:~/portal-extension/portal/
+rsync -az --exclude='*.db' --exclude='.env' ragflow/portal-extension/portal/{gateway.py,models.py,routes.py} 172.16.10.180:~/portal-extension/portal/
 
 # 重启 portal(注意:start.sh 用 exec,不会自动 pkill 旧进程;必须先 pkill 再 start)
 ssh 172.16.10.180 'pkill -f "uvicorn portal.main:app"; sleep 2; nohup bash ~/portal-extension/start.sh > ~/portal-extension/portal.log 2>&1 < /dev/null &'
@@ -143,7 +145,7 @@ ssh 172.16.10.180 'curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1/api
 
 1. **rsync 代码到服务器并重启 portal**:
    ```bash
-   rsync -az ragflow/portal-extension/portal/main.py ragflow/portal-extension/portal/gateway.py ragflow/portal-extension/portal/routes.py 172.16.10.180:~/portal-extension/portal/
+   rsync -az --exclude='*.db' --exclude='.env' ragflow/portal-extension/portal/main.py ragflow/portal-extension/portal/gateway.py ragflow/portal-extension/portal/routes.py 172.16.10.180:~/portal-extension/portal/
    ssh 172.16.10.180 'bash ~/portal-extension/start.sh'
    ```
 2. **改服务器 nginx 配置**(`~/portal-nginx/conf.d/default.conf`):按本文 §2.1 的两个 `location ~` 块替换原仅匹配 `/completions$` 的规则,然后 `docker exec portal-nginx nginx -s reload`。
