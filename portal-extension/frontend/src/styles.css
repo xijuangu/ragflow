@@ -285,7 +285,6 @@ a:hover {
   gap: 16px;
   flex: 1;
   min-height: 0;
-  min-height: 480px;
 }
 
 .sessions-sidebar {
