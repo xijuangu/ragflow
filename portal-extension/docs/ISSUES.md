@@ -1787,8 +1787,8 @@ Slice 43 诊断 admin 后台 flaky "加载失败" 根因:浏览器 HTTP 缓存�
 - [x] 后端 `NoCacheHtmlMiddleware` 对 text/html 响应加 `Cache-Control: no-store` + `Vary: Accept`,JSON 响应不受影响 — commit ec243b0
 - [x] 前端 `cache: 'no-store'` workaround 从 `request` 函数移除 — commit ec243b0
 - [x] 后端 pytest 全绿(418 passed = 基线 415 + 3 新增)+ 前端 Vitest 全绿(81 passed)+ tsc/ruff 干净 — 合并后验证
-- [ ] 部署后浏览器 E2E 验收:6 个 admin tab 来回切换无 "加载失败"(移除前端 workaround 后依赖后端中间件生效)
-- [ ] CONTEXT.md 更新:记录 Slice 44 方案 B 决策(中间件根治,非 router prefix)
+- [x] 部署后浏览器 E2E 验收:6 个 admin tab 来回切换无 "加载失败"(移除前端 workaround 后依赖后端中间件生效) — Playwright 快速切换 40 次 + goto 12 次,0 失败(2026-07-08)
+- [x] CONTEXT.md 更新:记录 Slice 44 方案 B 决策(中间件根治,非 router prefix) — commit 26eadc4
 
 ### Blocked by
 
