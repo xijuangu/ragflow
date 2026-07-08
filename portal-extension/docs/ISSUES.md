@@ -1333,14 +1333,14 @@ postMessage({ type: 'ragflow:completions:end' }, '*');
 
 ### Acceptance criteria
 
-- [ ] iframe 内发消息后(SSE 开始),portal 侧点击「新建会话」/「切换会话」弹提示「正在生成回复,请先点击对话框内的停止按钮,再新建/切换会话(为限制并发量)」
-- [ ] 弹提示后不执行切换(不重载 iframe,不丢失消息)
-- [ ] 用户点 iframe 内「停止生成」→ SSE 结束 → postMessage end → portal 恢复可切换
-- [ ] SSE 正常完成后,点击「新建会话」/「切换会话」不再弹提示(正常切换)
-- [ ] SSE 出错时也恢复可切换(不会永久禁用)—— 验证 done/error 都触发 end
-- [ ] origin 校验:非同源 postMessage 被忽略(安全)
-- [ ] 既有 portal Vitest 全绿 + 新增 isStreaming 测试通过
-- [ ] RAGFlow web `npm run build` 通过
+- [x] iframe 内发消息后(SSE 开始),portal 侧点击「新建会话」/「切换会话」弹提示「正在生成回复,请先点击对话框内的停止按钮,再新建/切换会话(为限制并发量)」 — commit 884a3e1
+- [x] 弹提示后不执行切换(不重载 iframe,不丢失消息) — handleNewSession/handleReopen isStreaming 守卫
+- [ ] 用户点 iframe 内「停止生成」→ SSE 结束 → postMessage end → portal 恢复可切换(部署后浏览器 E2E 验收)
+- [ ] SSE 正常完成后,点击「新建会话」/「切换会话」不再弹提示(正常切换)— 部署后 E2E
+- [x] SSE 出错时也恢复可切换(不会永久禁用)—— finally 块保证 end 发出 — 代码层 + Vitest 覆盖
+- [x] origin 校验:非同源 postMessage 被忽略(安全) — Vitest 测试覆盖
+- [x] 既有 portal Vitest 全绿(81 passed)+ 新增 isStreaming 测试通过(4 例) — commit 884a3e1
+- [x] RAGFlow web `npm run build` 通过 — vite build 成功
 
 ### Blocked by
 
@@ -1428,13 +1428,13 @@ ssh 172.16.10.180 'curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8000/
 
 ### Acceptance criteria
 
-- [ ] `start.sh` 自动清理旧进程,重启只需 `bash start.sh` 一条命令
-- [ ] pkill 不误伤 ssh 会话(用 pgrep 精确匹配,退出码 0,不再 255)
-- [ ] `bash deploy.sh` 单条命令完成 rsync + 重启 + 健康检查 + 日志 tail
-- [ ] deploy.sh 的 rsync exclude 列表含 `--exclude='*.db'`(与 Slice 34 一致)和 `--exclude='.env'`
-- [ ] 部署失败时 deploy.sh 输出 portal.log 末尾辅助排查
-- [ ] 部署文档(HANDOFF-phase3.md)更新为 `bash deploy.sh`,保留手动命令 fallback
-- [ ] 既有 portal pytest 全绿(无回归)
+- [x] `start.sh` 自动清理旧进程,重启只需 `bash start.sh` 一条命令 — commit 831fd0c(pgrep 替代 pkill)
+- [x] pkill 不误伤 ssh 会话(用 pgrep 精确匹配,退出码 0,不再 255) — commit 831fd0c
+- [x] `bash deploy.sh` 单条命令完成 rsync + 重启 + 健康检查 + 日志 tail — commit 831fd0c
+- [x] deploy.sh 的 rsync exclude 列表含 `--exclude='*.db'`(与 Slice 34 一致)和 `--exclude='.env'` — commit 831fd0c
+- [x] 部署失败时 deploy.sh 输出 portal.log 末尾辅助排查 — commit 831fd0c
+- [ ] 部署文档(CONTEXT.md)更新为 `bash deploy.sh`,保留手动命令 fallback — 待主代理同步 CONTEXT.md
+- [x] 既有 portal pytest 全绿(418 passed,无回归) — 合并后验证
 
 ### Blocked by
 
@@ -1773,28 +1773,26 @@ Slice 43(诊断发现的遗留架构隐患)。
 
 Slice 43 诊断 admin 后台 flaky "加载失败" 根因:浏览器 HTTP 缓存污染 API fetch —— API URL(`/portal/admin/users`)与 SPA 路由 URL 重叠,导航请求(`Accept: text/html`)的 HTML 响应被缓存后,API fetch 命中缓存返回 HTML,`JSON.parse` 抛错 → 显示"加载失败"。当前用 `request` 函数加 `cache: 'no-store'` 作 workaround止血,本 slice 做架构根治。
 
-### What to build
+### What to build(方案 B — 已与用户确认,2026-07-08)
 
-让所有 portal API 走 `/portal/api/*` 前缀,与 SPA 路由(`/portal/admin/*`、`/portal/share-pages/*` 等)彻底分离,从根源上消除 URL 重叠。
+**决策变更**:原方案 A(改 router `prefix="/api"`)经评估需更新 263 处测试断言(portal 自有 API 路径在 19 个测试文件中出现 263 次),工作量大且易错。改用**方案 B:后端中间件**,从响应层根治缓存污染,不改任何 API 路径,263 处测试零改动,同样达到"导航 HTML 不再污染 API fetch"的根治效果。
 
-- **后端**:APIRouter 加 `prefix="/api"`(或挂载时加前缀),StaticFiles(`html=True`)兜底不再覆盖 `/api/*` 路径。CONTEXT.md §7 第 76 行已标注 `API_BASE='/portal/api'`,本 slice 让代码与文档一致。
-- **前端**:`API_BASE` 从 `/portal` 改为 `/portal/api`(client.ts)。CONTEXT.md 已如此标注,代码补齐。
-- **nginx**:现有 `/portal/` rewrite `^/portal/(.*)$ /$1 break` → :8000 已覆盖 `/portal/api/*`,无需改 nginx 配置。
-- **测试**:更新后端 pytest(若有硬编码 `/admin/...` 路径断言)+ 前端 Vitest mock fetch 路径。
-- **验证 workaround 可移除**:从 `request` 函数移除 `cache: 'no-store'`,Playwright 快速切换 40 次仍 0 失败(证明 URL 重叠已根治,不再依赖 workaround)。
+- **后端**(main.py):加 `NoCacheHtmlMiddleware(BaseHTTPMiddleware)`,对所有 `content-type: text/html` 的响应加 `Cache-Control: no-store, no-cache, must-revalidate` + `Vary: Accept` 头。JSON API 响应不受影响。注册在 `include_router` 之后、`mount(StaticFiles)` 之前。
+- **前端**(client.ts):移除 Slice 43 加的 `cache: 'no-store'` workaround(后端中间件已根治,不再需要前端绕过缓存)。
+- **测试**:新增 `test_slice44_cache_middleware.py`(3 例:StaticFiles HTML 带 no-store+Vary、JSON API 无 no-store、POST /login JSON 无 no-store)。
+- **不改**:API 路径(router 不加 prefix)、前端 `API_BASE`(仍 `/portal`)、nginx 配置、263 处现有测试断言。
 
 ### Acceptance criteria
 
-- [ ] 所有 portal API 端点路径以 `/api/` 开头(如 `/api/admin/users`),与 SPA 路由(`/admin/users`)不再重叠
-- [ ] 前端 `API_BASE='/portal/api'`,与 CONTEXT.md §7 标注一致
-- [ ] `cache: 'no-store'` 从 `request` 函数移除后,Playwright 快速切换 40 次 + goto 12 次仍 0 失败(不再依赖 workaround)
-- [ ] 后端 pytest 全绿(路径断言更新后)+ 前端 Vitest 全绿 + tsc 干净
-- [ ] 部署后浏览器 E2E 验收:6 个 admin tab 来回切换无 "加载失败"
-- [ ] CONTEXT.md §7 更新:`API_BASE` 标注与代码一致(若代码改动后文档需同步)
+- [x] 后端 `NoCacheHtmlMiddleware` 对 text/html 响应加 `Cache-Control: no-store` + `Vary: Accept`,JSON 响应不受影响 — commit ec243b0
+- [x] 前端 `cache: 'no-store'` workaround 从 `request` 函数移除 — commit ec243b0
+- [x] 后端 pytest 全绿(418 passed = 基线 415 + 3 新增)+ 前端 Vitest 全绿(81 passed)+ tsc/ruff 干净 — 合并后验证
+- [ ] 部署后浏览器 E2E 验收:6 个 admin tab 来回切换无 "加载失败"(移除前端 workaround 后依赖后端中间件生效)
+- [ ] CONTEXT.md 更新:记录 Slice 44 方案 B 决策(中间件根治,非 router prefix)
 
 ### Blocked by
 
-None - can start immediately(Slice 43 的 `cache: 'no-store'` workaround 已止血,无外部阻塞;本 slice 为架构改进,改动集中在 router prefix + 前端 API_BASE + 测试路径更新)
+None - can start immediately(Slice 43 的 `cache: 'no-store'` workaround 已止血;本 slice 为架构改进,改动集中在后端中间件 + 前端移除 workaround + 新测试)
 
 ---
 

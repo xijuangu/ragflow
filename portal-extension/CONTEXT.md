@@ -73,7 +73,7 @@ portal-extension/
 │   ├── src/
 │   │   ├── main.tsx          # Router basename='/portal/'
 │   │   ├── App.tsx
-│   │   ├── api/client.ts     # API_BASE='/portal/api',所有 API 调用
+│   │   ├── api/client.ts     # API_BASE='/portal'(import.meta.env.PROD),所有 API 调用。Slice 44 加 NoCacheHtmlMiddleware 根治 API/SPA URL 重叠导致的缓存污染(非改 prefix)
 │   │   ├── auth/AuthContext.tsx
 │   │   ├── pages/
 │   │   │   ├── LoginPage.tsx
@@ -162,9 +162,10 @@ portal 网关 `_ragflow_bot_segment` 用于 completions(agent → "agentbots"),s
 - iframe URL 预带 `session_id` 参数预创建 session,RAGFlow 前端不使用(Slice 22 根因),导致孤儿 session + 后续 `/completions` 403
 - Slice 24 改 RAGFlow 前端读 URL `session_id` 跳过 `fetchSessionId` greeting,与 portal 前端 `handleNewSession` 的 precreate 路径冲突 —— 新建会话无 greeting(Slice 28 修复)
 - RAGFlow 官方 v0.26.0 镜像不含本地 fork 加的 chatbot sessions 端点,docker cp 部署后才能用(Slice 27)
-- `start.sh` 用 `exec` 不自动 pkill 旧进程,必须手动 pkill 再 start(Slice 27 部署时踩坑)
-- `pkill -f "uvicorn portal.main:app"` 会误伤 ssh 会话本身(ssh 命令行含该字符串被匹配),导致 ssh 退出码 255;用 `pgrep -f` 精确匹配 PID 后 kill 可避免(Slice 35 待实施)
-- **pkill + nohup 不能放在同一条 ssh 命令中**:pkill 杀掉 ssh 后 `nohup start.sh` 不会执行,portal 进程不启动 → 502。必须分两条 ssh 命令(§9.1)。Slice 40 部署踩坑两次
+- `start.sh` 用 `exec` 不自动 pkill 旧进程,必须手动 pkill 再 start(Slice 27 部署时踩坑;**Slice 35 已修复**:start.sh 内置 pgrep 自动清理)
+- `pkill -f "uvicorn portal.main:app"` 会误伤 ssh 会话本身(ssh 命令行含该字符串被匹配),导致 ssh 退出码 255;用 `pgrep -f` 精确匹配 PID 后 kill 可避免(**Slice 35 已实施**,start.sh + deploy.sh 固化)
+- **pkill + nohup 不能放在同一条 ssh 命令中**:pkill 杀掉 ssh 后 `nohup start.sh` 不会执行,portal 进程不启动 → 502。必须分两条 ssh 命令(§9.1)。Slice 40 部署踩坑两次(**Slice 35 deploy.sh 已固化流程**)
+- **API URL 与 SPA 路由 URL 重叠导致浏览器缓存污染**(Slice 43 诊断 + Slice 44 根治):`StaticFiles(html=True)` 对导航请求(`Accept: text/html`)返回 SPA index.html 且无 `Cache-Control` 头,被浏览器缓存后污染同 URL 的 API fetch(`JSON.parse(html)` 抛错 → "加载失败")。**Slice 44 方案 B 根治**:加 `NoCacheHtmlMiddleware` 对 text/html 响应加 `Cache-Control: no-store` + `Vary: Accept`,JSON 响应不受影响,前端 `cache:'no-store'` workaround 已移除。未改 API 路径(router 不加 prefix),263 处测试零改动
 - **`.env` 缺失导致「密码错误」**:`start.sh` 的 `source .env` 失败但脚本无 `set -e`,`PORTAL_ADMIN_PASSWORD` 取空 → 密码哈希为空 → 任何密码都失败。部署后必须验证 `/login` 返回 200(§9.6)
 - `PORTAL_DB_URL` 默认 `sqlite://`(in-memory),进程退出即清空 `chat_session_owner` 表,用户「历史会话没了」;必须显式配置文件型 SQLite 或 MySQL(Slice 34 已实施:`~/portal-data/portal.db`)
 - CSS flex column 容器内的滚动子元素默认 `flex-shrink: 1`,会话增多时被压缩而非触发 `overflow-y: auto`;必须显式 `flex-shrink: 0`(Slice 31 修复)
@@ -172,20 +173,17 @@ portal 网关 `_ragflow_bot_segment` 用于 completions(agent → "agentbots"),s
 
 ## 9. 运维约束
 
-### 9.1 portal 重启
+### 9.1 portal 重启与部署
 
-**必须分两条 ssh 命令**(pkill 会匹配 ssh 命令行本身,误伤 ssh 连接,退出码 255 是预期行为):
+**Slice 35 已固化部署脚本**(commit 831fd0c):单条 `bash deploy.sh` 完成 rsync + 重启 + 健康检查 + 日志 tail。`start.sh` 用 `pgrep -f` 精确匹配旧进程后 kill(替代 `pkill`,不误伤 ssh 会话)。
 
+**推荐:一键部署**(在本地 `ragflow/portal-extension/` 目录):
 ```bash
-# 命令 1:杀旧进程(ssh 退出 255 是正常的,pkill 已成功杀进程)
-ssh 172.16.10.180 'pkill -f "uvicorn portal.main:app" || true; sleep 2'
-# 命令 2:启动新进程
-ssh 172.16.10.180 'cd ~/portal-extension && nohup bash start.sh > portal.log 2>&1 < /dev/null & disown'
+bash deploy.sh
 ```
+deploy.sh 内部流程:rsync 后端代码(含完整 exclude 保护 `.env`/`.venv`/`*.db`/`portal.log`)→ rsync 前端 dist(本地无 dist 则提示先 `npm run build`)→ ssh 远程执行 `nohup bash start.sh </dev/null & disown` → 循环 curl 健康检查(200/401 视为就绪)→ 失败时 tail portal.log。
 
-**禁止**:把 pkill + nohup 放在同一条 ssh 命令中(pkill 杀掉 ssh 后 nohup 不执行 → portal 不启动 → 502)。
-
-**start.sh 完整内容**(版本控制,`~/portal-extension/start.sh`):
+**start.sh 完整内容**(版本控制,`~/portal-extension/start.sh`,Slice 35 改进后):
 ```bash
 #!/bin/bash
 cd ~/portal-extension
@@ -193,10 +191,25 @@ source .venv/bin/activate
 set -a
 source .env        # 加载环境变量(无 set -e,.env 缺失不报错继续 → 密码错误,见 §9.6)
 set +a
+# Slice 35:pgrep 精确匹配旧进程,不误伤 ssh 会话(pkill -f 会匹配 ssh 命令行导致退出 255)
+OLD_PIDS=$(pgrep -f "python -m uvicorn portal.main:app" || true)
+if [ -n "$OLD_PIDS" ]; then
+  echo "killing old portal pids: $OLD_PIDS"
+  kill $OLD_PIDS 2>/dev/null || true
+  sleep 2
+fi
 exec python -m uvicorn portal.main:app --host 0.0.0.0 --port 8000
 ```
 
-Slice 35 待实施:改进为 pgrep 精确匹配 + start.sh 自动清理,单条命令重启。
+**手动 fallback**(deploy.sh 失败时,注意仍需分两条 ssh 命令,因 start.sh 内置 pgrep 在 ssh 远程执行时 `bash start.sh` 命令行不含 `uvicorn` 字符串故不会误杀 ssh):
+```bash
+# 命令 1:杀旧进程(现已由 start.sh 内置,但手动 fallback 仍可用 pkill;ssh 退出 255 是正常的)
+ssh 172.16.10.180 'pkill -f "uvicorn portal.main:app" || true; sleep 2'
+# 命令 2:启动新进程
+ssh 172.16.10.180 'cd ~/portal-extension && nohup bash start.sh > portal.log 2>&1 < /dev/null & disown'
+```
+
+**历史教训(已由 Slice 35 解决)**:`pkill -f "uvicorn portal.main:app"` 会匹配 ssh 命令行本身误伤 ssh(退出 255);pkill + nohup 不能放同一条 ssh 命令(pkill 杀 ssh 后 nohup 不执行 → 502)。现 start.sh 用 pgrep 精确匹配 PID 后 kill,deploy.sh 固化流程,不再踩坑。
 
 ### 9.2 RAGFlow bot_api 扩展端点(docker cp 临时替换)
 
