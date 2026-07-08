@@ -54,6 +54,10 @@ export default function SharePageDetailPage() {
   const [sessionsError, setSessionsError] = useState<string | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [sessionBusy, setSessionBusy] = useState(false);
+  // Slice 33:iframe 内 RAGFlow SSE 流式期间禁用会话切换(避免 iframe 重载中止 SSE 丢消息)
+  const [isStreaming, setIsStreaming] = useState(false);
+  // 流式期间点击「新建/切换会话」时弹出的提示(不禁用按钮,点击给反馈)
+  const [streamingNotice, setStreamingNotice] = useState(false);
 
   // 初始加载:embed-url(判断 embed_type + 取 iframe URL)+ 会话列表
   // Slice 22:回退 Slice 21 — fullscreen 类型改回只调 embed-url(不 precreate)。
@@ -127,10 +131,39 @@ export default function SharePageDetailPage() {
     };
   }, [id]);
 
+  // Slice 33:监听 iframe 内 RAGFlow 的 SSE 开始/结束 postMessage,流式期间禁用会话切换。
+  //   根因:portal 改 iframeUrl → iframe 重载 → SSE 中止 → 消息丢失。通过 postMessage
+  //   让 iframe 通知流式状态,portal 在切换入口拦截(配合 use-send-shared-message.ts)。
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      // 仅接受同源消息(iframe 经 nginx 同源代理,跨域忽略)
+      if (event.origin !== window.location.origin) return;
+      if (event.data?.type === 'ragflow:completions:start') {
+        setIsStreaming(true);
+      } else if (event.data?.type === 'ragflow:completions:end') {
+        setIsStreaming(false);
+      }
+    };
+    window.addEventListener('message', handleMessage);
+    return () => {
+      window.removeEventListener('message', handleMessage);
+    };
+  }, []);
+
+  // 流式结束后隐藏提示(避免提示残留干扰下次操作)
+  useEffect(() => {
+    if (!isStreaming) setStreamingNotice(false);
+  }, [isStreaming]);
+
   /** 重新打开历史会话:调 embed-url 拿新 T_short,追加 session_id,重载 iframe。
    *  Slice 16:widget 类型无 iframe_url,不重载(widget snippet 是静态嵌入代码)。 */
   const handleReopen = useCallback(
     async (sessionId: string) => {
+      // Slice 33:SSE 流式期间禁止切换会话(避免 iframe 重载中止 SSE 丢消息)
+      if (isStreaming) {
+        setStreamingNotice(true);
+        return;
+      }
       if (!id || sessionBusy || isWidget) return;
       setSessionBusy(true);
       setActiveSessionId(sessionId);
@@ -146,7 +179,7 @@ export default function SharePageDetailPage() {
         setSessionBusy(false);
       }
     },
-    [id, sessionBusy, isWidget],
+    [id, sessionBusy, isWidget, isStreaming],
   );
 
   /** 新建会话:
@@ -162,6 +195,11 @@ export default function SharePageDetailPage() {
    *           绕过 sessionBusy 守卫导致多次 precreate(弹多个会话)。 */
   const newSessionLockRef = useRef(false);
   const handleNewSession = useCallback(async () => {
+    // Slice 33:SSE 流式期间禁止新建会话(避免 iframe 重载中止 SSE 丢消息)
+    if (isStreaming) {
+      setStreamingNotice(true);
+      return;
+    }
     if (!id || sessionBusy || newSessionLockRef.current) return;
     newSessionLockRef.current = true;
     setSessionBusy(true);
@@ -193,7 +231,7 @@ export default function SharePageDetailPage() {
       newSessionLockRef.current = false;
       setSessionBusy(false);
     }
-  }, [id, sessionBusy, isWidget]);
+  }, [id, sessionBusy, isWidget, isStreaming]);
 
   /** 重命名会话:prompt 输入新标题 → PATCH → 乐观更新本地列表标题。 */
   const handleRename = useCallback(
@@ -256,6 +294,13 @@ export default function SharePageDetailPage() {
         <h2 className="page-title">{isWidget ? '悬浮组件嵌入' : '分享页对话'}</h2>
 
         {embedError && <div className="alert-error">{embedError}</div>}
+
+        {/* Slice 33:流式响应期间点击「新建/切换会话」的提示(按钮不禁用,点击给反馈) */}
+        {streamingNotice && (
+          <div className="alert-error" role="alert" data-testid="streaming-notice">
+            正在生成回复,请先点击对话框内的停止按钮,再新建/切换会话(为限制并发量)
+          </div>
+        )}
 
         <div className="detail-grid">
           <aside className="sessions-sidebar" aria-label="我的会话">

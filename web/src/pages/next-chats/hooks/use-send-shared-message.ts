@@ -109,20 +109,27 @@ export const useSendSharedMessage = () => {
       enableThinking?: boolean,
       enableInternet?: boolean,
     ) => {
-      const res = await send(completionUrl, {
-        conversation_id: id ?? conversationId,
-        quote: true,
-        question: message.content,
-        session_id: sessionId ?? get(derivedMessages, '0.session_id'),
-        reasoning: enableThinking,
-        internet: enableInternet,
-        ...(chatInfo?.llm_id ? { model_name: chatInfo.llm_id } : {}),
-      });
+      // Slice 33:SSE 流式开始/结束通知 parent(portal 拦截会话切换避免消息丢失)
+      // start 在 try 内、end 在 finally,保证 error 时也配对发 end,避免永久禁用
+      try {
+        window.parent?.postMessage({ type: 'ragflow:completions:start' }, '*');
+        const res = await send(completionUrl, {
+          conversation_id: id ?? conversationId,
+          quote: true,
+          question: message.content,
+          session_id: sessionId ?? get(derivedMessages, '0.session_id'),
+          reasoning: enableThinking,
+          internet: enableInternet,
+          ...(chatInfo?.llm_id ? { model_name: chatInfo.llm_id } : {}),
+        });
 
-      if (isCompletionError(res)) {
-        // cancel loading
-        setValue(message.content);
-        removeLatestMessage();
+        if (isCompletionError(res)) {
+          // cancel loading
+          setValue(message.content);
+          removeLatestMessage();
+        }
+      } finally {
+        window.parent?.postMessage({ type: 'ragflow:completions:end' }, '*');
       }
     },
     [
@@ -150,10 +157,16 @@ export const useSendSharedMessage = () => {
 
   const fetchSessionId = useCallback(async () => {
     const payload = { question: '' };
-    const ret = await send(completionUrl, { ...payload, ...data });
-    if (isCompletionError(ret)) {
-      message.error(ret?.data.message ?? 'Unknown error');
-      setHasError(true);
+    // Slice 33:fetchSessionId 也走 SSE,通知 parent 流式开始/结束
+    try {
+      window.parent?.postMessage({ type: 'ragflow:completions:start' }, '*');
+      const ret = await send(completionUrl, { ...payload, ...data });
+      if (isCompletionError(ret)) {
+        message.error(ret?.data.message ?? 'Unknown error');
+        setHasError(true);
+      }
+    } finally {
+      window.parent?.postMessage({ type: 'ragflow:completions:end' }, '*');
     }
   }, [send, completionUrl, data]);
 
