@@ -37,6 +37,7 @@ const ChatContainer = () => {
     stopOutputMessage,
     scrollRef,
     messageContainerRef,
+    conversationReference,
   } = useSendSharedMessage();
   const sendDisabled = useSendButtonDisabled(value);
   const { data: chatInfo } = useFetchExternalChatInfo();
@@ -75,7 +76,7 @@ const ChatContainer = () => {
                     reference={buildMessageItemReference(
                       {
                         messages: derivedMessages,
-                        reference: [],
+                        reference: conversationReference,
                       },
                       message,
                     )}
