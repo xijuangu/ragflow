@@ -309,15 +309,12 @@ tbody tr:hover { background: var(--surface-2); }
 .grid-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
 .share-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; display: flex; flex-direction: column; gap: 14px; transition: border-color .15s; }
 .share-card:hover { border-color: color-mix(in oklch, var(--accent) 40%, var(--border)); }
-.share-card .sc-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
-.share-card .sc-icon { width: 40px; height: 40px; border-radius: var(--radius); background: var(--surface-2); display: grid; place-items: center; color: var(--muted); flex-shrink: 0; }
 .share-card h3 { font-size: 16px; font-weight: 600; }
 .share-card .sc-desc { font-size: 13px; color: var(--muted); line-height: 1.5; }
 .share-card .sc-meta { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--muted); }
 .share-card .sc-meta .meta-row { display: flex; justify-content: space-between; }
 .share-card .sc-meta .meta-row b { font-weight: 550; color: var(--fg); }
-.share-card .sc-hint { font-size: 12px; color: var(--muted); }
-.share-card .sc-foot { display: flex; align-items: center; justify-content: space-between; padding-top: 12px; border-top: 1px solid var(--border); }
+.share-card .sc-foot { display: flex; align-items: center; justify-content: flex-end; padding-top: 12px; border-top: 1px solid var(--border); }
 
 /* ============================================================
    SHARE DETAIL (Chat container — 新,Issue 57 迁移使用)
