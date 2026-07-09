@@ -93,11 +93,17 @@ export default function SharePagesAdminPage() {
 
   return (
     <section>
-      <h2 className="page-title">分享页管理</h2>
+      <div className="page-head">
+        <div>
+          <div className="kicker">管理后台 / 分享页</div>
+          <h1>分享页管理</h1>
+          <div className="sub">创建并管理 RAGFlow 知识库分享页,关联 dialog_id 或 agent_id,控制启用状态。</div>
+        </div>
+      </div>
 
       {error && <div className="alert-error">{error}</div>}
 
-      {/* 创建分享页表单 */}
+      {/* 创建分享页表单(内联,无 drawer) */}
       <form className="admin-form card" onSubmit={handleCreate} aria-label="创建分享页表单">
         <h3 className="form-title">创建分享页</h3>
         {formError && <div className="alert-error">{formError}</div>}
@@ -156,52 +162,56 @@ export default function SharePagesAdminPage() {
       </form>
 
       {/* 分享页列表 */}
-      <div className="admin-table-wrap">
-        {pages === null && !error && <div className="loading">加载中…</div>}
-        {pages !== null && pages.length === 0 && (
-          <div className="empty-state card">暂无分享页</div>
-        )}
-        {pages !== null && pages.length > 0 && (
-          <table className="admin-table">
-            <thead>
-              <tr>
-                <th>名称</th>
-                <th>资源 ID</th>
-                <th>嵌入类型</th>
-                <th>RAGFlow 类型</th>
-                <th>状态</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {pages.map((p) => (
-                <tr key={p.id} data-testid={`share-page-row-${p.id}`}>
-                  <td>{p.name}</td>
-                  <td className="mono">{p.ragflow_resource_id}</td>
-                  <td>{p.embed_type}</td>
-                  <td>{p.ragflow_type}</td>
-                  <td>
-                    {p.enabled ? (
-                      <span className="badge badge-success">启用</span>
-                    ) : (
-                      <span className="badge badge-danger">禁用</span>
-                    )}
-                  </td>
-                  <td className="admin-actions">
-                    <button
-                      type="button"
-                      className="btn btn-ghost btn-sm"
-                      onClick={() => handleToggleEnabled(p)}
-                      disabled={busyId === p.id}
-                    >
-                      {p.enabled ? '禁用' : '启用'}
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+      <div className="card card-table">
+        <div className="card-body">
+          <div className="table-wrap">
+            {pages === null && !error && <div className="loading">加载中…</div>}
+            {pages !== null && pages.length === 0 && (
+              <div className="empty-state">暂无分享页</div>
+            )}
+            {pages !== null && pages.length > 0 && (
+              <table>
+                <thead>
+                  <tr>
+                    <th>名称</th>
+                    <th>资源 ID</th>
+                    <th>嵌入类型</th>
+                    <th>RAGFlow 类型</th>
+                    <th>状态</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pages.map((p) => (
+                    <tr key={p.id} data-testid={`share-page-row-${p.id}`}>
+                      <td>{p.name}</td>
+                      <td className="mono">{p.ragflow_resource_id}</td>
+                      <td>{p.embed_type}</td>
+                      <td>{p.ragflow_type}</td>
+                      <td>
+                        {p.enabled ? (
+                          <span className="badge b-active">启用</span>
+                        ) : (
+                          <span className="badge b-archived">禁用</span>
+                        )}
+                      </td>
+                      <td className="admin-actions">
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-sm"
+                          onClick={() => handleToggleEnabled(p)}
+                          disabled={busyId === p.id}
+                        >
+                          {p.enabled ? '禁用' : '启用'}
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
       </div>
     </section>
   );

@@ -109,13 +109,19 @@ export default function AuditLogsAdminPage() {
 
   return (
     <section>
-      <h2 className="page-title">审计日志</h2>
+      <div className="page-head">
+        <div>
+          <div className="kicker">管理后台 / 审计日志</div>
+          <h1>审计日志</h1>
+          <div className="sub">查看 8 类敏感操作记录:登录、授权、会话查看、用户启停。按操作者、类型与时间筛选。</div>
+        </div>
+      </div>
 
       {error && <div className="alert-error">{error}</div>}
 
-      {/* 筛选表单 */}
-      <form className="admin-form card" onSubmit={handleSearch} aria-label="审计日志筛选表单">
-        <div className="admin-form-row">
+      {/* 日志列表(含筛选) */}
+      <div className="card card-table">
+        <form className="filters" onSubmit={handleSearch} aria-label="审计日志筛选表单">
           <div className="form-field">
             <label htmlFor="filter-actor">操作者</label>
             <select
@@ -167,43 +173,43 @@ export default function AuditLogsAdminPage() {
           <button type="submit" className="btn btn-primary">
             筛选
           </button>
+        </form>
+        <div className="card-body">
+          <div className="table-wrap">
+            {logs === null && !error && <div className="loading">加载中…</div>}
+            {logs !== null && logs.length === 0 && (
+              <div className="empty-state">暂无日志</div>
+            )}
+            {logs !== null && logs.length > 0 && (
+              <table>
+                <thead>
+                  <tr>
+                    <th>时间</th>
+                    <th>操作者</th>
+                    <th>操作类型</th>
+                    <th>目标类型</th>
+                    <th>目标 ID</th>
+                    <th>详情</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {logs.map((log) => (
+                    <tr key={log.id} data-testid={`audit-row-${log.id}`}>
+                      <td className="mono">{formatTime(log.at, 'seconds')}</td>
+                      <td>{userMap.get(log.actor_user_id)?.username ?? log.actor_user_id}</td>
+                      <td>
+                        <span className="badge badge-info">{log.action}</span>
+                      </td>
+                      <td>{log.target_type}</td>
+                      <td className="mono">{log.target_id}</td>
+                      <td className="audit-meta">{formatMeta(log.meta)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
         </div>
-      </form>
-
-      {/* 日志列表 */}
-      <div className="admin-table-wrap">
-        {logs === null && !error && <div className="loading">加载中…</div>}
-        {logs !== null && logs.length === 0 && (
-          <div className="empty-state card">暂无日志</div>
-        )}
-        {logs !== null && logs.length > 0 && (
-          <table className="admin-table">
-            <thead>
-              <tr>
-                <th>时间</th>
-                <th>操作者</th>
-                <th>操作类型</th>
-                <th>目标类型</th>
-                <th>目标 ID</th>
-                <th>详情</th>
-              </tr>
-            </thead>
-            <tbody>
-              {logs.map((log) => (
-                <tr key={log.id} data-testid={`audit-row-${log.id}`}>
-                  <td>{formatTime(log.at, 'seconds')}</td>
-                  <td>{userMap.get(log.actor_user_id)?.username ?? log.actor_user_id}</td>
-                  <td>
-                    <span className="badge badge-info">{log.action}</span>
-                  </td>
-                  <td>{log.target_type}</td>
-                  <td>{log.target_id}</td>
-                  <td className="audit-meta">{formatMeta(log.meta)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
       </div>
     </section>
   );

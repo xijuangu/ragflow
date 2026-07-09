@@ -163,7 +163,13 @@ export default function GrantsAdminPage() {
 
   return (
     <section>
-      <h2 className="page-title">授权管理</h2>
+      <div className="page-head">
+        <div>
+          <div className="kicker">管理后台 / 授权</div>
+          <h1>授权管理</h1>
+          <div className="sub">选择分享页后,将其授权给用户或用户组。授权创建与撤销均写入审计日志。</div>
+        </div>
+      </div>
 
       {error && <div className="alert-error">{error}</div>}
 
@@ -187,7 +193,7 @@ export default function GrantsAdminPage() {
         </div>
       </div>
 
-      {/* 创建授权表单 */}
+      {/* 创建授权表单(内联,无 drawer) */}
       {selectedPageId && (
         <form className="admin-form card" onSubmit={handleCreate} aria-label="创建授权表单">
           <h3 className="form-title">授权给用户或组</h3>
@@ -232,45 +238,49 @@ export default function GrantsAdminPage() {
 
       {/* 授权列表 */}
       {selectedPageId && (
-        <div className="admin-table-wrap">
-          {grants === null && <div className="loading">加载中…</div>}
-          {grants !== null && grants.length === 0 && (
-            <div className="empty-state card">暂无授权</div>
-          )}
-          {grants !== null && grants.length > 0 && (
-            <table className="admin-table">
-              <thead>
-                <tr>
-                  <th>主体类型</th>
-                  <th>名称</th>
-                  <th>权限</th>
-                  <th>操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                {grants.map((g) => {
-                  const key = `${g.subject_type}-${g.subject_id}`;
-                  return (
-                    <tr key={key} data-testid={`grant-row-${key}`}>
-                      <td>{g.subject_type === 'user' ? '用户' : '用户组'}</td>
-                      <td>{resolveSubjectName(g)}</td>
-                      <td>{g.permission}</td>
-                      <td className="admin-actions">
-                        <button
-                          type="button"
-                          className="btn btn-danger btn-sm"
-                          onClick={() => handleRevoke(g)}
-                          disabled={busyKey === `${g.subject_type}:${g.subject_id}`}
-                        >
-                          撤销
-                        </button>
-                      </td>
+        <div className="card card-table">
+          <div className="card-body">
+            <div className="table-wrap">
+              {grants === null && <div className="loading">加载中…</div>}
+              {grants !== null && grants.length === 0 && (
+                <div className="empty-state">暂无授权</div>
+              )}
+              {grants !== null && grants.length > 0 && (
+                <table>
+                  <thead>
+                    <tr>
+                      <th>主体类型</th>
+                      <th>名称</th>
+                      <th>权限</th>
+                      <th>操作</th>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          )}
+                  </thead>
+                  <tbody>
+                    {grants.map((g) => {
+                      const key = `${g.subject_type}-${g.subject_id}`;
+                      return (
+                        <tr key={key} data-testid={`grant-row-${key}`}>
+                          <td>{g.subject_type === 'user' ? '用户' : '用户组'}</td>
+                          <td>{resolveSubjectName(g)}</td>
+                          <td>{g.permission}</td>
+                          <td className="admin-actions">
+                            <button
+                              type="button"
+                              className="btn btn-danger btn-sm"
+                              onClick={() => handleRevoke(g)}
+                              disabled={busyKey === `${g.subject_type}:${g.subject_id}`}
+                            >
+                              撤销
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
         </div>
       )}
     </section>

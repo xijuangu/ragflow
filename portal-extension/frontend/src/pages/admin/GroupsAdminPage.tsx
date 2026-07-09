@@ -153,11 +153,17 @@ export default function GroupsAdminPage() {
 
   return (
     <section>
-      <h2 className="page-title">用户组管理</h2>
+      <div className="page-head">
+        <div>
+          <div className="kicker">管理后台 / 用户组</div>
+          <h1>用户组管理</h1>
+          <div className="sub">按业务线组织用户,每个组可单独管理成员。用户可同时属于多个组。</div>
+        </div>
+      </div>
 
       {error && <div className="alert-error">{error}</div>}
 
-      {/* 创建用户组表单 */}
+      {/* 创建用户组表单(内联,无 drawer) */}
       <form className="admin-form card" onSubmit={handleCreate} aria-label="创建用户组表单">
         <h3 className="form-title">创建用户组</h3>
         <div className="admin-form-row">
@@ -177,7 +183,7 @@ export default function GroupsAdminPage() {
         </div>
       </form>
 
-      {/* 用户组列表 */}
+      {/* 用户组列表(卡片网格,每卡含内联成员管理) */}
       <div className="admin-groups">
         {groups === null && !error && <div className="loading">加载中…</div>}
         {groups !== null && groups.length === 0 && (

@@ -96,11 +96,17 @@ export default function UsersAdminPage() {
 
   return (
     <section>
-      <h2 className="page-title">用户管理</h2>
+      <div className="page-head">
+        <div>
+          <div className="kicker">管理后台 / 用户管理</div>
+          <h1>用户管理</h1>
+          <div className="sub">管理门户账号、角色与启用状态。硬删除会级联清空该用户所有会话。</div>
+        </div>
+      </div>
 
       {error && <div className="alert-error">{error}</div>}
 
-      {/* 创建表单 */}
+      {/* 创建表单(内联,无 drawer) */}
       <form className="admin-form card" onSubmit={handleCreate} aria-label="创建用户表单">
         <h3 className="form-title">创建用户</h3>
         {formError && <div className="alert-error">{formError}</div>}
@@ -142,62 +148,66 @@ export default function UsersAdminPage() {
       </form>
 
       {/* 用户列表 */}
-      <div className="admin-table-wrap">
-        {users === null && !error && <div className="loading">加载中…</div>}
-        {users !== null && users.length === 0 && (
-          <div className="empty-state card">暂无用户</div>
-        )}
-        {users !== null && users.length > 0 && (
-          <table className="admin-table">
-            <thead>
-              <tr>
-                <th>用户名</th>
-                <th>邮箱</th>
-                <th>角色</th>
-                <th>状态</th>
-                <th>创建时间</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {users.map((u) => (
-                <tr key={u.id} data-testid={`user-row-${u.id}`}>
-                  <td>{u.username}</td>
-                  <td>{u.email}</td>
-                  <td>{u.is_admin ? <span className="badge badge-info">管理员</span> : '普通用户'}</td>
-                  <td>
-                    {u.enabled ? (
-                      <span className="badge badge-success">启用</span>
-                    ) : (
-                      <span className="badge badge-danger">禁用</span>
-                    )}
-                  </td>
-                  <td>{formatTime(u.created_at, 'date')}</td>
-                  <td className="admin-actions">
-                    <button
-                      type="button"
-                      className="btn btn-ghost btn-sm"
-                      onClick={() => handleToggleEnabled(u)}
-                      disabled={busyId === u.id || u.is_admin}
-                      title={u.is_admin ? '管理员不可禁用' : ''}
-                    >
-                      {u.enabled ? '禁用' : '启用'}
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-danger btn-sm"
-                      onClick={() => handleDelete(u)}
-                      disabled={busyId === u.id || u.is_admin}
-                      title={u.is_admin ? '管理员不可删除' : ''}
-                    >
-                      硬删除
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+      <div className="card card-table">
+        <div className="card-body">
+          <div className="table-wrap">
+            {users === null && !error && <div className="loading">加载中…</div>}
+            {users !== null && users.length === 0 && (
+              <div className="empty-state">暂无用户</div>
+            )}
+            {users !== null && users.length > 0 && (
+              <table>
+                <thead>
+                  <tr>
+                    <th>用户名</th>
+                    <th>邮箱</th>
+                    <th>角色</th>
+                    <th>状态</th>
+                    <th>创建时间</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {users.map((u) => (
+                    <tr key={u.id} data-testid={`user-row-${u.id}`}>
+                      <td>{u.username}</td>
+                      <td>{u.email}</td>
+                      <td>{u.is_admin ? <span className="badge badge-info">管理员</span> : '普通用户'}</td>
+                      <td>
+                        {u.enabled ? (
+                          <span className="badge b-active">启用</span>
+                        ) : (
+                          <span className="badge b-archived">禁用</span>
+                        )}
+                      </td>
+                      <td className="mono">{formatTime(u.created_at, 'date')}</td>
+                      <td className="admin-actions">
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-sm"
+                          onClick={() => handleToggleEnabled(u)}
+                          disabled={busyId === u.id || u.is_admin}
+                          title={u.is_admin ? '管理员不可禁用' : ''}
+                        >
+                          {u.enabled ? '禁用' : '启用'}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-danger btn-sm"
+                          onClick={() => handleDelete(u)}
+                          disabled={busyId === u.id || u.is_admin}
+                          title={u.is_admin ? '管理员不可删除' : ''}
+                        >
+                          硬删除
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
       </div>
     </section>
   );

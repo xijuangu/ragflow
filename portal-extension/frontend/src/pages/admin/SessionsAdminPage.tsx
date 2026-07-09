@@ -139,13 +139,19 @@ export default function SessionsAdminPage() {
 
   return (
     <section>
-      <h2 className="page-title">会话搜索</h2>
+      <div className="page-head">
+        <div>
+          <div className="kicker">管理后台 / 会话搜索</div>
+          <h1>会话搜索</h1>
+          <div className="sub">按用户、分享页或关键词检索会话元数据。查看正文需二次确认并写入审计日志。</div>
+        </div>
+      </div>
 
       {error && <div className="alert-error">{error}</div>}
 
-      {/* 搜索表单 */}
-      <form className="admin-form card" onSubmit={handleSearch} aria-label="会话搜索表单">
-        <div className="admin-form-row">
+      {/* 会话列表(含筛选) */}
+      <div className="card card-table">
+        <form className="filters" onSubmit={handleSearch} aria-label="会话搜索表单">
           <div className="form-field">
             <label htmlFor="filter-user">用户</label>
             <select
@@ -189,55 +195,55 @@ export default function SessionsAdminPage() {
           <button type="submit" className="btn btn-primary">
             搜索
           </button>
+        </form>
+        <div className="card-body">
+          <div className="table-wrap">
+            {sessions === null && !error && <div className="loading">加载中…</div>}
+            {sessions !== null && sessions.length === 0 && (
+              <div className="empty-state">暂无会话</div>
+            )}
+            {sessions !== null && sessions.length > 0 && (
+              <table>
+                <thead>
+                  <tr>
+                    <th>标题</th>
+                    <th>用户</th>
+                    <th>分享页</th>
+                    <th>创建时间</th>
+                    <th>最近活跃</th>
+                    <th>消息数</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sessions.map((s) => (
+                    <tr key={s.session_id} data-testid={`session-row-${s.session_id}`}>
+                      <td>{s.title || '(无标题)'}</td>
+                      <td>{userMap.get(s.portal_user_id)?.username ?? s.portal_user_id}</td>
+                      <td>{sharePageMap.get(s.share_page_id)?.name ?? s.share_page_id}</td>
+                      <td className="mono">{formatTime(s.created_at, 'datetime')}</td>
+                      <td className="mono">{formatTime(s.last_active_at, 'datetime')}</td>
+                      <td className="mono">{s.message_count}</td>
+                      <td className="admin-actions">
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-sm"
+                          onClick={() => handleViewElevated(s)}
+                          disabled={elevatedLoading}
+                        >
+                          {elevatedLoading ? '加载中…' : '查看正文'}
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
         </div>
-      </form>
-
-      {/* 会话列表 */}
-      <div className="admin-table-wrap">
-        {sessions === null && !error && <div className="loading">加载中…</div>}
-        {sessions !== null && sessions.length === 0 && (
-          <div className="empty-state card">暂无会话</div>
-        )}
-        {sessions !== null && sessions.length > 0 && (
-          <table className="admin-table">
-            <thead>
-              <tr>
-                <th>标题</th>
-                <th>用户</th>
-                <th>分享页</th>
-                <th>创建时间</th>
-                <th>最近活跃</th>
-                <th>消息数</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sessions.map((s) => (
-                <tr key={s.session_id} data-testid={`session-row-${s.session_id}`}>
-                  <td>{s.title || '(无标题)'}</td>
-                  <td>{userMap.get(s.portal_user_id)?.username ?? s.portal_user_id}</td>
-                  <td>{sharePageMap.get(s.share_page_id)?.name ?? s.share_page_id}</td>
-                  <td>{formatTime(s.created_at, 'datetime')}</td>
-                  <td>{formatTime(s.last_active_at, 'datetime')}</td>
-                  <td>{s.message_count}</td>
-                  <td className="admin-actions">
-                    <button
-                      type="button"
-                      className="btn btn-ghost btn-sm"
-                      onClick={() => handleViewElevated(s)}
-                      disabled={elevatedLoading}
-                    >
-                      {elevatedLoading ? '加载中…' : '查看正文'}
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
       </div>
 
-      {/* elevated 弹窗 — 显示消息正文 */}
+      {/* elevated 弹窗 — 显示消息正文(modal,非 drawer) */}
       {(elevatedData || elevatedError) && (
         <div className="modal-backdrop" role="dialog" aria-modal="true" onClick={closeElevated}>
           <div className="modal-card" onClick={(e) => e.stopPropagation()}>
