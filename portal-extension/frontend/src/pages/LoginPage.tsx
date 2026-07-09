@@ -61,15 +61,15 @@ export default function LoginPage() {
           <div className="la-feats">
             <div className="la-feat">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
-              <div><div className="ft">短期可撤销令牌</div><div className="fd">租户级 Token 全程不离开服务端,签发 pt_ 前缀短期令牌注入 iframe</div></div>
+              <div><div className="feat-title">短期可撤销令牌</div><div className="feat-desc">租户级 Token 全程不离开服务端,签发 pt_ 前缀短期令牌注入 iframe</div></div>
             </div>
             <div className="la-feat">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 5h16v10H8l-4 4z"/></svg>
-              <div><div className="ft">会话归属绑定</div><div className="fd">SSE 成功后解析 session_id 绑定当前用户,关页面不丢失历史</div></div>
+              <div><div className="feat-title">会话归属绑定</div><div className="feat-desc">SSE 成功后解析 session_id 绑定当前用户,关页面不丢失历史</div></div>
             </div>
             <div className="la-feat">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 12a8 8 0 0 1 13.7-5.6L20 8"/><path d="M20 4v4h-4"/><path d="M20 12a8 8 0 0 1-13.7 5.6L4 16"/><path d="M4 20v-4h4"/></svg>
-              <div><div className="ft">双删与重试保障</div><div className="fd">先删 RAGFlow 再删门户,失败标记 pending_deletion 由后台清理</div></div>
+              <div><div className="feat-title">双删与重试保障</div><div className="feat-desc">先删 RAGFlow 再删门户,失败标记 pending_deletion 由后台清理</div></div>
             </div>
           </div>
         </div>
@@ -129,7 +129,7 @@ export default function LoginPage() {
             使用企业 SSO 登录
           </button>
 
-          <div className="login-alt">还没有账号? <a href="#" onClick={(e) => e.preventDefault()}>联系管理员开通</a></div>
+          <div className="login-alt">还没有账号? <span className="login-contact-note">联系管理员开通</span></div>
         </div>
       </main>
     </div>

@@ -2569,17 +2569,21 @@ UI polish 续作。关联 [PRD-ui-redesign.md](PRD-ui-redesign.md)。源:交接�
 
 ## Acceptance criteria
 
-- [ ] `.detail-shell` 无死 magic number,改 `min-height: 0`,Slice 38 滚动不回归
-- [ ] `.login-card` 与 `.toggle::after` 无阴影,改发丝边
-- [ ] LoginPage JSX 用 `.feat-title`/`.feat-desc`,无 `href="#"` 死链
-- [ ] SharePagesPage JSX 用 `.meta-row`/`.sc-hint`,无行内 style
-- [ ] SharePageDetailPage JSX 用 `.new-session-action`/`.loading.compact`/`.conv-list-items`,无行内 style
-- [ ] tsc 0 errors,Vitest 全绿
-- [ ] Playwright E2E 全绿(选择器不依赖被改名 class)
+- [x] `.detail-shell` 无死 magic number,改 `min-height: 0`,Slice 38 滚动不回归
+- [x] `.login-card` 与 `.toggle::after` 无阴影,改发丝边
+- [x] LoginPage JSX 用 `.feat-title`/`.feat-desc`,无 `href="#"` 死链
+- [x] SharePagesPage JSX 用 `.meta-row`/`.sc-hint`,无行内 style
+- [x] SharePageDetailPage JSX 用 `.new-session-action`/`.loading.compact`/`.conv-list-items`,无行内 style
+- [x] tsc 0 errors,Vitest 全绿(81 passed)
+- [x] Playwright E2E 全绿(选择器不依赖被改名 class — 代码核查:E2E/单测均用 data-testid/role,无引用 `.ft`/`.fd`/`.mr` 或新 class)
 
 ## Blocked by
 
 无 — 可立即开始(补丁已就绪)。
+
+## 完成
+
+2026-07-09 应用 `portal-ui-polish-review-fixes.patch`,tsc 0 errors + Vitest 81 passed 全绿。7 项 AC 全部勾选。Issue 关闭。
 
 ---
 

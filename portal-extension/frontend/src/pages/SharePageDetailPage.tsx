@@ -317,7 +317,7 @@ export default function SharePageDetailPage() {
         <div className="detail-shell">
           <aside className="conv-list" aria-label="我的会话">
             <div className="kicker cl-label">历史会话</div>
-            <div style={{ padding: '0 8px 10px' }}>
+            <div className="new-session-action">
               <button
                 type="button"
                 className="btn btn-primary btn-sm btn-block"
@@ -331,7 +331,7 @@ export default function SharePageDetailPage() {
             {sessionsError && <div className="alert-error alert-sm">{sessionsError}</div>}
 
             {sessions === null && !sessionsError && (
-              <div className="loading" style={{ padding: '12px' }}>
+              <div className="loading compact">
                 加载中…
               </div>
             )}
@@ -341,7 +341,7 @@ export default function SharePageDetailPage() {
             )}
 
             {sessions !== null && sessions.length > 0 && (
-              <ul role="list" style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+              <ul role="list" className="conv-list-items">
                 {sessions.map((s) => {
                   const isActive = s.session_id === activeSessionId;
                   return (

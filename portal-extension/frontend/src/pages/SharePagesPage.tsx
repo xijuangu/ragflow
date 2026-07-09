@@ -81,21 +81,21 @@ export default function SharePagesPage() {
                   </div>
                 </div>
                 <div className="sc-meta">
-                  <div className="mr">
+                  <div className="meta-row">
                     <span>RAGFlow 类型</span>
                     <b>{p.ragflow_type}</b>
                   </div>
-                  <div className="mr">
+                  <div className="meta-row">
                     <span>嵌入方式</span>
                     <b>{p.embed_type}</b>
                   </div>
-                  <div className="mr">
+                  <div className="meta-row">
                     <span>创建时间</span>
                     <b className="mono">{formatTime(p.created_at, 'date')}</b>
                   </div>
                 </div>
                 <div className="sc-foot">
-                  <span className="muted" style={{ fontSize: 12 }}>
+                  <span className="sc-hint">
                     点击「打开」进入对话
                   </span>
                   <Link className="btn-link" to={`/share-pages/${p.id}`}>
