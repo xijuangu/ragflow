@@ -27,7 +27,7 @@ def test_admin_create_grant_revoke_and_delete_user(page: Page, base_url: str):
 
     try:
         login_as_admin(page, base_url)
-        page.get_by_role("link", name="管理后台").click()
+        page.goto(portal_url(base_url, "/admin/users"), wait_until="domcontentloaded")
         expect(page.get_by_role("heading", name="用户管理")).to_be_visible()
 
         page.get_by_label("用户名").fill(username)

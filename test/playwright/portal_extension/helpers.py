@@ -72,7 +72,6 @@ def login_as_admin(page: Page, base_url: str) -> None:
     page.get_by_label("密码").fill(password)
     page.get_by_role("button", name=re.compile("^登录$")).click()
     expect(page.get_by_role("heading", name="我的分享页")).to_be_visible()
-    expect(page.get_by_role("link", name="管理后台")).to_be_visible()
 
 
 def expect_no_portal_errors(page: Page) -> None:

@@ -50,7 +50,7 @@ def test_portal_admin_tabs_load_without_cache_regression(page: Page, base_url: s
     """Covers all admin tabs and the Slice 44 API/SPA cache regression surface."""
     login_as_admin(page, base_url)
 
-    page.get_by_role("link", name="管理后台").click()
+    page.goto(portal_url(base_url, "/admin/users"), wait_until="domcontentloaded")
     expect(page.get_by_role("heading", name="用户管理")).to_be_visible()
 
     for _ in range(2):

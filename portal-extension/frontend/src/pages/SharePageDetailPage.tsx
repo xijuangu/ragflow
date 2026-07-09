@@ -296,7 +296,7 @@ export default function SharePageDetailPage() {
             返回列表
           </Link>
           <div>
-            <div className="db-title">{isWidget ? '悬浮组件嵌入' : '分享页对话'}</div>
+            <div className="db-title" role="heading" aria-level={1}>{isWidget ? '悬浮组件嵌入' : '分享页对话'}</div>
             <div className="db-meta">会话归属当前登录用户 · 切换 / 重命名 / 删除均同步门户与 RAGFlow</div>
           </div>
           <div className="db-spacer" />
