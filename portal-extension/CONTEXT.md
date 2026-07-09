@@ -371,3 +371,51 @@ uv run pytest -q test/playwright/portal_extension -s --junitxml=/tmp/playwright-
 ```
 
 如需真实聊天慢用例,追加 `PORTAL_E2E_RUN_CHAT=1`;可选 `PORTAL_E2E_CHAT_QUESTION`、`PORTAL_E2E_CHAT_TIMEOUT_MS`、`PORTAL_E2E_CHECK_ELEVATED_CHAT=1`。说明:CRUD 用例只创建 `pw-user-<timestamp>` / `pw-group-user-<timestamp>` 临时用户,并在同一测试中撤销授权、移除用户组成员和硬删除;若中途失败,finally 会用管理员 API 清理临时用户。用户组和分享页没有删除端点,测试不会创建永久用户组或分享页。
+
+### 10.1 回归测试套件(每次部署 / 合并 / 验收后必跑)
+
+每次部署到 172.16.10.180 后、合并外部 worktree / PR 前、验收新 Slice 后,必须依次跑以下三套,全部绿才算回归通过。三套互相独立,可分别执行;受影响层的套件至少要跑(如只改后端则 1+3,只改前端则 2+3)。
+
+**触发时机**:
+- 部署后(每次 `bash deploy.sh` 完成后)
+- 合并外部 worktree / cherry-pick 前
+- 验收新 Slice 后
+- 修复 bug 后(至少跑受影响层的套件)
+
+**1. 后端 pytest(本地,无外部依赖)**
+
+```bash
+cd ragflow/portal-extension
+uv run pytest -q
+```
+- 基线:415 passed + 5 skipped(Slice 40 后)
+- 前置:无(测试用临时 SQLite,不连真实 MySQL/RAGFlow)
+- 失败处理:看 `tests/test_slice*.py` 对应 slice 的断言
+
+**2. 前端 Vitest(本地,无外部依赖)**
+
+```bash
+cd ragflow/portal-extension/frontend
+npm run test
+```
+- 基线:76 passed(Slice 28 后)
+- 前置:已 `npm install`
+- 失败处理:看 `frontend/tests/*.test.tsx`
+
+**3. Playwright E2E(需真实已部署环境)**
+
+```bash
+cd ragflow
+UV_PROJECT_ENVIRONMENT=.venv-playwright \
+PORTAL_E2E_BASE_URL=http://172.16.10.180/portal \
+PORTAL_E2E_ADMIN_USERNAME=admin \
+PORTAL_E2E_ADMIN_PASSWORD='<admin-password>' \
+uv run --python 3.13 pytest -q test/playwright/portal_extension -s --junitxml=/tmp/playwright-portal.xml
+```
+- 基线:6 passed(2026-07-09 验收,默认不含真实聊天)
+- 前置:172.16.10.180 已部署最新代码 + `.venv-playwright` 已装 playwright 依赖 + admin 密码与服务器 `.env` 一致
+- 默认覆盖:登录、分享页列表、iframe shell、token 不泄露、6 个 admin tab 加载、Slice 44 缓存回归、临时用户 CRUD + 审计 + 用户组成员 + 分享页表单
+- **不纳入默认回归**:`PORTAL_E2E_RUN_CHAT=1` 真实聊天慢用例(每次跑会产生不可控对话内容 + ~20s 耗时),仅在验收聊天相关 Slice 或发版前手动追加
+- 失败处理:看 `FAILURES` 段 + `test/playwright/artifacts/` 截图;CRUD 用例失败时 finally 会用管理员 API 清理临时用户(`pw-user-*` / `pw-group-user-*`)
+
+**回归不通过的处置**:任一套件失败即阻塞该次部署 / 合并;先定位失败用例对应的 Slice,看 `docs/ISSUES.md` 该 Slice 的验收记录与 AC,判断是代码回归还是测试本身需更新。基线数字更新时机:新增 Slice 测试用例后,在对应 Slice 验收记录里更新基线并在本节同步。
