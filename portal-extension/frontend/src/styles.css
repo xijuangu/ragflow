@@ -157,6 +157,8 @@ svg { display: block; }
 .btn-secondary:hover:not(:disabled) { background: var(--surface-2); }
 .btn-ghost { color: var(--muted); }
 .btn-ghost:hover:not(:disabled) { background: var(--surface-2); color: var(--fg); }
+.btn-outline { background: transparent; color: var(--fg); border-color: var(--border); }
+.btn-outline:hover:not(:disabled) { background: var(--surface-2); }
 .btn-danger { color: var(--danger); border-color: color-mix(in oklch, var(--danger) 30%, var(--border)); }
 .btn-danger:hover:not(:disabled) { background: color-mix(in oklch, var(--danger) 10%, var(--surface)); }
 .btn-sm { height: 30px; padding: 0 10px; font-size: 12px; }
@@ -330,10 +332,10 @@ tbody tr:hover { background: var(--surface-2); }
 .conv-list .loading.compact { padding: 12px; }
 .conv-list-items { list-style: none; margin: 0; padding: 0; }
 .conv-list .cl-label { padding: 12px 12px 6px; }
-.conv-item { padding: 12px; border-radius: var(--radius); cursor: pointer; flex-shrink: 0; /* Slice 31:防止 flex 容器内 item 被压缩,触发滚动 */ }
+.conv-item { padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer; flex-shrink: 0; /* Slice 31:防止 flex 容器内 item 被压缩,触发滚动 */ }
 .conv-item:hover { background: var(--surface-2); }
 .conv-item.active { background: var(--surface-2); }
-.conv-item.active::before { content: ""; display: block; width: 3px; height: 16px; border-radius: 2px; background: var(--accent); margin: -2px 0 6px -15px; }
+.conv-item.active::before { content: ""; display: block; width: 3px; height: 16px; border-radius: 2px; background: var(--accent); margin: -2px 0 6px -13px; /* Slice 66:加 1px 边框后 margin-left 从 -15px 调到 -13px,竖条贴左边缘 */ }
 .conv-item .ci-ttl { font-size: 13px; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .conv-item .ci-meta { font-size: 11px; color: var(--muted); margin-top: 4px; display: flex; gap: 8px; }
 .chat-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
@@ -350,7 +352,7 @@ tbody tr:hover { background: var(--surface-2); }
 .conv-item .ci-trigger { display: block; width: 100%; text-align: left; background: none; border: 0; padding: 0; cursor: pointer; font: inherit; color: inherit; }
 .conv-item .ci-trigger:disabled { cursor: not-allowed; opacity: 0.6; }
 .conv-item .ci-actions { display: flex; gap: 4px; margin-top: 6px; }
-.conv-item .ci-actions .btn { flex: 1; }
+.conv-item .ci-actions .btn { flex: 1; justify-content: center; }
 
 /* Slice 57:chat-main 内 iframe-container / widget-snippet-panel 撑满剩余空间
    (覆盖 .iframe-container 默认 height: calc(100vh - 64px),改用 flex:1 + min-height:0)。 */

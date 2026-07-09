@@ -366,7 +366,7 @@ export default function SharePageDetailPage() {
                       <div className="ci-actions">
                         <button
                           type="button"
-                          className="btn btn-ghost btn-xs"
+                          className="btn btn-outline btn-xs"
                           onClick={() => handleRename(s.session_id, s.title || '')}
                           disabled={sessionBusy}
                         >
