@@ -227,7 +227,7 @@ export default function SessionsAdminPage() {
                       <td className="admin-actions">
                         <button
                           type="button"
-                          className="btn btn-ghost btn-sm"
+                          className="btn btn-outline btn-sm"
                           onClick={() => handleViewElevated(s)}
                           disabled={elevatedLoading}
                         >
