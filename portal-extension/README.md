@@ -129,5 +129,5 @@ bash deploy.sh
 - `PORTAL_DB_URL` 生产必须指向持久化数据库；默认 `sqlite://` 是内存库，重启会丢运行数据。
 - iframe URL 必须使用 `RAGFLOW_BROWSER_ORIGIN` 生成浏览器可访问地址；内部上游调用使用 `RAGFLOW_HOST`。
 - `pt_` 前缀是门户短期令牌边界，网关用它区分门户令牌和 RAGFlow 原生 token。
-- 生产部署时运行时数据和 `.env` 必须与代码目录分离，`deploy.sh` 已排除 `.env`、`.venv`、`*.db` 和日志。
+- 生产部署时运行时数据和 `.env` 必须与代码目录分离，`deploy.sh` 已排除 `.env`、`.venv`、`*.db`、日志和 `project-materials`。
 - RAGFlow 官方容器内的 chatbot sessions 扩展端点如果通过 `docker cp` 临时替换，容器重建后会丢失，需要重新部署。

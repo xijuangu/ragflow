@@ -2,7 +2,7 @@
  * 分享页列表页 — 调 GET /share-pages 列出当前用户被授权的分享页,点击进入详情。
  *
  * Slice 56:从 `share-page-list` 列表迁移到 `grid-cards` + `share-card` 卡片网格
- *   (设计稿 `portal-ui-redesign/share-list.html`)。逻辑不动:GET /share-pages + Link 到详情。
+ *   (设计稿 `project-materials/portal-ui-redesign/share-list.html`)。逻辑不动:GET /share-pages + Link 到详情。
  *
  * Issue 67:卡片精简 — 删文件夹图标/状态 badge/「点击打开」提示文案,「打开」改实心按钮,
  *   页头仅留标题(去 kicker 面包屑与 sub 描述)。

@@ -149,12 +149,12 @@ portal 网关 `_ragflow_bot_segment` 用于 completions(agent → "agentbots"),s
 
 ### 6.5 UI 重设计边界(2026-07-09 grilling 决策)
 
-基于 `portal-ui-redesign/` 设计稿(Open Design 产出,D1 Graphite 方向,9 屏 HTML 原型 + 完整设计系统 token)。本轮为 **纯视觉换皮**,以下决策已锁定:
+基于 `project-materials/portal-ui-redesign/` 设计稿(Open Design 产出,D1 Graphite 方向,9 屏 HTML 原型 + 完整设计系统 token)。本轮为 **纯视觉换皮**,以下决策已锁定:
 
 1. **范围:纯视觉换皮**。现有功能边界不动,不排后端工作。设计稿里的新元素(顶部全局搜索、stats 统计卡、通知铃铛、批量导入)本轮砍掉或装饰占位,不做真功能。补功能后续独立 issue。
 2. **Admin 布局:横向 tab → topbar + 左侧栏**。逻辑不动(保留 `<Outlet/>`),只改 JSX 骨架 + CSS。sidebar 是 admin 专属(share-list / share-detail / login 不套)。理由:6+ 项左侧栏更适合管理后台(DESIGN.md 结论)。
 3. **响应式:桌面优先(1024+),小屏不崩**(<768 内容可滚、不裁切)。不实现移动端卡片态 / sidebar 抽屉 / 菜单按钮。移动端全响应式适配后续独立 issue。
-4. **迁移方式:直接迁 CSS class**,不抽 React UI 组件。以设计稿 `css/styles.css` 为基础替换现有 `styles.css`,JSX 改 className 对齐。**必须保留并合并**现有已验证的布局修复:Slice 31 `flex-shrink:0`、Slice 38 `min-height:0` + `.detail-grid flex:1`、Slice 51 `.admin-main > section` 滚动容器。
+4. **迁移方式:直接迁 CSS class**,不抽 React UI 组件。以设计稿 `project-materials/portal-ui-redesign/css/styles.css` 为基础替换现有 `styles.css`,JSX 改 className 对齐。**必须保留并合并**现有已验证的布局修复:Slice 31 `flex-shrink:0`、Slice 38 `min-height:0` + `.detail-grid flex:1`、Slice 51 `.admin-main > section` 滚动容器。
 5. **交互模式:保留现有交互**(内联表单 / window.prompt / window.confirm),不引入设计稿的 drawer 抽屉。drawer 后续可独立 issue。
 6. **stats 统计卡:砍掉**。Admin 页直接 filter + table,不显示统计卡(后端无聚合接口,占位假数据会误导)。
 7. **设计方向:D1 Graphite**(`css/styles.css` 已实现)。D2 Midnight / D3 Coral 为对比稿,不采用。
@@ -200,7 +200,7 @@ portal 网关 `_ragflow_bot_segment` 用于 completions(agent → "agentbots"),s
 bash deploy.sh
 ```
 deploy.sh 内部流程:
-1. rsync 后端代码(含完整 exclude 保护 `.env`/`.venv`/`*.db`/`portal.log`)
+1. rsync 后端代码(含完整 exclude 保护 `.env`/`.venv`/`*.db`/`portal.log`/`project-materials`)
 2. rsync 前端 dist(本地无 dist 则提示先 `npm run build`)
 3. `ssh -f` 远程执行 `nohup bash start.sh </dev/null &`(关键:用 `ssh -f` 让 ssh 本身后台化,解决远端 uvicorn 长期进程持有 stdout fd 导致 ssh 挂起的问题;纯 `setsid`/`nohup &` 在 uvicorn 长期进程上仍挂起)
 4. 循环 curl 健康检查(200=完全就绪 / 401=后端就绪 dist 未部署,最多 5 次 2s 间隔)
@@ -316,6 +316,7 @@ rsync -avz --delete \
   --exclude='__pycache__' --exclude='.pytest_cache' --exclude='*.pyc' \
   --exclude='node_modules' --exclude='frontend/node_modules' --exclude='frontend/dist' \
   --exclude='.venv' --exclude='*.db' --exclude='.env' --exclude='portal.log' \
+  --exclude='project-materials' \
   ragflow/portal-extension/ 172.16.10.180:~/portal-extension/
 
 # 单独同步前端 dist(前端 build 后)

@@ -37,7 +37,7 @@ bash deploy.sh
 
 脚本做四件事：
 
-1. `rsync --delete` 同步后端代码，排除 `.env`、`.venv`、`*.db`、日志和缓存。
+1. `rsync --delete` 同步后端代码，排除 `.env`、`.venv`、`*.db`、日志、缓存和 `project-materials`。
 2. 如果本地存在 `frontend/dist`，同步前端构建产物。
 3. 用 `ssh -f` 远程执行 `start.sh`，避免 uvicorn 后台进程挂住本地 shell。
 4. 循环健康检查 `/portal/share-pages`。

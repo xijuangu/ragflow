@@ -27,6 +27,7 @@ RSYNC_EXCLUDES=(
   --exclude='portal.log'
   --exclude='.ruff_cache'
   --exclude='frontend/dist'
+  --exclude='project-materials'
 )
 
 echo "=== 1. 同步后端代码到 $REMOTE_HOST:$REMOTE_DIR ==="

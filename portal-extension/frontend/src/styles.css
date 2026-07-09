@@ -1,7 +1,7 @@
 /* ============================================================
    RAGFlow 权限门户 — D1 Graphite 设计系统
    ------------------------------------------------------------
-   Issue 52(prefactor):以 portal-ui-redesign/css/styles.css 为基础
+   Issue 52(prefactor):以 project-materials/portal-ui-redesign/css/styles.css 为基础
    替换 styles.css。新 D1 token 体系 + 排印阶 + 组件 class。
    Issue 59:已删除所有无引用旧 class(app-layout、app-header、app-main、
    admin-tabs、page-title、share-page-list、detail-grid、sessions-sidebar、
