@@ -87,9 +87,9 @@ describe('SharePageDetailPage — 我的会话(Slice 10)', () => {
 
     expect(await screen.findByText('会话一')).toBeInTheDocument();
     expect(screen.getByText('会话二')).toBeInTheDocument();
-    // 消息数可见(验收点 1)
-    expect(screen.getByText(/4\s*条消息/)).toBeInTheDocument();
-    expect(screen.getByText(/2\s*条消息/)).toBeInTheDocument();
+    // 消息数可见(验收点 1;Slice 57 ci-meta 文案为「N 条」,对齐设计稿)
+    expect(screen.getByText(/4\s*条/)).toBeInTheDocument();
+    expect(screen.getByText(/2\s*条/)).toBeInTheDocument();
   });
 
   it('点击历史会话重新打开 — iframe URL 追加 session_id(验收点 2)', async () => {

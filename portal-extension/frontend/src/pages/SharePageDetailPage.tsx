@@ -285,13 +285,22 @@ export default function SharePageDetailPage() {
   }, [snippet]);
 
   return (
-    <div className="app-layout">
+    <>
       <AppHeader username={user?.username} onLogout={logout} isAdmin={user?.is_admin ?? false} />
-      <main className="app-main">
-        <div className="back-link">
-          <Link to="/share-pages">← 返回列表</Link>
+      <div className="detail-page">
+        <div className="detail-bar">
+          <Link className="btn btn-ghost btn-sm" to="/share-pages">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+              <path d="M15 18l-6-6 6-6" />
+            </svg>
+            返回列表
+          </Link>
+          <div>
+            <div className="db-title">{isWidget ? '悬浮组件嵌入' : '分享页对话'}</div>
+            <div className="db-meta">会话归属当前登录用户 · 切换 / 重命名 / 删除均同步门户与 RAGFlow</div>
+          </div>
+          <div className="db-spacer" />
         </div>
-        <h2 className="page-title">{isWidget ? '悬浮组件嵌入' : '分享页对话'}</h2>
 
         {embedError && <div className="alert-error">{embedError}</div>}
 
@@ -302,13 +311,16 @@ export default function SharePageDetailPage() {
           </div>
         )}
 
-        <div className="detail-grid">
-          <aside className="sessions-sidebar" aria-label="我的会话">
-            <div className="sidebar-header">
-              <h3>我的会话</h3>
+        {/* Slice 57:detail-shell 两栏 — conv-list(历史会话)+ chat-main(iframe / widget snippet)。
+            detail-page 为 flex column(固定高度),detail-shell flex:1 + min-height:0,
+            两栏各自 overflow-y:auto,保留 Slice 38 无页面级滚动。 */}
+        <div className="detail-shell">
+          <aside className="conv-list" aria-label="我的会话">
+            <div className="kicker cl-label">历史会话</div>
+            <div style={{ padding: '0 8px 10px' }}>
               <button
                 type="button"
-                className="btn btn-primary btn-sm"
+                className="btn btn-primary btn-sm btn-block"
                 onClick={handleNewSession}
                 disabled={sessionBusy}
               >
@@ -318,35 +330,40 @@ export default function SharePageDetailPage() {
 
             {sessionsError && <div className="alert-error alert-sm">{sessionsError}</div>}
 
-            {sessions === null && !sessionsError && <div className="sidebar-loading">加载中…</div>}
+            {sessions === null && !sessionsError && (
+              <div className="loading" style={{ padding: '12px' }}>
+                加载中…
+              </div>
+            )}
 
             {sessions !== null && sessions.length === 0 && (
               <div className="empty-state empty-state-sm">暂无会话</div>
             )}
 
             {sessions !== null && sessions.length > 0 && (
-              <ul className="session-list" role="list">
+              <ul role="list" style={{ listStyle: 'none', margin: 0, padding: 0 }}>
                 {sessions.map((s) => {
                   const isActive = s.session_id === activeSessionId;
                   return (
                     <li
                       key={s.session_id}
                       data-session-item
-                      className={`session-item${isActive ? ' session-item-active' : ''}`}
+                      className={`conv-item${isActive ? ' active' : ''}`}
                     >
                       <button
                         type="button"
-                        className="session-main"
+                        className="ci-trigger"
                         onClick={() => handleReopen(s.session_id)}
                         disabled={sessionBusy || isWidget}
                         title={s.title || '(未命名)'}
                       >
-                        <span className="session-title">{s.title || '(未命名)'}</span>
-                        <span className="session-meta">
-                          {formatTime(s.last_active_at, 'datetime')} · {s.message_count} 条消息
-                        </span>
+                        <div className="ci-ttl">{s.title || '(未命名)'}</div>
+                        <div className="ci-meta">
+                          <span>{s.message_count} 条</span>
+                          <span className="mono">{formatTime(s.last_active_at, 'datetime')}</span>
+                        </div>
                       </button>
-                      <div className="session-actions">
+                      <div className="ci-actions">
                         <button
                           type="button"
                           className="btn btn-ghost btn-xs"
@@ -371,7 +388,7 @@ export default function SharePageDetailPage() {
             )}
           </aside>
 
-          <div className="iframe-container">
+          <section className="chat-main">
             {/* Slice 16:widget 类型展示 snippet 与复制按钮(替代 iframe) */}
             {isWidget && snippet && (
               <div className="widget-snippet-panel" data-testid="widget-snippet-panel">
@@ -396,16 +413,18 @@ export default function SharePageDetailPage() {
             )}
             {/* fullscreen 类型:渲染 iframe(chat 走 /chats/share,agent 走 /agent/share) */}
             {!isWidget && iframeUrl && (
-              <iframe
-                key={iframeNonce}
-                src={iframeUrl}
-                title="RAGFlow 对话"
-                allow="clipboard-read; clipboard-write"
-              />
+              <div className="iframe-container">
+                <iframe
+                  key={iframeNonce}
+                  src={iframeUrl}
+                  title="RAGFlow 对话"
+                  allow="clipboard-read; clipboard-write"
+                />
+              </div>
             )}
-          </div>
+          </section>
         </div>
-      </main>
-    </div>
+      </div>
+    </>
   );
 }

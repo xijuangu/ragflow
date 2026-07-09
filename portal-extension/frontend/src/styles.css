@@ -328,6 +328,26 @@ tbody tr:hover { background: var(--surface-2); }
 .conv-item .ci-ttl { font-size: 13px; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .conv-item .ci-meta { font-size: 11px; color: var(--muted); margin-top: 4px; display: flex; gap: 8px; }
 .chat-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+
+/* Slice 57:分享页详情页整体布局 — topbar 之下 flex column,alert 不推出页面级滚动
+   (保留 Slice 38:两栏在剩余空间内各自滚动,无页面级滚动条)。 */
+.detail-page { display: flex; flex-direction: column; height: calc(100vh - var(--topbar-h)); }
+.detail-page > .detail-bar { flex-shrink: 0; }
+.detail-page > .alert-error { flex-shrink: 0; }
+.detail-page > .detail-shell { flex: 1; min-height: 0; height: auto; }
+
+/* Slice 57:conv-item 内可点击区(button)+ 操作按钮行(保留 data-session-item + 重命名/删除)。
+   conv-item 本身有 cursor:pointer + hover bg,ci-trigger 为透明 button 承载点击与 disabled。 */
+.conv-item .ci-trigger { display: block; width: 100%; text-align: left; background: none; border: 0; padding: 0; cursor: pointer; font: inherit; color: inherit; }
+.conv-item .ci-trigger:disabled { cursor: not-allowed; opacity: 0.6; }
+.conv-item .ci-actions { display: flex; gap: 4px; margin-top: 6px; }
+.conv-item .ci-actions .btn { flex: 1; }
+
+/* Slice 57:chat-main 内 iframe-container / widget-snippet-panel 撑满剩余空间
+   (覆盖 .iframe-container 默认 height: calc(100vh - 64px),改用 flex:1 + min-height:0)。 */
+.chat-main > .iframe-container { flex: 1; min-height: 0; height: auto; border: 0; border-radius: 0; }
+.chat-main > .widget-snippet-panel { flex: 1; overflow-y: auto; border: 0; border-radius: 0; }
+
 .chat-stream { flex: 1; overflow-y: auto; padding: 24px 32px; display: flex; flex-direction: column; gap: 20px; }
 .msg { display: flex; gap: 12px; max-width: 75ch; }
 .msg .avatar-sm { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 600; flex-shrink: 0; }
