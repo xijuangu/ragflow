@@ -14,6 +14,12 @@ Run the portal-extension suite only:
 PORTAL_E2E_BASE_URL=http://172.16.10.180/portal PORTAL_E2E_ADMIN_USERNAME=admin PORTAL_E2E_ADMIN_PASSWORD='<admin-password>' uv run pytest -q test/playwright/portal_extension -s --junitxml=/tmp/playwright-portal.xml
 ```
 
+Run the portal-extension suite with a real RAGFlow chat roundtrip:
+
+```bash
+UV_PROJECT_ENVIRONMENT=.venv-playwright PW_HEADLESS=0 PORTAL_E2E_BASE_URL=http://172.16.10.180/portal PORTAL_E2E_ADMIN_USERNAME=admin PORTAL_E2E_ADMIN_PASSWORD='<admin-password>' PORTAL_E2E_RUN_CHAT=1 uv run --python 3.13 pytest -q test/playwright/portal_extension -s --junitxml=/tmp/playwright-portal.xml
+```
+
 Run smoke subset:
 
 ```bash
@@ -64,12 +70,28 @@ Portal-extension tests additionally support:
 - `PORTAL_E2E_BASE_PATH`: appended to `BASE_URL` when `PORTAL_E2E_BASE_URL` is not set; defaults to `/portal`.
 - `PORTAL_E2E_ADMIN_USERNAME`: admin username; defaults to `PORTAL_ADMIN_USERNAME` or `admin`.
 - `PORTAL_E2E_ADMIN_PASSWORD`: admin password; required for portal tests.
+- `PORTAL_E2E_RUN_CHAT=1`: enables the slow real-chat test. Without it the suite still checks the share page shell and token boundary, but does not send a question to RAGFlow.
+- `PORTAL_E2E_CHAT_QUESTION`: optional question for the slow real-chat test; defaults to a short Chinese smoke-test prompt.
+- `PORTAL_E2E_CHAT_TIMEOUT_MS`: optional real-chat wait timeout; defaults to `180000`.
+- `PORTAL_E2E_CHECK_ELEVATED_CHAT=1`: optional extra check for admin elevated session body retrieval; this makes an additional RAGFlow history request.
 - `RAGFLOW_BETA_TOKEN`: optional; when set, the iframe URL assertion verifies this token is not leaked.
 
-The portal admin CRUD test creates a temporary user named `pw-user-<timestamp>`, grants and revokes access for that user, then deletes the user through the admin UI. A final API cleanup runs only for that temporary user if the UI path fails midway.
+The portal admin CRUD tests create temporary users named `pw-user-<timestamp>` or `pw-group-user-<timestamp>`, grant/revoke access, add/remove the temporary user from an existing group when one exists, verify audit records, and delete the temporary users. Group and share-page creation forms are checked without submitting because the portal currently exposes no group-delete or share-page-delete endpoint.
+
+The optional real-chat test opens an accessible fullscreen chat share page, sends a question inside the RAGFlow iframe, waits for streaming to finish, waits until the portal session list shows a new session with at least one user message and one reply, verifies the session is visible in admin search, and then attempts to delete the test session.
 
 ## Output and artifacts
 
 - JUnit XML files are written to `/tmp/...` from `--junitxml`.
 - Screenshots and diagnostics are written under:
   - `test/playwright/artifacts/`
+
+## Reading results
+
+The final pytest summary is the primary pass/fail signal:
+
+- `N passed`: all selected tests passed.
+- `N failed`: at least one selected test failed; the `FAILURES` section shows the failing test name, file line, assertion, and stack trace.
+- `N skipped`: selected tests were intentionally skipped. For portal tests, the real-chat case is skipped unless `PORTAL_E2E_RUN_CHAT=1` is set.
+
+The JUnit XML file from `--junitxml=/tmp/playwright-portal.xml` can be opened by CI/reporting tools. On 2026-07-09, the portal-extension suite was verified against `http://172.16.10.180/portal` with `PORTAL_E2E_RUN_CHAT=1`; result: `6 passed in 24.21s`.

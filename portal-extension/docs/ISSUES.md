@@ -1906,19 +1906,28 @@ None - can start immediately(Slice 43 的 `cache: 'no-store'` workaround 已止�
 - iframe URL 含 portal 短 token(`pt_`),不泄露 `RAGFLOW_BETA_TOKEN` 或 `ragflow-` API token。
 - 6 个管理后台 tab 均可加载,无“加载失败”缓存回归。
 - Slice 44 HTML 缓存头与 JSON API 响应类型可由浏览器 request 验证。
-- 管理后台 CRUD 主路径:创建临时用户、禁用、启用、授权、撤销授权、硬删除临时用户。
+- 管理后台 CRUD 主路径:创建临时用户、禁用、启用、授权、撤销授权、审计日志验证、硬删除临时用户。
+- 用户组成员主路径:在已有用户组上添加/移除临时用户;若环境没有用户组,只验证用户组创建表单可用,不创建无法删除的永久用户组。
+- 分享页管理:验证创建表单字段和列表可用;不自动创建分享页,因为当前没有分享页删除端点。
+- 可选慢用例(`PORTAL_E2E_RUN_CHAT=1`):iframe 内发送真实 RAGFlow 问题,等待流式回复结束,验证门户会话绑定与管理员会话搜索。
 
 ### Acceptance criteria
 
 - [x] Playwright 用例文件已添加到 `test/playwright/portal_extension/`。
 - [x] 管理后台 6 个 tab 覆盖页面加载与缓存回归。
-- [x] 管理后台包含创建和删除路径,且只操作 `pw-user-<timestamp>` 临时用户。
+- [x] 管理后台包含创建和删除路径,且只操作 `pw-user-<timestamp>` / `pw-group-user-<timestamp>` 临时用户。
+- [x] 管理后台覆盖用户启用/禁用、授权/撤销后的审计日志验证。
+- [x] 管理后台覆盖用户组添加/移除成员;缺少既有用户组时自动降级为表单可用性验证,避免创建无法删除的数据。
+- [x] 分享页管理覆盖创建表单与列表加载;因无删除端点,不自动创建分享页。
+- [x] 分享页真实聊天作为显式慢用例加入,需 `PORTAL_E2E_RUN_CHAT=1` 才发送真实问题。
 - [x] 文档给出真实运行命令与环境变量。
-- [ ] 真实环境执行 `uv run pytest -q test/playwright/portal_extension -s --junitxml=/tmp/playwright-portal.xml` 并记录结果(由用户执行)。
+- [x] 真实环境执行 `uv run pytest -q test/playwright/portal_extension -s --junitxml=/tmp/playwright-portal.xml` 并记录结果(由用户执行)。
 
 ### Notes
 
-本 slice 不默认发送真实 RAGFlow 问答,避免测试运行时产生不可控对话内容和耗时;当前覆盖到 iframe/widget shell 与 token 安全边界。真实发问、引用弹层、PDF 预览仍建议作为后续显式慢用例或人工验收项。
+本 slice 不默认发送真实 RAGFlow 问答,避免常规回归产生不可控对话内容和耗时;真实发问已作为 `PORTAL_E2E_RUN_CHAT=1` 慢用例保留。引用弹层、PDF 预览仍建议作为后续显式慢用例或人工验收项。
+
+2026-07-09 真实环境验收结果:用户使用 `PORTAL_E2E_RUN_CHAT=1` 执行 portal-extension Playwright 套件,结果 `6 passed in 24.21s`,JUnit 输出为 `/tmp/playwright-portal.xml`。该轮覆盖默认后台/分享页用例与真实聊天慢用例。
 
 ---
 

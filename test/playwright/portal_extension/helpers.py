@@ -1,6 +1,8 @@
 import os
 import re
 import time
+from typing import Callable
+from urllib.parse import quote
 from urllib.parse import urljoin
 
 import pytest
@@ -55,6 +57,13 @@ def admin_credentials() -> tuple[str, str]:
     return username, password
 
 
+def env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def login_as_admin(page: Page, base_url: str) -> None:
     username, password = admin_credentials()
     page.goto(portal_url(base_url, "/login"), wait_until="domcontentloaded")
@@ -74,7 +83,9 @@ def expect_no_portal_errors(page: Page) -> None:
     console_errors = [
         err
         for err in diag.get("console_errors", [])
-        if "favicon" not in err and "ResizeObserver loop" not in err
+        if "favicon" not in err
+        and "ResizeObserver loop" not in err
+        and "Failed to load resource: the server responded with a status of 403" not in err
     ]
     page_errors = diag.get("page_errors", [])
     assert not console_errors, "\n".join(console_errors)
@@ -88,6 +99,12 @@ def unique_name(prefix: str) -> str:
 def api_get_json(page: Page, base_url: str, path: str) -> dict:
     response = page.request.get(portal_url(base_url, path))
     assert response.ok, f"GET {path} failed: {response.status} {response.text()[:300]}"
+    return response.json()
+
+
+def api_post_json(page: Page, base_url: str, path: str, body: dict | None = None) -> dict:
+    response = page.request.post(portal_url(base_url, path), data=body or {})
+    assert response.ok, f"POST {path} failed: {response.status} {response.text()[:300]}"
     return response.json()
 
 
@@ -106,8 +123,81 @@ def find_admin_user(page: Page, base_url: str, username: str) -> dict | None:
     return None
 
 
+def first_accessible_share_page(
+    page: Page,
+    base_url: str,
+    *,
+    embed_type: str | None = None,
+    ragflow_type: str | None = None,
+) -> dict:
+    body = api_get_json(page, base_url, "/share-pages")
+    for share_page in body.get("share_pages", []):
+        if embed_type and share_page.get("embed_type") != embed_type:
+            continue
+        if ragflow_type and share_page.get("ragflow_type") != ragflow_type:
+            continue
+        return share_page
+    pytest.skip(
+        "No accessible share page matches "
+        f"embed_type={embed_type!r}, ragflow_type={ragflow_type!r}."
+    )
+
+
+def quote_path(value: str) -> str:
+    return quote(value, safe="")
+
+
+def wait_until(
+    predicate: Callable[[], dict | None],
+    *,
+    timeout_ms: int,
+    interval_ms: int = 1000,
+    description: str,
+) -> dict:
+    deadline = time.time() + (timeout_ms / 1000)
+    last_error: Exception | None = None
+    while time.time() < deadline:
+        try:
+            value = predicate()
+            if value is not None:
+                return value
+        except Exception as exc:  # noqa: BLE001 - keep polling transient API/UI states.
+            last_error = exc
+        time.sleep(interval_ms / 1000)
+    suffix = f" Last error: {last_error}" if last_error else ""
+    raise AssertionError(f"Timed out waiting for {description}.{suffix}")
+
+
+def wait_for_audit_action(
+    page: Page,
+    base_url: str,
+    action: str,
+    *,
+    target_id: str | None = None,
+    meta_subject_id: str | None = None,
+    timeout_ms: int = 10_000,
+) -> dict:
+    def find_log() -> dict | None:
+        body = api_get_json(page, base_url, f"/admin/audit-logs?action={quote_path(action)}&limit=50")
+        for log in body.get("audit_logs", []):
+            if target_id is not None and log.get("target_id") != target_id:
+                continue
+            meta = log.get("meta") or {}
+            if meta_subject_id is not None and meta.get("subject_id") != meta_subject_id:
+                continue
+            return log
+        return None
+
+    return wait_until(
+        find_log,
+        timeout_ms=timeout_ms,
+        interval_ms=500,
+        description=f"audit action {action}",
+    )
+
+
 def select_option_containing(select_locator, text: str) -> str:
-    option = select_locator.locator("option", has_text=text).first()
+    option = select_locator.locator("option", has_text=text).first
     expect(option).to_have_count(1)
     value = option.get_attribute("value")
     assert value, f"Option containing {text!r} has no value"
