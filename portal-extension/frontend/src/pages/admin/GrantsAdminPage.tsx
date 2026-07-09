@@ -174,7 +174,7 @@ export default function GrantsAdminPage() {
       {error && <div className="alert-error">{error}</div>}
 
       {/* 选择分享页 */}
-      <div className="card admin-form-row">
+      <div className="card admin-form admin-form-row">
         <div className="form-field">
           <label htmlFor="grant-share-page">选择分享页</label>
           <select
