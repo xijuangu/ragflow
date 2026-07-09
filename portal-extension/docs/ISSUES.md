@@ -2424,6 +2424,165 @@ topbar 通知铃铛功能化:后端 `GET /notifications` 接口 + 未读计数 +
 
 ---
 
+## Issue 66 — 分享页会话列表视觉:列表项加边框 + 重命名/删除按钮统一
+
+## Parent
+
+UI polish 续作(承接 Issue 52-59 D1 Graphite 重设计后的视觉收尾)。关联 [PRD-ui-redesign.md](PRD-ui-redesign.md)。源:用户人工视觉验收反馈(2026-07-09)。
+
+## What to build
+
+分享页详情页(`/share-pages/:id`)左侧「历史会话」列表的视觉收尾,两处问题:
+
+1. **会话列表项无边框** — 当前 `.conv-item` 仅有 `padding + border-radius + hover bg`,无 `border`,项与项之间无视觉分隔,显得裸露。给 `.conv-item` 加发丝边(`1px solid var(--border)`),hover/active 态用边框色或底色区分(保留 Slice 31 `flex-shrink:0` 与 active 竖条 `::before`,不破坏滚动/选中逻辑)。
+2. **重命名/删除按钮丑** — `.ci-actions` 内重命名用 `btn-ghost btn-xs`(无边框灰底)、删除用 `btn-danger btn-xs`,两者视觉不统一,且文字在 `flex:1` 拉伸后居中依赖 btn 默认对齐。统一为同尺寸、同内边距、文字居中的按钮对:重命名用发丝边次级按钮(`btn-outline btn-xs` 或等价),删除用 danger 描边按钮;两个按钮等宽、文字水平居中、垂直居中,间隙一致。
+
+纯视觉,不动会话 CRUD 逻辑(handleRename/handleDelete/轮询/SSE 守卫全部保留)。改 `SharePageDetailPage.tsx`(按钮 className)+ `styles.css`(`.conv-item` border、`.ci-actions`/`.btn-xs` 居中与统一)。
+
+## Acceptance criteria
+
+- [ ] `.conv-item` 有发丝边,会话项之间视觉清晰分隔;hover/active 态不破坏现有底色+竖条逻辑
+- [ ] 重命名/删除按钮同尺寸、同内边距,文字水平+垂直居中
+- [ ] 重命名按钮有可见边框(不再是裸灰底),删除按钮保留 danger 语义
+- [ ] Slice 31 `flex-shrink:0`、Slice 33 SSE 流式禁用、Slice 38 滚动容器均不回归
+- [ ] tsc 0 errors,Vitest 全绿,Playwright 会话相关用例全绿
+
+## Blocked by
+
+无 — 可立即开始。
+
+---
+
+## Issue 67 — 我的分享页卡片重构:删冗余图标/文案 + 打开按钮化 + 去停用态 + 页头精简
+
+## Parent
+
+UI polish 续作。关联 [PRD-ui-redesign.md](PRD-ui-redesign.md)。源:用户人工视觉验收反馈(2026-07-09)。
+
+## What to build
+
+`/share-pages`(我的分享页列表)卡片与页头精简,合并四项改动:
+
+1. **删文件夹图标** — 卡片头部 `.sc-head > .sc-icon`(40×40 文件夹 SVG 方块)删除,卡片头部仅留状态 badge。删除后重排 `.sc-head`(badge 对齐方式相应调整,不再被图标挤位)。
+2. **删「点击「打开」进入对话」文案** — `.sc-foot` 内 `.muted` 提示文字删除。
+3. **「打开」改按钮** — `.sc-foot` 的 `btn-link`(超链接形态,带下划线 hover)改为实心或描边按钮(`btn btn-primary btn-sm` 或 `btn-outline`),不再是超链接样式。
+4. **去掉非活跃状态** — 分享页卡片对终端用户不存在「已停用」态(用户侧列表只展示被授权且可用的分享页),删除 `b-archived` badge 分支,卡片头部不再显示状态 badge(或仅保留单一「活跃」态,由实现判断;倾向直接去掉 badge,因用户侧无状态区分需求)。
+5. **页头精简** — 删 `kicker`「工作区 / 分享页」与 `sub`「以下是管理员分享给你的 RAGFlow 知识库,点击「打开」即可开始对话。」,仅保留 `<h1>我的分享页</h1>`。
+
+卡片删图标+删文案+去 badge 后,`.sc-meta`(RAGFlow 类型/嵌入方式/创建时间)与 `.sc-foot`(打开按钮)重排,保持信息层级清晰、间距对齐 D1 Graphite token。改 `SharePagesPage.tsx` + `styles.css`(`.share-card`/`.sc-head`/`.sc-foot`/`.page-head`)。
+
+## Acceptance criteria
+
+- [ ] 卡片无文件夹图标,头部不拥挤
+- [ ] 卡片无「点击「打开」进入对话」文案
+- [ ] 「打开」为按钮样式(非超链接下划线),点击仍跳详情页
+- [ ] 卡片不显示「已停用」badge(用户侧无此态)
+- [ ] 页头仅留「我的分享页」标题,无 kicker 面包屑与 sub 描述
+- [ ] 卡片整体间距/对齐符合 D1 Graphite,无贴边
+- [ ] tsc 0 errors,Vitest 全绿,Playwright 分享页列表用例全绿
+
+## Blocked by
+
+无 — 可立即开始。
+
+---
+
+## Issue 68 — admin sidebar 两个「分享页」标签去重
+
+## Parent
+
+UI polish 续作。关联 [PRD-ui-redesign.md](PRD-ui-redesign.md)。源:用户人工视觉验收反馈(2026-07-09)。
+
+## What to build
+
+`AdminLayout` 左侧栏有两组导航,均含「分享页」字样,用户混淆:
+
+- **工作区** 组:`分享页` → `/share-pages`(用户侧我的分享页)
+- **管理后台** 组:`分享页` → `/admin/share-pages`(admin 分享页管理)
+
+两个「分享页」并列,用户分不清入口。去重方案:重命名其中之一以区分语义。推荐将「管理后台」组下的「分享页」改为「分享页管理」(或「分享页配置」),与「用户管理」「用户组」「授权」「会话搜索」「审计日志」同级命名风格一致(均为「名词+管理/动作」);「工作区」组下保留「分享页」(用户侧入口,对应页头「我的分享页」)。
+
+纯文案改动,不动路由、不动 NavLink active 逻辑。改 `AdminLayout.tsx` 的 `ADMIN_NAVS` 中 `/admin/share-pages` 项的 `label`。
+
+## Acceptance criteria
+
+- [ ] sidebar 不再出现两个相同「分享页」字样
+- [ ] 「管理后台」组下的分享页项改名(如「分享页管理」),命名与其他 admin 项风格一致
+- [ ] 「工作区」组「分享页」入口保留,指向 `/share-pages`
+- [ ] 路由 `/admin/share-pages` 不变,NavLink active 态不回归
+- [ ] tsc 0 errors,Vitest 全绿,Playwright admin 导航用例选择器同步适配(若有断言文案)
+
+## Blocked by
+
+无 — 可立即开始。
+
+---
+
+## Issue 69 — 全站表单视觉统一:下拉框自定义样式 + 输入/按钮间距 + 创建用户表单重排
+
+## Parent
+
+UI polish 续作。关联 [PRD-ui-redesign.md](PRD-ui-redesign.md)。源:用户人工视觉验收反馈(2026-07-09)。
+
+## What to build
+
+全站表单视觉收尾,覆盖 admin 6 页的所有表单(筛选表单 `.filters`、创建表单 `.admin-form`、内联编辑表单),三类问题:
+
+1. **下拉框默认丑** — 当前 `.form-field select`(用于审计日志页操作者/操作类型、会话搜索页选择用户、授权页权限选择等筛选下拉)**完全无样式**,用浏览器原生方框(又长又方、无圆角、无聚焦态、箭头原生)。仅 `.admin-form .form-field select` 与 `.field select`、`.perm-select` 有自定义样式。统一:所有 `<select>` 用 D1 Graphite 自定义样式(`appearance:none` + 自定义箭头 SVG + 发丝边 + 圆角 + 聚焦 accent 边),与 `.form-input` 视觉一致。建议把 select 样式从 `.admin-form .form-field select` 提升到通用 `.form-field select`(或新建 `.form-select` class 复用),覆盖 filters 与 admin-form 两处。
+2. **文字贴边 / 按钮与输入框贴边** — `.admin-form-row`(创建用户表单)用 `align-items: flex-end` + `gap:12px`,但输入框文字 `padding:8px 12px` 偏紧、按钮与输入框高度不齐、label 与输入框间距 `margin-bottom:4px` 过窄。统一:label 与输入框间距、输入框内边距、按钮与输入框高度对齐、行间距符合 D1 Graphite 排印阶(参考 `.form-group`/`.form-input` 已有规范)。
+3. **创建用户表单丑** — `.admin-form-row` 三列(用户名/邮箱/密码)+ 按钮横排,窄屏下挤。重排为更清晰的布局:label 在上、输入框在下、按钮右对齐或独占行,与 D1 Graphite 表单规范一致。
+
+不改表单提交逻辑(createAdminUser/筛选/校验全部保留),不改字段。改 `styles.css`(`.form-field select` 通用化、`.admin-form`/`.admin-form-row`/`.filters` 间距)+ 必要时微调 admin 页 JSX className(若需把 select 切到 `.form-select`)。
+
+## Acceptance criteria
+
+- [ ] 所有 admin 页 `<select>`(操作者/操作类型/选择用户/权限等)使用统一自定义样式:发丝边、圆角、自定义箭头、聚焦 accent 边,不再是浏览器原生方框
+- [ ] 创建用户表单:label 与输入框间距合理,输入框内边距不贴边,按钮与输入框高度对齐
+- [ ] 筛选表单 `.filters`:select/input/按钮高度一致,间距统一
+- [ ] 窄屏下创建用户表单不挤压(可换行,按钮不重叠)
+- [ ] 表单提交/校验/筛选逻辑不回归
+- [ ] tsc 0 errors,Vitest 全绿,Playwright admin 表单用例全绿
+
+## Blocked by
+
+无 — 可立即开始。
+
+---
+
+## Issue 70 — UI polish review fixes(死代码/阴影/类名/行内样式/死链)
+
+## Parent
+
+UI polish 续作。关联 [PRD-ui-redesign.md](PRD-ui-redesign.md)。源:交接文档 §4.1「review 发现的可选优化」。补丁由 Open Design 生成(`portal-ui-polish-review-fixes.patch`),已通过 `git apply --check`。
+
+## What to build
+
+应用 `/review`(fixed point `d9ea811`)发现的 6 项低风险 UI polish,不改功能、不加后端、不加 npm 依赖:
+
+1. **`.detail-shell` 死 magic number** — `height: calc(100vh - var(--topbar-h) - 57px)` 被 `:338` 更具体选择器的 `height:auto` 覆盖,57px 为死代码且依赖 detail-bar 固定高。改 `min-height: 0`(与 Slice 38 模式一致)。
+2. **`.login-card` 阴影违反 DESIGN.md** — `box-shadow: 0 1px 3px rgba(0,0,0,.05)` 违反「无阴影(除下拉/模态)」规则。删除阴影,保持发丝边。
+3. **`.toggle::after` 旋钮阴影** — `box-shadow: 0 1px 2px rgba(0,0,0,.2)` 同上,改发丝边(`border: 1px solid var(--border)`),`.on::after` 加 `border-color: transparent`。
+4. **LoginPage `.ft`/`.fd` 神秘命名** — 改 `.feat-title`/`.feat-desc`(与 PRD §2「JSX className 对齐」一致),JSX 同步改名。
+5. **SharePagesPage `.mr` 神秘命名 + 行内样式** — 改 `.meta-row`,JSX 同步;`.sc-foot` 内 `style={{fontSize:12}}` 抽 `.sc-hint` class。
+6. **SharePageDetailPage 行内样式** — `style={{padding:'0 8px 10px'}}` 抽 `.new-session-action`、`style={{padding:'12px'}}` 抽 `.loading.compact`、`style={{listStyle:'none',margin:0,padding:0}}` 抽 `.conv-list-items`。
+7. **LoginPage 死链** — `href="#" onClick={e=>e.preventDefault()}` 装饰性假交互「联系管理员开通」改静态 `<span className="login-contact-note">`。
+
+## Acceptance criteria
+
+- [ ] `.detail-shell` 无死 magic number,改 `min-height: 0`,Slice 38 滚动不回归
+- [ ] `.login-card` 与 `.toggle::after` 无阴影,改发丝边
+- [ ] LoginPage JSX 用 `.feat-title`/`.feat-desc`,无 `href="#"` 死链
+- [ ] SharePagesPage JSX 用 `.meta-row`/`.sc-hint`,无行内 style
+- [ ] SharePageDetailPage JSX 用 `.new-session-action`/`.loading.compact`/`.conv-list-items`,无行内 style
+- [ ] tsc 0 errors,Vitest 全绿
+- [ ] Playwright E2E 全绿(选择器不依赖被改名 class)
+
+## Blocked by
+
+无 — 可立即开始(补丁已就绪)。
+
+---
+
 ## 后续待办(Issue 16 AC2 遗留)
 
 > Issue 16 AC2「悬浮组件在任意页面右下角加载,点击展开对话窗,能正常对话」— Slice 16 实现了 `/widget/<id>` 骨架 HTML + 可嵌入 snippet + CSP frame-ancestors 放行,但 **悬浮组件实际 UI 渲染(右下角悬浮按钮 + 点击展开对话窗 + iframe 加载 + SSE 对话)尚未实现**。`/widget/<id>` 当前仅返回含 `<div id="widget-root">` 的占位 HTML,需前端构建产物挂载 React 组件。
