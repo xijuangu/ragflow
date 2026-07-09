@@ -1931,6 +1931,128 @@ None - can start immediately(Slice 43 的 `cache: 'no-store'` workaround 已止�
 
 ---
 
+## Issue 46 — Slice 46: 标准 T_short 绑定当前登录用户,防止复制 iframe URL 冒用
+
+### Parent
+
+2026-07-09 分享页安全风险评审:担心“使用本项目的人把我的分享页偷走”。
+
+### What to build
+
+修复标准登录分享页的核心 bearer-token 复用风险:标准 `T_short(scope='standard')` 不仅要存在、未过期、未撤销,还必须属于当前 portal 登录用户。任何已登录用户拿到他人的 iframe URL 或 `auth=pt_...` 后,即使自己有有效 portal cookie,也不能用该 token 访问 `/info`、`/completions` 或 history 代理。
+
+公开分享 `scope='public'` 是独立语义,不走“当前登录用户必须匹配”的检查。
+
+### Acceptance criteria
+
+- [ ] 标准 SSE 代理校验当前登录用户 ID 等于 `T_short` 绑定的 `portal_user_id`;不匹配返回 403,且不调用 RAGFlow 上游。
+- [ ] 标准 JSON 代理(`/info` / `/inputs`)校验当前登录用户 ID 等于 `T_short` 绑定的 `portal_user_id`;不匹配返回 403,且不调用 RAGFlow 上游。
+- [ ] 标准 session history 代理校验当前登录用户 ID 等于 `T_short` 绑定的 `portal_user_id`;不匹配返回 403,且不调用 RAGFlow 上游。
+- [ ] 回归测试覆盖:用户 A 获取 `pt_` 后,用户 B 携带自己的 portal cookie 调 completions/info/history 均被拒;用户 A 自己仍可正常访问。
+- [ ] 公开分享 `scope='public'` 既有匿名访问测试不回归。
+
+### Blocked by
+
+None - can start immediately
+
+---
+
+## Issue 47 — Slice 47: 收敛 iframe URL 中 auth 参数的泄露面
+
+### Parent
+
+2026-07-09 分享页安全风险评审:标准分享页的 `auth=pt_...` 放在 iframe URL query 中,比真实 beta token 安全,但仍是短期 bearer token。
+
+### What to build
+
+降低 `auth=pt_...` 因复制、Referer、浏览器/代理日志而外泄后的影响面。标准分享页仍可继续用 RAGFlow 原生 `?auth=` 注入机制,但门户与部署配置要显式避免把完整 token 带到第三方站点或持久日志中,并把短 token TTL 作为安全边界记录清楚。
+
+### Acceptance criteria
+
+- [ ] portal HTML/iframe 相关响应带 `Referrer-Policy` 安全头,避免 `auth=pt_...` 通过 Referer 泄露到第三方来源。
+- [ ] 运维文档给出 nginx/access log 脱敏要求:不记录完整 query string,或至少对 `auth=` 参数脱敏。
+- [ ] 文档明确 `T_SHORT_TTL_SECONDS` 是复制 URL 风险窗口;生产建议保持短 TTL,高敏场景建议 60-120 秒。
+- [ ] 自动化测试覆盖关键响应头,并确认 iframe URL 仍不含 RAGFlow beta token 或 `ragflow-` API token。
+- [ ] 不改变 RAGFlow 原生 iframe 的使用方式,既有分享页 Playwright 主流程不回归。
+
+### Blocked by
+
+None - can start immediately
+
+---
+
+## Issue 48 — Slice 48: 公开分享使用独立高熵公开入口,避免 raw share_page_id 被搬运
+
+### Parent
+
+2026-07-09 分享页安全风险评审:公开分享按设计免登录,任何拿到公开 URL 的人都可以使用,不能把 raw `share_page_id` 当作足够的访问秘密。
+
+### What to build
+
+把公开分享的访问入口从可枚举/可猜测的 `share_page_id` 升级为独立的高熵公开访问 key。管理员开启公开分享时生成公开 key,公开 URL 使用该 key;管理员可关闭公开分享或轮换 key,旧公开 URL 和旧公开 token 立即失效。标准登录分享页继续按授权体系使用 `share_page_id`,不受公开 key 影响。
+
+### Acceptance criteria
+
+- [ ] 分享页保存独立的公开访问 key;公开 URL 和公开 embed/session/chat 端点使用该 key 定位分享页,不直接暴露 raw `share_page_id` 作为公开访问入口。
+- [ ] 管理后台可开启/关闭公开分享,并可轮换公开 key;轮换后旧公开 URL 返回 404/403。
+- [ ] 关闭公开分享后,已签发的公开 `T_short` 继续被 `is_public=false` 校验拒绝。
+- [ ] 公开分享 key 足够随机,不可由分享页 ID、名称或资源 ID 推导。
+- [ ] 测试覆盖:旧 key 失效、新 key 可用、标准登录分享页授权路径不回归。
+
+### Blocked by
+
+None - can start immediately
+
+---
+
+## Issue 49 — Slice 49: 公开分享全链路限流与可信代理 IP 边界
+
+### Parent
+
+2026-07-09 分享页安全风险评审:公开 chat 端点有限流,但公开 embed-url/session 预创建也会消耗资源;当前 IP 提取优先信任 `X-Forwarded-For`,需防止客户端伪造绕过限流。
+
+### What to build
+
+把公开分享的防滥用控制扩展到完整公开链路,并明确只信任来自可信反代的真实客户端 IP。公开 `embed-url`、session 预创建、chat/SSE 都应进入同一限流与审计边界,避免攻击者通过高频签发 token 或预创建 session 消耗 RAGFlow/portal 资源。
+
+### Acceptance criteria
+
+- [ ] 公开 `embed-url`、公开 session 预创建、公开 chat/SSE 均应用 IP 限流;超限返回 429。
+- [ ] IP 提取只信任可信代理写入的转发头;未配置可信代理时回退 `request.client.host`,不盲信客户端自带 `X-Forwarded-For`。
+- [ ] 运维文档给出 nginx 推荐配置,确保反代覆盖而非追加不可信 `X-Forwarded-For`。
+- [ ] 审计或日志能区分公开 token 签发、公开 session 预创建、公开 chat 超限等事件,便于排查滥用。
+- [ ] 测试覆盖:伪造多个 `X-Forwarded-For` 不能绕过限流;可信代理配置下真实客户端 IP 仍可正确限流。
+
+### Blocked by
+
+None - can start immediately
+
+---
+
+## Issue 50 — Slice 50: Widget frame-ancestors 改为生产安全默认值和显式白名单
+
+### Parent
+
+2026-07-09 分享页安全风险评审:`WIDGET_FRAME_ANCESTORS` 默认 `*`,widget 页面默认允许任意站点 iframe 嵌入;一旦 widget 接入真实对话能力,第三方站点可搬运入口。
+
+### What to build
+
+把 widget 跨域嵌入从“默认允许任意域”改成“显式白名单”。生产环境未配置白名单时不应默默允许所有站点嵌入;管理员生成 snippet 时应能看到当前允许嵌入的域范围。标准 fullscreen 分享页继续保持 `X-Frame-Options: SAMEORIGIN`。
+
+### Acceptance criteria
+
+- [ ] `WIDGET_FRAME_ANCESTORS` 的生产默认值不再是 `*`;未显式配置时采用拒绝外部嵌入或仅同源的安全行为。
+- [ ] widget 页面响应只允许配置白名单中的来源嵌入;非 widget 页面继续返回 `X-Frame-Options: SAMEORIGIN`。
+- [ ] 管理后台或运维文档明确 widget snippet 只应投放到白名单域名;配置变更后可验证响应头生效。
+- [ ] 测试覆盖:默认配置不允许任意域嵌入;显式白名单配置时 `frame-ancestors` 精确反映白名单。
+- [ ] 既有 widget snippet 生成和 fullscreen 分享页 Playwright 主流程不回归。
+
+### Blocked by
+
+None - can start immediately
+
+---
+
 ## 后续待办(Issue 16 AC2 遗留)
 
 > Issue 16 AC2「悬浮组件在任意页面右下角加载,点击展开对话窗,能正常对话」— Slice 16 实现了 `/widget/<id>` 骨架 HTML + 可嵌入 snippet + CSP frame-ancestors 放行,但 **悬浮组件实际 UI 渲染(右下角悬浮按钮 + 点击展开对话窗 + iframe 加载 + SSE 对话)尚未实现**。`/widget/<id>` 当前仅返回含 `<div id="widget-root">` 的占位 HTML,需前端构建产物挂载 React 组件。
