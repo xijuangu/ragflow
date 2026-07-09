@@ -2288,6 +2288,142 @@ SharePageDetailPage 视觉升级到 detail-shell 布局(设计稿 `share-detail.
 
 ---
 
+## Issue 60 — 移动端全响应式适配
+
+## Parent
+
+[PRD-ui-redesign.md](PRD-ui-redesign.md) §7 Deferred 项。
+
+## What to build
+
+桌面优先已交付(Issue 52-59)。本 issue 补齐移动端:10 个断点覆盖、表格 → 卡片态切换(`<768px` 时 `.mobile-cards` 显示、`table` 隐藏)、sidebar 抽屉化(`.menu-btn` 显示 + sidebar `transform: translateX(-100%)` + overlay)。`styles.css` 已预留 `.mobile-cards` / `.m-card` / `.menu-btn` class,需补 media query 与 JS 切换逻辑。
+
+## Acceptance criteria
+
+- [ ] 9 屏在 375/414/768/1024/1280 断点无布局 bug
+- [ ] 表格在 `<768px` 切换为卡片态,所有数据可见
+- [ ] sidebar 在 `<768px` 为抽屉,`.menu-btn` 可开关
+- [ ] tsc 0 errors,Vitest 全绿,Playwright 移动视口用例全绿
+
+## Blocked by
+
+- Issue 59(响应式基线已交付)
+
+---
+
+## Issue 61 — drawer 抽屉交互(admin 新建/编辑)
+
+## Parent
+
+[PRD-ui-redesign.md](PRD-ui-redesign.md) §7 Deferred 项。`portal-ui-redesign/css/styles.css` 已含 `.drawer` / `.drawer-overlay` / `.drawer-head` / `.drawer-body` / `.drawer-foot` class。
+
+## What to build
+
+将 admin 页内联创建表单(用户/用户组/分享页/授权)替换为 drawer 抽屉:点击"新建"按钮 → 右侧抽屉滑入 + overlay 遮罩 + 表单内容 + 取消/保存底部按钮。设计稿 `admin-groups.html` 含 `#newGroupDrawer` / `#membersDrawer` 参考结构。
+
+## Acceptance criteria
+
+- [ ] 4 个 admin 页创建表单改为 drawer,内联表单移除
+- [ ] drawer 支持 ESC 关闭 + overlay 点击关闭
+- [ ] 表单提交逻辑(创建/校验)不回归
+- [ ] tsc 0 errors,Vitest 全绿
+
+## Blocked by
+
+- Issue 59
+
+---
+
+## Issue 62 — stats 聚合(前端聚合,轻功能)
+
+## Parent
+
+[PRD-ui-redesign.md](PRD-ui-redesign.md) §7 Deferred 项。`styles.css` 已含 `.stats` / `.stat` / `.delta` class(已砍,保留供未来)。
+
+## What to build
+
+admin 页 page-head 下方补 stats 行:用户管理(总用户数/活跃/待激活/已禁用)、用户组(组数/成员总数/关联分享页/未分组)、分享页(总数/活跃/归档)、会话(总会话/今日新增/总消息数)。前端从现有列表接口(`GET /admin/users` 等)聚合,不新增后端接口。
+
+## Acceptance criteria
+
+- [ ] 4 个 admin 页显示 stats 行,数值正确
+- [ ] 无新增后端接口,纯前端聚合
+- [ ] tsc 0 errors,Vitest 全绿
+
+## Blocked by
+
+- Issue 59
+
+---
+
+## Issue 63 — 顶部全局搜索(需后端)
+
+## Parent
+
+[PRD-ui-redesign.md](PRD-ui-redesign.md) §7 Deferred 项。`styles.css` 已含 `.topbar-search` class。`AppHeader.tsx`(topbar)已预留搜索框位置。
+
+## What to build
+
+topbar 搜索框功能化:输入关键词 → 搜索会话/用户/分享页 → 下拉结果列表 → 跳转。需后端新增 `GET /search?q=` 聚合接口(跨 sessions/users/share_pages 表)。
+
+## Acceptance criteria
+
+- [ ] 后端 `GET /search?q=` 接口实现,返回分类结果
+- [ ] topbar 搜索框输入触发搜索,下拉显示结果
+- [ ] 点击结果跳转对应详情页
+- [ ] tsc 0 errors,Vitest + Playwright 全绿
+
+## Blocked by
+
+- Issue 59(需后端工作,非纯前端)
+
+---
+
+## Issue 64 — 通知系统(需后端)
+
+## Parent
+
+[PRD-ui-redesign.md](PRD-ui-redesign.md) §7 Deferred 项。`styles.css` 已含 `.icon-btn` class 供通知铃铛。
+
+## What to build
+
+topbar 通知铃铛功能化:后端 `GET /notifications` 接口 + 未读计数 + 下拉通知列表 + 标记已读。通知类型:分享页授权变更、用户状态变更、会话异常等。
+
+## Acceptance criteria
+
+- [ ] 后端 `GET /notifications` + `POST /notifications/:id/read` 接口
+- [ ] topbar 铃铛显示未读计数 badge
+- [ ] 点击展开通知列表,可标记已读
+- [ ] tsc 0 errors,Vitest + Playwright 全绿
+
+## Blocked by
+
+- Issue 59(需后端工作)
+
+---
+
+## Issue 65 — 批量导入(需后端)
+
+## Parent
+
+[PRD-ui-redesign.md](PRD-ui-redesign.md) §7 Deferred 项。
+
+## What to build
+
+用户管理页补"批量导入"按钮:上传 CSV(JSON)→ 后端解析 + 批量创建用户 → 返回成功/失败明细。需后端 `POST /admin/users/import` 接口。
+
+## Acceptance criteria
+
+- [ ] 后端 `POST /admin/users/import` 接口(CSV/JSON 解析 + 批量创建)
+- [ ] 用户管理页批量导入按钮 + 文件选择 + 结果反馈
+- [ ] tsc 0 errors,Vitest + Playwright 全绿
+
+## Blocked by
+
+- Issue 59(需后端工作)
+
+---
+
 ## 后续待办(Issue 16 AC2 遗留)
 
 > Issue 16 AC2「悬浮组件在任意页面右下角加载,点击展开对话窗,能正常对话」— Slice 16 实现了 `/widget/<id>` 骨架 HTML + 可嵌入 snippet + CSP frame-ancestors 放行,但 **悬浮组件实际 UI 渲染(右下角悬浮按钮 + 点击展开对话窗 + iframe 加载 + SSE 对话)尚未实现**。`/widget/<id>` 当前仅返回含 `<div id="widget-root">` 的占位 HTML,需前端构建产物挂载 React 组件。
