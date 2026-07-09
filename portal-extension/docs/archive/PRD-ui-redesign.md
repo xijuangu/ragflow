@@ -1,6 +1,6 @@
 # PRD:Portal UI 重设计(D1 Graphite)
 
-> 基于 `portal-ui-redesign/` 设计稿(Open Design 产出)。决策记录见 [CONTEXT.md §6.5](../CONTEXT.md#L149-L161)。设计系统规范见 [`portal-ui-redesign/DESIGN.md`](../../../portal-ui-redesign/DESIGN.md)。
+> 基于 `project-materials/portal-ui-redesign/` 设计稿(Open Design 产出)。决策记录见 [CONTEXT.md §6.5](../../CONTEXT.md#L149-L161)。设计系统规范见 [`portal-ui-redesign/DESIGN.md`](../../project-materials/portal-ui-redesign/DESIGN.md)。
 
 ## 1. 目标
 

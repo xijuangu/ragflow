@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>RAGFlow 权限门户 · UI 重设计 — D1 Graphite</title>
+<link rel="stylesheet" href="css/styles.css" />
+<style>
+  .launcher { max-width: 960px; margin: 0 auto; padding: 48px 32px 80px; }
+  .launch-head { margin-bottom: 32px; }
+  .launch-head h1 { font-family: var(--font-display); font-size: 38px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.15; }
+  .launch-head .sub { color: var(--muted); font-size: 15px; margin-top: 10px; max-width: 60ch; line-height: 1.6; }
+  .dir-banner { display: flex; align-items: center; gap: 16px; padding: 16px 18px; border: 1px solid var(--border); border-radius: var(--radius); margin: 24px 0 36px; background: var(--surface); }
+  .dir-banner .swatches { display: flex; gap: 6px; }
+  .dir-banner .sw { width: 28px; height: 28px; border-radius: var(--radius-sm); border: 1px solid var(--border); }
+  .dir-banner .dir-text { flex: 1; }
+  .dir-banner .dir-text .dt { font-size: 14px; font-weight: 600; }
+  .dir-banner .dir-text .dd { font-size: 12px; color: var(--muted); margin-top: 3px; }
+  .dir-banner .badge { margin-left: auto; }
+  .section-label { font-size: 11px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); margin: 28px 0 14px; }
+  .screen-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .screen-card { display: flex; flex-direction: column; gap: 8px; padding: 18px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); transition: border-color .15s, transform .15s; }
+  .screen-card:hover { border-color: color-mix(in oklch, var(--accent) 40%, var(--border)); transform: translateY(-2px); }
+  .screen-card .sc-num { font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
+  .screen-card .sc-name { font-size: 15px; font-weight: 600; }
+  .screen-card .sc-desc { font-size: 12px; color: var(--muted); line-height: 1.5; flex: 1; }
+  .screen-card .sc-go { font-size: 12px; font-weight: 550; color: var(--accent); margin-top: 4px; }
+  .screen-card .sc-ico { width: 36px; height: 36px; border-radius: var(--radius); background: var(--surface-2); display: grid; place-items: center; color: var(--muted); margin-bottom: 4px; }
+  .launch-foot { margin-top: 40px; padding: 16px 18px; border: 1px dashed var(--border); border-radius: var(--radius); font-size: 12px; color: var(--muted); line-height: 1.6; }
+  .launch-foot a { color: var(--accent); font-weight: 550; }
+  @media (max-width: 820px) { .screen-grid { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 520px) { .screen-grid { grid-template-columns: 1fr; } .launcher { padding: 32px 18px 56px; } }
+</style>
+</head>
+<body>
+<nav class="topbar" data-od-id="topbar">
+  <div class="brand"><span class="dot"></span><span>RAGFlow 权限门户</span><small>v0.26</small></div>
+  <div class="topbar-right">
+    <a class="btn btn-ghost btn-sm" href="DESIGN.md">设计系统文档</a>
+    <a class="btn btn-secondary btn-sm" href="login.html">登录页</a>
+  </div>
+</nav>
+
+<div class="launcher">
+  <div class="launch-head" data-od-id="launch-head">
+    <div class="kicker">UI 重设计 · D1 Graphite</div>
+    <h1 style="margin-top:8px">RAGFlow 权限门户</h1>
+    <div class="sub">现代极简(Linear / Vercel)调性,响应式(桌面 + 平板 + 手机)。9 张真实屏幕全量 rollout,内容取自门户真实业务(用户/组/分享页/授权/会话/审计),逻辑不动,只换视觉层。产出为 HTML 设计稿,供移植回 React 代码库。</div>
+  </div>
+
+  <div class="dir-banner" data-od-id="dir-banner">
+    <div class="swatches">
+      <div class="sw" style="background:var(--bg)" title="--bg"></div>
+      <div class="sw" style="background:var(--surface-2)" title="--surface-2"></div>
+      <div class="sw" style="background:var(--fg)" title="--fg"></div>
+      <div class="sw" style="background:var(--muted)" title="--muted"></div>
+      <div class="sw" style="background:var(--accent)" title="--accent"></div>
+    </div>
+    <div class="dir-text">
+      <div class="dt">D1 Graphite · 浅色 · 冷蓝紫</div>
+      <div class="dd">近白画布 + 墨色前景,单一蓝紫强调色 oklch(58% 0.18 255),系统无衬线,紧字距,发丝边,毛玻璃粘性顶栏。</div>
+    </div>
+    <span class="badge b-active">已锁定</span>
+  </div>
+
+  <div class="section-label">用户面 · 3 屏</div>
+  <div class="screen-grid" data-od-id="user-screens">
+    <a class="screen-card" href="login.html" data-od-id="screen-login">
+      <div class="sc-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><path d="M10 17l-5-5 5-5"/><path d="M5 12h12"/></svg></div>
+      <div class="sc-num">01</div>
+      <div class="sc-name">登录</div>
+      <div class="sc-desc">左品牌介绍 + 右登录表单,邮箱密码与企业 SSO 入口。</div>
+      <div class="sc-go">查看 →</div>
+    </a>
+    <a class="screen-card" href="share-list.html" data-od-id="screen-share-list">
+      <div class="sc-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-7l-2-2H5a2 2 0 0 0-2 2z"/></svg></div>
+      <div class="sc-num">02</div>
+      <div class="sc-name">分享页列表</div>
+      <div class="sc-desc">用户首页,被分享的知识库卡片网格,含统计与令牌状态。</div>
+      <div class="sc-go">查看 →</div>
+    </a>
+    <a class="screen-card" href="share-detail.html" data-od-id="screen-share-detail">
+      <div class="sc-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 5h16v10H8l-4 4z"/></svg></div>
+      <div class="sc-num">03</div>
+      <div class="sc-name">分享页详情</div>
+      <div class="sc-desc">Chat 对话区 + 历史会话侧栏 + 引用块,模拟 iframe 容器。</div>
+      <div class="sc-go">查看 →</div>
+    </a>
+  </div>
+
+  <div class="section-label">管理后台 · 6 屏</div>
+  <div class="screen-grid" data-od-id="admin-screens">
+    <a class="screen-card" href="admin-users.html" data-od-id="screen-users">
+      <div class="sc-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="9" cy="8" r="3.5"/><path d="M3 20a6 6 0 0 1 12 0"/><path d="M16 5a3 3 0 0 1 0 6"/><path d="M17 14a6 6 0 0 1 4 6"/></svg></div>
+      <div class="sc-num">04</div>
+      <div class="sc-name">用户管理</div>
+      <div class="sc-desc">用户表 + 新建用户抽屉 + 角色状态筛选,含移动端卡片。</div>
+      <div class="sc-go">查看 →</div>
+    </a>
+    <a class="screen-card" href="admin-groups.html" data-od-id="screen-groups">
+      <div class="sc-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="8" cy="9" r="3"/><circle cx="16" cy="9" r="3"/><path d="M3 19a5 5 0 0 1 10 0"/><path d="M11 19a5 5 0 0 1 10 0"/></svg></div>
+      <div class="sc-num">05</div>
+      <div class="sc-name">用户组</div>
+      <div class="sc-desc">组列表 + 成员管理抽屉 + 新建组,按业务线组织批量授权。</div>
+      <div class="sc-go">查看 →</div>
+    </a>
+    <a class="screen-card" href="admin-shares.html" data-od-id="screen-shares">
+      <div class="sc-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 13v7h16v-7"/><path d="M12 3v12"/><path d="m8 7 4-4 4 4"/></svg></div>
+      <div class="sc-num">06</div>
+      <div class="sc-name">分享页管理</div>
+      <div class="sc-desc">分享页表 + 新建抽屉(关联知识库/分享对象/令牌有效期)。</div>
+      <div class="sc-go">查看 →</div>
+    </a>
+    <a class="screen-card" href="admin-acl.html" data-od-id="screen-acl">
+      <div class="sc-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></div>
+      <div class="sc-num">07</div>
+      <div class="sc-name">授权管理</div>
+      <div class="sc-desc">用户组 × 知识库权限矩阵(无/查看/对话/管理),含移动端折叠。</div>
+      <div class="sc-go">查看 →</div>
+    </a>
+    <a class="screen-card" href="admin-sessions.html" data-od-id="screen-sessions">
+      <div class="sc-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 5h16v10H8l-4 4z"/></svg></div>
+      <div class="sc-num">08</div>
+      <div class="sc-name">会话搜索</div>
+      <div class="sc-desc">跨用户检索历史会话,筛选 + 会话表 + 聊天预览 + 元数据。</div>
+      <div class="sc-go">查看 →</div>
+    </a>
+    <a class="screen-card" href="admin-audit.html" data-od-id="screen-audit">
+      <div class="sc-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M5 4h14v16H5z"/><path d="M9 9h6M9 13h6M9 17h3"/></svg></div>
+      <div class="sc-num">09</div>
+      <div class="sc-name">审计日志</div>
+      <div class="sc-desc">操作日志时间线 + 筛选(动作/结果/时间)+ 导出,含失败事件。</div>
+      <div class="sc-go">查看 →</div>
+    </a>
+  </div>
+
+  <div class="launch-foot" data-od-id="launch-foot">
+    <strong>交付说明。</strong> 全部 9 屏共享 <span class="mono">css/styles.css</span>(D1 令牌 + 组件类)与 <span class="mono">js/app.js</span>(侧栏抽屉/抽屉面板/筛选/对话交互)。每屏含桌面/平板/移动三态,真实文案,可交互控件。设计系统令牌与姿态规则见 <a href="DESIGN.md">DESIGN.md</a>。三方向对比稿(direction-1/2/3)保留供参考。产出不污染代码仓库,由你移植回 React。
+  </div>
+</div>
+</body>
+</html>

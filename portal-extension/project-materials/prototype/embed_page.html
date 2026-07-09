@@ -1,0 +1,357 @@
+<!doctype html>
+<!--
+  PROTOTYPE — throwaway
+  模拟 RAGFlow v0.26.0 embed-dialog 前端的令牌加载与 SSE 请求逻辑。
+  严格按源码实现:
+    - getAuthorization():优先 URL ?auth=xxx,回退 localStorage(见 authorization-util.ts)
+    - useSendMessageWithSse:fetch POST + Authorization header(见 logic-hooks.ts)
+    - useGetSharedChatSearchParams:从 URL 读 shared_id/from(见 use-send-shared-message.ts)
+  同时实现 postMessage 注入备选路径,验证是否可替代 URL 参数。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>RAGFlow embed(模拟)— PROTOTYPE throwaway</title>
+<style>
+  body { font-family: -apple-system, sans-serif; max-width: 820px; margin: 24px auto; padding: 0 16px; color: #222; }
+  .box { border: 1px solid #ddd; padding: 14px; border-radius: 8px; margin: 10px 0; background: #fafafa; }
+  button { padding: 7px 14px; font-size: 14px; cursor: pointer; border: 1px solid #888; background: #fff; border-radius: 4px; }
+  button:hover { background: #eee; }
+  input { padding: 6px; font-size: 14px; border: 1px solid #aaa; border-radius: 4px; width: 100%; box-sizing: border-box; }
+  pre { background: #f0f0f0; padding: 8px; border-radius: 4px; overflow: auto; white-space: pre-wrap; word-break: break-all; font-size: 12px; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 12px; color: #fff; }
+  .ok { background: #16a34a; }
+  .fail { background: #dc2626; }
+  .warn { background: #d97706; }
+  .info { background: #2563eb; }
+  .row { display: flex; gap: 8px; margin: 4px 0; align-items: center; }
+  .row label { min-width: 130px; color: #555; font-size: 13px; }
+  .messages { max-height: 260px; overflow: auto; border: 1px solid #ddd; padding: 8px; border-radius: 4px; background: #fff; }
+  .msg-user { color: #2563eb; margin: 4px 0; }
+  .msg-ai { color: #166534; margin: 4px 0; }
+  .ref { color: #92400e; font-size: 12px; margin-left: 12px; }
+</style>
+</head>
+<body>
+<h1>RAGFlow embed 页(模拟) <span class="tag info">PROTOTYPE throwaway</span></h1>
+<p>本页面模拟 RAGFlow <code>embed-dialog/index.tsx</code> 在 iframe 内运行时的令牌加载与 SSE 请求逻辑。<br>
+严格按 v0.26.0 源码实现 <code>getAuthorization()</code> 与 <code>useSendMessageWithSse</code>。</p>
+
+<div class="box">
+  <h3>1. 令牌来源诊断(模拟 getAuthorization)</h3>
+  <div class="row"><label>当前 URL</label><span id="curUrl" style="word-break:break-all"></span></div>
+  <div class="row"><label>shared_id 参数</label><span id="sharedId">—</span></div>
+  <div class="row"><label>auth 参数</label><span id="authParam">—</span></div>
+  <div class="row"><label>inject 模式</label><span id="injectMode">—</span></div>
+  <div class="row"><label>localStorage Authorization</label><span id="lsAuth">—</span></div>
+  <div class="row"><label>最终 getAuthorization()</label><span id="finalAuth" style="word-break:break-all"></span></div>
+  <div class="row"><label>令牌来源</label><span id="tokenSource">—</span></div>
+</div>
+
+<div class="box">
+  <h3>2. 发起 SSE 请求(模拟 useSendMessageWithSse)</h3>
+  <p>请求路径与 RAGFlow 一致:<code>/api/v1/chatbots/{shared_id}/completions</code></p>
+  <div class="row">
+    <input id="question" value="请介绍一下 RAGFlow" placeholder="输入问题">
+    <button onclick="sendQuestion()">发送(SSE)</button>
+    <button onclick="initSession()">初始化会话(空问题)</button>
+  </div>
+  <div class="row"><label>发送的 Authorization header</label><span id="sentAuth" style="word-break:break-all">—</span></div>
+  <div class="row"><label>响应状态</label><span id="respStatus">—</span></div>
+  <div class="row"><label>session_id</label><span id="sessionId">—</span></div>
+  <div class="messages" id="messages"></div>
+</div>
+
+<div class="box">
+  <h3>3. 注入路径切换</h3>
+  <p>URL 参数注入与 postMessage 注入可切换,验证两种路径是否都有效。</p>
+  <div class="row">
+    <button onclick="switchToUrlInject()">改用 URL 参数注入</button>
+    <button onclick="simulatePostMessageInject()">模拟父页 postMessage 注入令牌</button>
+    <button onclick="clearLocalStorageAuth()">清除 localStorage.Authorization</button>
+    <button onclick="setLocalStorageAuth()">写入 localStorage.Authorization(模拟旧令牌)</button>
+  </div>
+  <div class="row"><label>postMessage 注入的令牌</label><input id="pmToken" placeholder="粘贴网关签发的 token"></div>
+  <div class="row"><label>当前生效令牌</label><span id="activeToken" style="word-break:break-all">—</span></div>
+  <pre id="log"></pre>
+</div>
+
+<div class="box">
+  <h3>4. 验证要点</h3>
+  <ul>
+    <li><b>URL 参数注入</b>:URL 含 <code>?auth=xxx</code> 时,SSE 请求的 Authorization 应为 <code>Bearer xxx</code>,localStorage 不被读取。</li>
+    <li><b>postMessage 注入</b>:父页 postMessage 令牌后,embed 页应改用该令牌发 SSE(需覆盖 getAuthorization)。</li>
+    <li><b>localStorage 绕过</b>:只要 URL 有 auth 参数,localStorage 中是否有旧令牌不影响请求。</li>
+    <li><b>网关校验</b>:令牌无效/过期/撤销时,网关返回 401,SSE 不产生流。</li>
+  </ul>
+</div>
+
+<script>
+// ============================================================
+// 模拟 RAGFlow v0.26.0 的 getAuthorization() 实现
+// 源码:web/src/utils/authorization-util.ts
+// ============================================================
+const Authorization = 'Authorization'; // localStorage key,见 constants/authorization.ts
+
+// 模拟 storage.getAuthorization()
+function storageGetAuthorization() {
+  return localStorage.getItem(Authorization);
+}
+
+// postMessage 注入的令牌(覆盖 URL 与 localStorage)
+let postMessageToken = null;
+
+// 模拟 getSearchValue(key) —— 源码:web/src/utils/common-util.ts
+function getSearchValue(key) {
+  return new URLSearchParams(window.location.search).get(key);
+}
+
+// 模拟 getAuthorization() —— 源码:web/src/utils/authorization-util.ts
+// 优先级:postMessage 注入 > URL ?auth=xxx > localStorage
+// 注:RAGFlow 原生只有 URL > localStorage 两级;postMessage 是本原型验证的备选路径
+function getAuthorization() {
+  if (postMessageToken) {
+    return 'Bearer ' + postMessageToken;
+  }
+  const auth = getSearchValue('auth');
+  if (auth) {
+    return 'Bearer ' + auth;
+  }
+  return storageGetAuthorization() || '';
+}
+
+// ============================================================
+// 模拟 useGetSharedChatSearchParams —— 源码:use-send-shared-message.ts
+// ============================================================
+function getSharedChatSearchParams() {
+  const sp = new URLSearchParams(window.location.search);
+  return {
+    from: sp.get('from') || 'chat',
+    sharedId: sp.get('shared_id'),
+    auth: sp.get('auth'),
+    inject: sp.get('inject'),
+  };
+}
+
+// ============================================================
+// 模拟 useSendMessageWithSse —— 源码:web/src/hooks/logic-hooks.ts
+// 用 fetch POST + Authorization header,ReadableStream 解析 SSE
+// ============================================================
+let currentSessionId = null;
+let messages = [];
+
+async function sendSse(question) {
+  const params = getSharedChatSearchParams();
+  const conversationId = params.sharedId || 'unknown';
+  // 与 RAGFlow 完全一致的路径
+  const url = `/api/v1/chatbots/${conversationId}/completions`;
+  const auth = getAuthorization();
+
+  document.getElementById('sentAuth').textContent = auth || '(空)';
+  log(`POST ${url}`);
+  log(`Authorization: ${auth || '(空)'}`);
+
+  const body = {
+    conversation_id: conversationId,
+    quote: true,
+    question: question,
+    session_id: currentSessionId || undefined,
+    reasoning: false,
+    internet: false,
+  };
+
+  let response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': auth,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    document.getElementById('respStatus').innerHTML = '<span class="tag fail">网络错误</span>';
+    log('fetch 失败:' + e.message);
+    return null;
+  }
+
+  document.getElementById('respStatus').textContent = response.status + ' ' + response.statusText;
+  if (!response.ok) {
+    const txt = await response.text();
+    log('网关拒绝:' + txt);
+    document.getElementById('respStatus').innerHTML =
+      `<span class="tag fail">${response.status}</span> ${txt}`;
+    return null;
+  }
+  document.getElementById('respStatus').innerHTML =
+    `<span class="tag ok">${response.status}</span> 流式响应中...`;
+
+  // 解析 SSE 流(data: {...}\n\n)
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = '';
+  let aiText = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += value;
+    let idx;
+    while ((idx = buffer.indexOf('\n\n')) >= 0) {
+      const chunk = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 2);
+      const line = chunk.trim();
+      if (!line.startsWith('data:')) continue;
+      const jsonStr = line.slice(5).trim();
+      if (!jsonStr) continue;
+      try {
+        const ev = JSON.parse(jsonStr);
+        handleSseEvent(ev, question);
+        if (ev.content) aiText += ev.content;
+      } catch (e) {
+        log('解析 SSE 失败:' + e.message + ' raw=' + jsonStr);
+      }
+    }
+  }
+  document.getElementById('respStatus').innerHTML =
+    `<span class="tag ok">${response.status}</span> 流式结束`;
+  return aiText;
+}
+
+function handleSseEvent(ev, question) {
+  if (ev.session_id) {
+    currentSessionId = ev.session_id;
+    document.getElementById('sessionId').textContent = ev.session_id;
+    log('收到 session_id:' + ev.session_id);
+  }
+  if (ev.content) {
+    appendMessage('ai', ev.content);
+  }
+  if (ev.reference) {
+    ev.reference.forEach(r => {
+      appendReference(r.doc_name + ' / ' + r.chunk);
+    });
+  }
+  if (ev.done) {
+    log('SSE done');
+  }
+}
+
+function appendMessage(role, text) {
+  messages.push({ role, text });
+  renderMessages();
+}
+function appendReference(text) {
+  messages.push({ role: 'ref', text });
+  renderMessages();
+}
+function renderMessages() {
+  const box = document.getElementById('messages');
+  box.innerHTML = messages.map(m => {
+    if (m.role === 'user') return `<div class="msg-user">👤 ${escapeHtml(m.text)}</div>`;
+    if (m.role === 'ai') return `<div class="msg-ai">🤖 ${escapeHtml(m.text)}</div>`;
+    if (m.role === 'ref') return `<div class="ref">📎 ${escapeHtml(m.text)}</div>`;
+    return `<div>${escapeHtml(m.text)}</div>`;
+  }).join('');
+  box.scrollTop = box.scrollHeight;
+}
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// ============================================================
+// UI 动作
+// ============================================================
+async function sendQuestion() {
+  const q = document.getElementById('question').value.trim();
+  if (!q) { alert('请输入问题'); return; }
+  appendMessage('user', q);
+  await sendSse(q);
+}
+async function initSession() {
+  appendMessage('user', '(初始化会话,空问题)');
+  await sendSse('');
+}
+
+function switchToUrlInject() {
+  postMessageToken = null;
+  const params = getSharedChatSearchParams();
+  if (!params.auth) {
+    alert('当前 URL 无 auth 参数。请从门户页"在新窗口打开 embed 页"进入。');
+  }
+  refreshDiagnostics();
+  log('切换到 URL 参数注入模式');
+}
+
+function simulatePostMessageInject() {
+  // 模拟父页通过 postMessage 注入令牌
+  const t = document.getElementById('pmToken').value.trim();
+  if (!t) { alert('请粘贴令牌'); return; }
+  // 模拟父页发送
+  window.postMessage({ type: 'INJECT_TOKEN', token: t }, location.origin);
+}
+
+function clearLocalStorageAuth() {
+  localStorage.removeItem(Authorization);
+  refreshDiagnostics();
+  log('已清除 localStorage.Authorization');
+}
+function setLocalStorageAuth() {
+  localStorage.setItem(Authorization, 'Bearer stale_localstorage_token_999');
+  refreshDiagnostics();
+  log('已写入 localStorage.Authorization(模拟旧令牌)');
+}
+
+// 监听 postMessage(模拟 iframe 接收父页注入)
+window.addEventListener('message', (e) => {
+  if (e.origin !== location.origin) return;
+  if (e.data && e.data.type === 'INJECT_TOKEN' && e.data.token) {
+    postMessageToken = e.data.token;
+    log('收到 postMessage 注入令牌:' + e.data.token);
+    refreshDiagnostics();
+  }
+});
+
+// ============================================================
+// 诊断显示
+// ============================================================
+function refreshDiagnostics() {
+  const params = getSharedChatSearchParams();
+  document.getElementById('curUrl').textContent = location.href;
+  document.getElementById('sharedId').textContent = params.sharedId || '(无)';
+  document.getElementById('authParam').textContent = params.auth || '(无)';
+  document.getElementById('injectMode').textContent = params.inject || 'url';
+  const lsAuth = localStorage.getItem(Authorization);
+  document.getElementById('lsAuth').textContent = lsAuth || '(空)';
+
+  const auth = getAuthorization();
+  document.getElementById('finalAuth').textContent = auth || '(空)';
+  document.getElementById('activeToken').textContent = auth || '(空)';
+
+  let source;
+  if (postMessageToken) {
+    source = '<span class="tag ok">postMessage 注入</span>';
+  } else if (params.auth) {
+    source = '<span class="tag ok">URL ?auth 参数(原生注入点)</span>';
+  } else if (lsAuth) {
+    source = '<span class="tag warn">localStorage 回退</span>';
+  } else {
+    source = '<span class="tag fail">无令牌</span>';
+  }
+  document.getElementById('tokenSource').innerHTML = source;
+}
+
+function log(msg) {
+  const el = document.getElementById('log');
+  const ts = new Date().toLocaleTimeString();
+  el.textContent = `[${ts}] ${msg}\n` + el.textContent;
+}
+
+// 初始化
+window.addEventListener('DOMContentLoaded', () => {
+  refreshDiagnostics();
+  log('embed 页加载完成');
+  log('getAuthorization() 实现:postMessage > URL ?auth > localStorage');
+});
+</script>
+</body>
+</html>

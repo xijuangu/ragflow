@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "kind": "html",
+  "title": "portal-ui-redesign/direction-3-coral.html",
+  "entry": "portal-ui-redesign/direction-3-coral.html",
+  "renderer": "html",
+  "status": "complete",
+  "exports": [
+    "html",
+    "pdf",
+    "zip"
+  ],
+  "createdAt": "2026-07-09T03:01:36.426Z",
+  "updatedAt": "2026-07-09T03:01:36.426Z",
+  "metadata": {
+    "inferred": true,
+    "reconciled": true
+  }
+}

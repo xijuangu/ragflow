@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>授权管理 — RAGFlow 权限门户</title>
+<link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+<nav class="topbar" data-od-id="topbar">
+  <button class="menu-btn" id="menuBtn" aria-label="菜单"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
+  <div class="brand"><span class="dot"></span><span>RAGFlow 权限门户</span><small>v0.26</small></div>
+  <div class="topbar-search"><span class="ico"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg></span><input type="search" placeholder="搜索会话、用户、分享页…" /></div>
+  <div class="topbar-right">
+    <button class="icon-btn" aria-label="通知"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10 21a2 2 0 0 0 4 0"/></svg></button>
+    <button class="avatar"><span class="chip">管</span><span class="name">管理员</span></button>
+  </div>
+</nav>
+
+<div class="shell">
+  <aside class="sidebar" id="sidebar" data-od-id="sidebar">
+    <div class="nav-group-label">工作区</div>
+    <a class="nav-item" href="share-list.html" data-od-id="nav-share-pages"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 13v7h16v-7"/><path d="M12 3v12"/><path d="m8 7 4-4 4 4"/></svg>分享页</a>
+    <div class="nav-group-label">管理后台</div>
+    <a class="nav-item" href="admin-users.html" data-od-id="nav-users"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="9" cy="8" r="3.5"/><path d="M3 20a6 6 0 0 1 12 0"/><path d="M16 5a3 3 0 0 1 0 6"/><path d="M17 14a6 6 0 0 1 4 6"/></svg>用户管理</a>
+    <a class="nav-item" href="admin-groups.html" data-od-id="nav-groups"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="8" cy="9" r="3"/><circle cx="16" cy="9" r="3"/><path d="M3 19a5 5 0 0 1 10 0"/><path d="M11 19a5 5 0 0 1 10 0"/></svg>用户组</a>
+    <a class="nav-item" href="admin-shares.html" data-od-id="nav-shares"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 13v7h16v-7"/><path d="M12 3v12"/><path d="m8 7 4-4 4 4"/></svg>分享页</a>
+    <a class="nav-item active" href="admin-acl.html" data-od-id="nav-grants"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>授权</a>
+    <a class="nav-item" href="admin-sessions.html" data-od-id="nav-sessions"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 5h16v10H8l-4 4z"/></svg>会话搜索</a>
+    <a class="nav-item" href="admin-audit.html" data-od-id="nav-audit"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M5 4h14v16H5z"/><path d="M9 9h6M9 13h6M9 17h3"/></svg>审计日志</a>
+    <div class="nav-group-label">系统</div>
+    <a class="nav-item" href="#" data-od-id="nav-settings"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>设置</a>
+  </aside>
+
+  <main class="main" data-od-id="main">
+    <div class="page-head" data-od-id="page-head">
+      <div>
+        <div class="kicker">管理后台 / 授权</div>
+        <h1 style="margin-top:6px">授权管理</h1>
+        <div class="sub">矩阵式管理用户组与知识库的访问权限:无 / 查看 / 对话 / 管理。</div>
+      </div>
+      <div class="head-actions">
+        <button class="btn btn-secondary" data-od-id="btn-batch"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M4 12h10M4 17h16"/></svg>批量操作</button>
+        <button class="btn btn-primary" data-od-id="btn-save"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 12l5 5L20 7"/></svg>保存更改</button>
+      </div>
+    </div>
+
+    <div class="stats" data-od-id="stats-row">
+      <div class="stat"><div class="label">授权条目</div><div class="value num">28</div><div class="delta neu">用户组 × 知识库</div></div>
+      <div class="stat"><div class="label">对话权限</div><div class="value num">15</div><div class="delta up">可发起新会话</div></div>
+      <div class="stat"><div class="label">仅查看</div><div class="value num">8</div><div class="delta neu">只读历史会话</div></div>
+      <div class="stat"><div class="label">管理权限</div><div class="value num">5</div><div class="delta down">含删除/导出</div></div>
+    </div>
+
+    <div class="card" data-od-id="acl-card">
+      <div class="card-head"><h2>权限矩阵</h2><span class="muted" style="font-size:12px">行 = 用户组 · 列 = 知识库</span></div>
+      <div class="card-body" style="padding:0">
+        <div class="matrix-wrap">
+          <table class="matrix" data-od-id="acl-matrix">
+            <thead>
+              <tr>
+                <th>用户组</th>
+                <th>销售知识库</th>
+                <th>法务知识库</th>
+                <th>技术文档库</th>
+                <th>客服知识库</th>
+                <th>产品手册</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>销售组<small class="muted">12 人</small></td>
+                <td><select class="perm-select perm-chat"><option>无</option><option>查看</option><option selected>对话</option><option>管理</option></select></td>
+                <td><select class="perm-select perm-none"><option selected>无</option><option>查看</option><option>对话</option></select></td>
+                <td><select class="perm-select perm-view"><option>无</option><option selected>查看</option><option>对话</option></select></td>
+                <td><select class="perm-select perm-none"><option selected>无</option><option>查看</option></select></td>
+                <td><select class="perm-select perm-none"><option selected>无</option><option>查看</option></select></td>
+              </tr>
+              <tr>
+                <td>法务组<small class="muted">5 人</small></td>
+                <td><select class="perm-select perm-none"><option selected>无</option><option>查看</option></select></td>
+                <td><select class="perm-select perm-manage"><option>无</option><option>查看</option><option>对话</option><option selected>管理</option></select></td>
+                <td><select class="perm-select perm-view"><option>无</option><option selected>查看</option></select></td>
+                <td><select class="perm-select perm-none"><option selected>无</option></select></td>
+                <td><select class="perm-select perm-none"><option selected>无</option></select></td>
+              </tr>
+              <tr>
+                <td>技术组<small class="muted">8 人</small></td>
+                <td><select class="perm-select perm-view"><option>无</option><option selected>查看</option></select></td>
+                <td><select class="perm-select perm-view"><option>无</option><option selected>查看</option></select></td>
+                <td><select class="perm-select perm-manage"><option>无</option><option>查看</option><option>对话</option><option selected>管理</option></select></td>
+                <td><select class="perm-select perm-chat"><option>无</option><option>查看</option><option selected>对话</option></select></td>
+                <td><select class="perm-select perm-chat"><option>无</option><option>查看</option><option selected>对话</option></select></td>
+              </tr>
+              <tr>
+                <td>客服组<small class="muted">15 人</small></td>
+                <td><select class="perm-select perm-none"><option selected>无</option></select></td>
+                <td><select class="perm-select perm-none"><option selected>无</option></select></td>
+                <td><select class="perm-select perm-view"><option>无</option><option selected>查看</option></select></td>
+                <td><select class="perm-select perm-chat"><option>无</option><option>查看</option><option selected>对话</option></select></td>
+                <td><select class="perm-select perm-chat"><option>无</option><option>查看</option><option selected>对话</option></select></td>
+              </tr>
+              <tr>
+                <td>高管组<small class="muted">4 人</small></td>
+                <td><select class="perm-select perm-chat"><option>无</option><option>查看</option><option selected>对话</option></select></td>
+                <td><select class="perm-select perm-chat"><option>无</option><option>查看</option><option selected>对话</option></select></td>
+                <td><select class="perm-select perm-chat"><option>无</option><option>查看</option><option selected>对话</option></select></td>
+                <td><select class="perm-select perm-chat"><option>无</option><option>查看</option><option selected>对话</option></select></td>
+                <td><select class="perm-select perm-chat"><option>无</option><option>查看</option><option selected>对话</option></select></td>
+              </tr>
+              <tr>
+                <td>外部顾问<small class="muted">4 人</small></td>
+                <td><select class="perm-select perm-none"><option selected>无</option></select></td>
+                <td><select class="perm-select perm-none"><option selected>无</option></select></td>
+                <td><select class="perm-select perm-none"><option selected>无</option></select></td>
+                <td><select class="perm-select perm-none"><option selected>无</option></select></td>
+                <td><select class="perm-select perm-view"><option>无</option><option selected>查看</option></select></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="mobile-cards" data-od-id="acl-mobile">
+          <div class="m-card"><div class="ttl">销售组<small>12 人</small></div><div class="meta" style="margin-top:8px">销售库:对话 · 法务库:无 · 技术库:查看 · 客服库:无 · 产品手册:无</div></div>
+          <div class="m-card"><div class="ttl">法务组<small>5 人</small></div><div class="meta" style="margin-top:8px">销售库:无 · 法务库:管理 · 技术库:查看 · 客服库:无 · 产品手册:无</div></div>
+          <div class="m-card"><div class="ttl">技术组<small>8 人</small></div><div class="meta" style="margin-top:8px">销售库:查看 · 法务库:查看 · 技术库:管理 · 客服库:对话 · 产品手册:对话</div></div>
+          <div class="m-card"><div class="ttl">客服组<small>15 人</small></div><div class="meta" style="margin-top:8px">销售库:无 · 法务库:无 · 技术库:查看 · 客服库:对话 · 产品手册:对话</div></div>
+          <div class="m-card"><div class="ttl">高管组<small>4 人</small></div><div class="meta" style="margin-top:8px">全部知识库:对话</div></div>
+          <div class="m-card"><div class="ttl">外部顾问<small>4 人</small></div><div class="meta" style="margin-top:8px">仅产品手册:查看(只读)</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="note" data-od-id="acl-note">
+      <strong>权限说明。</strong> 无 = 不可见 · 查看 = 只读历史会话 · 对话 = 可发起新会话(会话绑定当前用户) · 管理 = 含删除会话、导出、令牌撤销。权限按组生效,用户取所属各组权限的并集。
+    </div>
+  </main>
+</div>
+<script src="js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "kind": "html",
+  "title": "portal-ui-redesign/direction-2-midnight.html",
+  "entry": "portal-ui-redesign/direction-2-midnight.html",
+  "renderer": "html",
+  "status": "complete",
+  "exports": [
+    "html",
+    "pdf",
+    "zip"
+  ],
+  "createdAt": "2026-07-09T02:59:12.453Z",
+  "updatedAt": "2026-07-09T02:59:12.453Z",
+  "metadata": {
+    "inferred": true,
+    "reconciled": true
+  }
+}

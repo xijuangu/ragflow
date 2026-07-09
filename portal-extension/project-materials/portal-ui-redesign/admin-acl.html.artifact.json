@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "kind": "html",
+  "title": "portal-ui-redesign/admin-acl.html",
+  "entry": "portal-ui-redesign/admin-acl.html",
+  "renderer": "html",
+  "status": "complete",
+  "exports": [
+    "html",
+    "pdf",
+    "zip"
+  ],
+  "createdAt": "2026-07-09T03:24:55.305Z",
+  "updatedAt": "2026-07-09T03:24:55.305Z",
+  "metadata": {
+    "inferred": true,
+    "reconciled": true
+  }
+}

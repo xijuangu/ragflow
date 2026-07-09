@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>登录 — RAGFlow 权限门户</title>
+<link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+<div class="login-shell" data-od-id="login">
+  <aside class="login-aside" data-od-id="login-aside">
+    <div class="la-brand">
+      <span class="dot"></span>
+      <span>RAGFlow 权限门户</span>
+    </div>
+    <div class="la-body">
+      <h2>统一权限门户,安全访问 RAGFlow 知识库</h2>
+      <p>在 RAGFlow 嵌入方案之上增加权限控制层,解决租户级 Token 泄露、历史会话丢失、缺用户角色审计三大企业落地阻碍。</p>
+      <div class="la-feats">
+        <div class="la-feat">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+          <div><div class="ft">短期可撤销令牌</div><div class="fd">租户级 Token 全程不离开服务端,签发 pt_ 前缀短期令牌注入 iframe</div></div>
+        </div>
+        <div class="la-feat">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 5h16v10H8l-4 4z"/></svg>
+          <div><div class="ft">会话归属绑定</div><div class="fd">SSE 成功后解析 session_id 绑定当前用户,关页面不丢失历史</div></div>
+        </div>
+        <div class="la-feat">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 12a8 8 0 0 1 13.7-5.6L20 8"/><path d="M20 4v4h-4"/><path d="M20 12a8 8 0 0 1-13.7 5.6L4 16"/><path d="M4 20v-4h4"/></svg>
+          <div><div class="ft">双删与重试保障</div><div class="fd">先删 RAGFlow 再删门户,失败标记 pending_deletion 由后台清理</div></div>
+        </div>
+      </div>
+    </div>
+    <div class="la-foot">基于 RAGFlow v0.26.0 · 同源部署 · X-Frame-Options: SAMEORIGIN</div>
+  </aside>
+
+  <main class="login-main" data-od-id="login-main">
+    <div class="login-card" data-od-id="login-form">
+      <div class="kicker">欢迎回来</div>
+      <h1 style="margin-top:6px">登录到工作区</h1>
+      <div class="sub">输入你的账号信息以访问被分享的知识库。</div>
+
+      <form onsubmit="event.preventDefault()">
+        <div class="form-group">
+          <label class="form-label" for="email">邮箱 <span class="req">*</span></label>
+          <input class="form-input" id="email" type="email" placeholder="you@company.com" required />
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="pwd">密码 <span class="req">*</span></label>
+          <input class="form-input" id="pwd" type="password" placeholder="请输入密码" required />
+        </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+          <label class="checkbox"><input type="checkbox" checked /> 记住我</label>
+          <a class="btn-link" href="#">忘记密码?</a>
+        </div>
+        <button class="btn btn-primary btn-block" type="submit" data-od-id="btn-login">登录</button>
+      </form>
+
+      <div class="login-sso"><span>或</span></div>
+      <button class="btn btn-secondary btn-block" data-od-id="btn-sso">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2z"/><path d="M12 7v5l3 2"/></svg>
+        使用企业 SSO 登录
+      </button>
+
+      <div class="login-alt">还没有账号? <a href="#">联系管理员开通</a></div>
+    </div>
+  </main>
+</div>
+<script src="js/app.js"></script>
+</body>
+</html>

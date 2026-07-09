@@ -1,6 +1,6 @@
 # Handoff — RAGFlow Portal 同源部署修复(Phase 3)
 
-> 生成时间:2026-07-06。接手前必读:`CONTEXT.md`(项目级约束/约定/已知限制)、`docs/ISSUES.md` Phase 3 区段、`docs/PRD.md` L21/L120-128/L131-133。
+> 生成时间:2026-07-06。接手前必读:`CONTEXT.md`(项目级约束/约定/已知限制)、`docs/archive/ISSUES.md` Phase 3 区段、`docs/archive/PRD.md` L21/L120-128/L131-133。
 > 本文档只记录操作细节与当前环境状态,项目记忆见 `CONTEXT.md`。
 
 ## 1. 项目位置与入口
@@ -9,8 +9,8 @@
 - 后端入口:`portal/main.py`(`app = create_app()`),`portal/routes.py`(路由),`portal/gateway.py`(网关/SSE 代理/TokenStore)
 - 前端入口:`frontend/src/main.tsx`(Router basename),`frontend/src/api/client.ts`(API_BASE),`frontend/vite.config.ts`(base)
 - 配置:`portal/config.py`(`load_settings`),`.env`(本地)/`~/.env`(服务器)
-- Issue 跟踪:`docs/ISSUES.md`(本地文件作 tracker,Issue 1-30 + TD1-TD20)
-- PRD:`docs/PRD.md`
+- Issue 跟踪:`docs/archive/ISSUES.md`(本地文件作 tracker,Issue 1-30 + TD1-TD20)
+- PRD:`docs/archive/PRD.md`
 
 ## 2. 当前部署架构(172.16.10.180)
 

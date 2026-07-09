@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>审计日志 — RAGFlow 权限门户</title>
+<link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+<nav class="topbar" data-od-id="topbar">
+  <button class="menu-btn" id="menuBtn" aria-label="菜单"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
+  <div class="brand"><span class="dot"></span><span>RAGFlow 权限门户</span><small>v0.26</small></div>
+  <div class="topbar-search"><span class="ico"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg></span><input type="search" placeholder="搜索会话、用户、分享页…" /></div>
+  <div class="topbar-right">
+    <button class="icon-btn" aria-label="通知"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10 21a2 2 0 0 0 4 0"/></svg></button>
+    <button class="avatar"><span class="chip">管</span><span class="name">管理员</span></button>
+  </div>
+</nav>
+
+<div class="shell">
+  <aside class="sidebar" id="sidebar" data-od-id="sidebar">
+    <div class="nav-group-label">工作区</div>
+    <a class="nav-item" href="share-list.html" data-od-id="nav-share-pages"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 13v7h16v-7"/><path d="M12 3v12"/><path d="m8 7 4-4 4 4"/></svg>分享页</a>
+    <div class="nav-group-label">管理后台</div>
+    <a class="nav-item" href="admin-users.html" data-od-id="nav-users"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="9" cy="8" r="3.5"/><path d="M3 20a6 6 0 0 1 12 0"/><path d="M16 5a3 3 0 0 1 0 6"/><path d="M17 14a6 6 0 0 1 4 6"/></svg>用户管理</a>
+    <a class="nav-item" href="admin-groups.html" data-od-id="nav-groups"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="8" cy="9" r="3"/><circle cx="16" cy="9" r="3"/><path d="M3 19a5 5 0 0 1 10 0"/><path d="M11 19a5 5 0 0 1 10 0"/></svg>用户组</a>
+    <a class="nav-item" href="admin-shares.html" data-od-id="nav-shares"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 13v7h16v-7"/><path d="M12 3v12"/><path d="m8 7 4-4 4 4"/></svg>分享页</a>
+    <a class="nav-item" href="admin-acl.html" data-od-id="nav-grants"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>授权</a>
+    <a class="nav-item" href="admin-sessions.html" data-od-id="nav-sessions"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 5h16v10H8l-4 4z"/></svg>会话搜索</a>
+    <a class="nav-item active" href="admin-audit.html" data-od-id="nav-audit"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M5 4h14v16H5z"/><path d="M9 9h6M9 13h6M9 17h3"/></svg>审计日志</a>
+    <div class="nav-group-label">系统</div>
+    <a class="nav-item" href="#" data-od-id="nav-settings"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>设置</a>
+  </aside>
+
+  <main class="main" data-od-id="main">
+    <div class="page-head" data-od-id="page-head">
+      <div>
+        <div class="kicker">管理后台 / 审计日志</div>
+        <h1 style="margin-top:6px">审计日志</h1>
+        <div class="sub">记录所有用户登录、会话、令牌与权限变更操作,支持按操作者、动作、结果筛选。</div>
+      </div>
+      <div class="head-actions">
+        <button class="btn btn-secondary" data-od-id="btn-export"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 4v11"/><path d="m8 11 4 4 4-4"/><path d="M5 19h14"/></svg>导出 CSV</button>
+      </div>
+    </div>
+
+    <div class="stats" data-od-id="stats-row">
+      <div class="stat"><div class="label">今日操作</div><div class="value num">312</div><div class="delta up">↑ 8% vs 昨日</div></div>
+      <div class="stat"><div class="label">登录事件</div><div class="value num">48</div><div class="delta neu">含 2 次 SSO</div></div>
+      <div class="stat"><div class="label">会话操作</div><div class="value num">186</div><div class="delta neu">创建/删除/导出</div></div>
+      <div class="stat"><div class="label">失败事件</div><div class="value num">3</div><div class="delta down">含 1 次令牌失效</div></div>
+    </div>
+
+    <div class="card" data-od-id="audit-card">
+      <div class="filters" data-od-id="filters" data-pill-group>
+        <div class="field"><span class="ico"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg></span><input type="search" placeholder="按操作者或对象搜索" /></div>
+        <select class="field" style="height:32px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface-2);padding:0 10px;font-size:13px"><option>全部动作</option><option>登录</option><option>会话创建</option><option>会话删除</option><option>令牌签发</option><option>权限变更</option></select>
+        <button class="pill active">全部结果</button>
+        <button class="pill">成功</button>
+        <button class="pill">失败</button>
+        <button class="pill">近 24 小时</button>
+        <button class="pill">近 7 天</button>
+      </div>
+      <div class="card-body" style="padding:0">
+        <div class="timeline" data-od-id="audit-timeline">
+          <div class="tl-row">
+            <div class="tl-time">07-09 14:22:18</div>
+            <div class="tl-actor">张明<small>zhangming@</small></div>
+            <div class="tl-action"><span class="verb">发起会话</span> <span class="obj">销售知识库 / Q3 销售数据对比</span></div>
+            <div class="tl-result"><span class="badge b-active">成功</span></div>
+            <div class="tl-ip">172.16.10.42</div>
+          </div>
+          <div class="tl-row">
+            <div class="tl-time">07-09 14:22:15</div>
+            <div class="tl-actor">张明<small>zhangming@</small></div>
+            <div class="tl-action"><span class="verb">令牌签发</span> <span class="obj">T_short · pt_8f2…a1(12h)</span></div>
+            <div class="tl-result"><span class="badge b-active">成功</span></div>
+            <div class="tl-ip">172.16.10.42</div>
+          </div>
+          <div class="tl-row">
+            <div class="tl-time">07-09 14:21:50</div>
+            <div class="tl-actor">张明<small>zhangming@</small></div>
+            <div class="tl-action"><span class="verb">登录</span> <span class="obj">邮箱密码</span></div>
+            <div class="tl-result"><span class="badge b-active">成功</span></div>
+            <div class="tl-ip">172.16.10.42</div>
+          </div>
+          <div class="tl-row">
+            <div class="tl-time">07-09 11:04:33</div>
+            <div class="tl-actor">李娜<small>lina@</small></div>
+            <div class="tl-action"><span class="verb">发起会话</span> <span class="obj">法务知识库 / 合同条款差异分析</span></div>
+            <div class="tl-result"><span class="badge b-active">成功</span></div>
+            <div class="tl-ip">172.16.10.55</div>
+          </div>
+          <div class="tl-row">
+            <div class="tl-time">07-09 10:15:02</div>
+            <div class="tl-actor">管理员<small>admin@</small></div>
+            <div class="tl-action"><span class="verb">权限变更</span> <span class="obj">技术组 → 技术文档库:查看→管理</span></div>
+            <div class="tl-result"><span class="badge b-active">成功</span></div>
+            <div class="tl-ip">172.16.10.10</div>
+          </div>
+          <div class="tl-row">
+            <div class="tl-time">07-09 09:48:11</div>
+            <div class="tl-actor">王磊<small>wanglei@</small></div>
+            <div class="tl-action"><span class="verb">删除会话</span> <span class="obj">API 鉴权文档检索(双删完成)</span></div>
+            <div class="tl-result"><span class="badge b-active">成功</span></div>
+            <div class="tl-ip">172.16.10.31</div>
+          </div>
+          <div class="tl-row">
+            <div class="tl-time">07-09 09:30:27</div>
+            <div class="tl-actor">未知<small>expired token</small></div>
+            <div class="tl-action"><span class="verb">访问被拒</span> <span class="obj">令牌已过期 pt_3b1…c9</span></div>
+            <div class="tl-result"><span class="badge b-danger">失败</span></div>
+            <div class="tl-ip">203.0.113.7</div>
+          </div>
+          <div class="tl-row">
+            <div class="tl-time">07-09 08:12:44</div>
+            <div class="tl-actor">陈静<small>chenjing@</small></div>
+            <div class="tl-action"><span class="verb">SSO 登录</span> <span class="obj">企业 SSO</span></div>
+            <div class="tl-result"><span class="badge b-active">成功</span></div>
+            <div class="tl-ip">172.16.10.68</div>
+          </div>
+        </div>
+        <div class="mobile-cards" data-od-id="audit-mobile">
+          <div class="m-card"><div class="top"><div class="ttl">发起会话<small>张明 · 销售知识库</small></div><span class="badge b-active">成功</span></div><div class="meta mono">07-09 14:22 · 172.16.10.42</div></div>
+          <div class="m-card"><div class="top"><div class="ttl">令牌签发<small>张明 · pt_8f2…a1</small></div><span class="badge b-active">成功</span></div><div class="meta mono">07-09 14:22 · 172.16.10.42</div></div>
+          <div class="m-card"><div class="top"><div class="ttl">权限变更<small>管理员 · 技术组</small></div><span class="badge b-active">成功</span></div><div class="meta mono">07-09 10:15 · 172.16.10.10</div></div>
+          <div class="m-card"><div class="top"><div class="ttl">访问被拒<small>令牌已过期</small></div><span class="badge b-danger">失败</span></div><div class="meta mono">07-09 09:30 · 203.0.113.7</div></div>
+          <div class="m-card"><div class="top"><div class="ttl">SSO 登录<small>陈静 · 企业 SSO</small></div><span class="badge b-active">成功</span></div><div class="meta mono">07-09 08:12 · 172.16.10.68</div></div>
+        </div>
+      </div>
+      <div class="pagination">
+        <div class="info">显示 1–8 / 共 312 条日志</div>
+        <div class="pagers"><button class="active">1</button><button>2</button><button>3</button><button>…</button><button>39</button></div>
+      </div>
+    </div>
+  </main>
+</div>
+<script src="js/app.js"></script>
+</body>
+</html>

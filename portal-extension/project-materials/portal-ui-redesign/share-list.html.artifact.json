@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "kind": "html",
+  "title": "portal-ui-redesign/share-list.html",
+  "entry": "portal-ui-redesign/share-list.html",
+  "renderer": "html",
+  "status": "complete",
+  "exports": [
+    "html",
+    "pdf",
+    "zip"
+  ],
+  "createdAt": "2026-07-09T03:16:03.956Z",
+  "updatedAt": "2026-07-09T03:16:03.956Z",
+  "metadata": {
+    "inferred": true,
+    "reconciled": true
+  }
+}

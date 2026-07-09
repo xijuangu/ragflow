@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "kind": "html",
+  "title": "portal-ui-redesign/direction-1-graphite.html",
+  "entry": "portal-ui-redesign/direction-1-graphite.html",
+  "renderer": "html",
+  "status": "complete",
+  "exports": [
+    "html",
+    "pdf",
+    "zip"
+  ],
+  "createdAt": "2026-07-09T02:56:23.431Z",
+  "updatedAt": "2026-07-09T02:56:23.431Z",
+  "metadata": {
+    "inferred": true,
+    "reconciled": true
+  }
+}

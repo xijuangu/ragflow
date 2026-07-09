@@ -131,6 +131,41 @@ public_chat
 - `IPRateLimiter` 是内存态，进程重启后限流窗口清空。
 - RAGFlow 消息正文不复制到 Portal DB，避免双事实源。
 
+## 当前实现检查结论
+
+代码入口在 `portal/main.py`：
+
+1. `load_settings()` 读取 `PORTAL_DB_URL`。
+2. `_create_engine_from_url()` 根据 URL 创建 SQLAlchemy engine。
+   - `sqlite://` 或 `sqlite:///:memory:` 使用 `StaticPool`，测试时共享内存库连接。
+   - 其他 SQLite URL 使用文件型 SQLite。
+   - MySQL 等其他方言使用默认连接池并开启 `pool_pre_ping=True`。
+3. `init_db(engine)` 创建表，并执行幂等补列迁移。
+4. `create_session_maker(engine)` 创建 session 工厂。
+5. `build_seed_data()` 从 DB 读取或初始化种子用户、匿名用户、默认分享页和默认 grant。
+6. `SessionStore`、`AuditStore`、`SeedData` 都用同一个 `session_maker` 写库。
+
+代码层面的持久化边界：
+
+| 对象 | 当前实现 | 重启后是否保留 |
+|---|---|---|
+| 用户、SSO 绑定、启停、org/admin 标记 | `portal_user` | 取决于 `PORTAL_DB_URL` 是否持久化 |
+| 用户组与成员 | `portal_group`、`portal_group_member` | 取决于 DB |
+| 分享页与公开状态 | `share_page` | 取决于 DB |
+| 授权 | `share_page_grant` | 取决于 DB |
+| 会话归属、标题、消息数、待删除标记 | `chat_session_owner` | 取决于 DB |
+| 审计日志 | `audit_log` | 取决于 DB |
+| `pt_` 短期门户令牌 | `TokenStore` 进程内存 | 不保留 |
+| 公开分享 IP 限流窗口 | `IPRateLimiter` 进程内存 | 不保留 |
+| RAGFlow 对话正文、引用、文档预览 | RAGFlow `API4Conversation` | 由 RAGFlow 自己持久化 |
+
+生产风险点：
+
+- 如果 `PORTAL_DB_URL=sqlite://`，门户所有 DB 表都是内存库，进程重启后会丢失用户、授权、会话归属和审计。
+- 当前生产文档建议使用 `sqlite:////home/xijuangu/portal-data/portal.db`，并让数据文件独立于代码目录，避免 `rsync --delete` 删除。
+- 当前没有 Alembic；新增列依靠 `db.py` 中的 `_migrate_add_*` 函数做有限的幂等 `ALTER TABLE ADD COLUMN`。
+- `build_seed_data()` 只在固定 ID 记录不存在时创建种子数据；已有种子用户不会因 `.env` 密码变化自动改密。
+
 ## 删除策略
 
 普通会话删除：

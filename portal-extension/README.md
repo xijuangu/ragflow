@@ -49,6 +49,7 @@ portal-extension/
 ├── frontend/               # React + Vite 前端
 ├── tests/                  # 后端 pytest
 ├── docs/                   # 当前文档 + 历史 PRD/ISSUES/验证记录
+├── project-materials/      # 原始 PRD、原型、UI 设计稿、RAG 验证材料
 ├── deploy.sh               # 同步并重启生产 portal
 ├── start.sh                # 服务器侧启动脚本
 ├── pyproject.toml          # 后端依赖和 pytest/ruff 配置
@@ -119,6 +120,7 @@ bash deploy.sh
 - [开发与测试](docs/development-and-testing.md)：本地运行、测试套件、质量门禁。
 - [部署运维](docs/deployment-and-operations.md)：生产拓扑、部署脚本、健康检查、回滚。
 - [前端说明](frontend/README.md)：前端路由、API 客户端、构建和测试。
+- [项目材料](project-materials/README.md)：早期 PRD、原型、UI 设计稿和 RAG 验证文件。
 - [历史归档](docs/archive/README.md)：PRD、ISSUES、NOTES、handoff、早期决策和 UI PRD 等追溯材料。
 
 ## 重要约束

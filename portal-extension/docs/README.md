@@ -13,6 +13,7 @@
 - [数据模型](data-model.md)：表结构、事实源、删除策略。
 - [开发与测试](development-and-testing.md)：本地运行、后端/前端/Playwright 测试。
 - [部署运维](deployment-and-operations.md)：生产拓扑、部署脚本、健康检查、回滚和常见问题。
+- [../project-materials/](../project-materials/README.md)：原始 PRD、原型、UI 设计稿和 RAG 验证材料。
 
 ## 历史追溯材料
 

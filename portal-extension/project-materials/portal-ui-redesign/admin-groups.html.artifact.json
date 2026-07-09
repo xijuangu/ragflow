@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "kind": "html",
+  "title": "portal-ui-redesign/admin-groups.html",
+  "entry": "portal-ui-redesign/admin-groups.html",
+  "renderer": "html",
+  "status": "complete",
+  "exports": [
+    "html",
+    "pdf",
+    "zip"
+  ],
+  "createdAt": "2026-07-09T03:20:35.735Z",
+  "updatedAt": "2026-07-09T03:20:35.735Z",
+  "metadata": {
+    "inferred": true,
+    "reconciled": true
+  }
+}

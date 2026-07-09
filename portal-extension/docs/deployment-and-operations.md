@@ -130,6 +130,7 @@ curl -s -X POST http://localhost:8000/login \
 ```
 
 注意：`PORTAL_ADMIN_PASSWORD` 和 `PORTAL_USER2_PASSWORD` 只用于种子用户初始化/启动时补齐；已有用户的密码以数据库里的 `password_hash` 为准。
+`build_seed_data` 只在固定 ID 用户不存在时写入种子用户；用户已存在时，修改 `.env` 中的密码不会自动覆盖数据库中的 `password_hash`。
 
 ## RAGFlow 容器补丁
 

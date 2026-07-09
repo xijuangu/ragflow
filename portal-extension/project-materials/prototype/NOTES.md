@@ -288,7 +288,7 @@ python3 mock_gateway.py
 - 验证用 session_id(已存在,含引用):`7a5483d4768811f1a3bdc51e5c67581c` 等
 - 知识库:`5d6b1a42768011f1a3bdc51e5c67581c`(law-test-01),含 2 个 PDF 文档(《中华人民共和国增值税法》、《国务院令第826号 增值税法实施条例》),共 94 个 chunk
 - 鉴权方式:使用租户 BETA Token(存于 `api_token.beta` 列),header `Authorization: Bearer <token>` 与裸 token 均可;`api_token.token` 列(ragflow- 前缀)用于另一套鉴权路径(AUTH_API),不适用于 bot_api
-- API base:`http://<ragflow_host>`(容器 `docker-ragflow-cpu-1` 80 端口对外)
+- API base:`http://172.16.10.180`(容器 `docker-ragflow-cpu-1` 80 端口对外)
 
 ### H2 按 session_id 加载消息与引用片段
 
@@ -317,7 +317,7 @@ python3 mock_gateway.py
 ```bash
 # 用 BETA token 调 /chats/ 端点读 iframe session(预期失败)
 curl -s -H 'Authorization: Bearer <beta_token>' \
-  'http://<ragflow_host>/api/v1/chats/b4f88272768011f1a3bdc51e5c67581c/sessions/26c15bac76a111f1a3bdc51e5c67581c'
+  'http://172.16.10.180/api/v1/chats/b4f88272768011f1a3bdc51e5c67581c/sessions/26c15bac76a111f1a3bdc51e5c67581c'
 # → {"code":401,"data":null,"message":"<Unauthorized '401: Unauthorized'>"}
 ```
 
@@ -409,13 +409,13 @@ async def get_chatbot_session(dialog_id, session_id, tenant_id=None):
 # PDF 文档预览(用 reference 中的 document_id)
 curl -s -o /dev/null -w 'HTTP %{http_code} type=%{content_type} size=%{size_download}\n' \
   -H 'Authorization: Bearer <beta_token>' \
-  'http://<ragflow_host>/api/v1/documents/67070ff2768011f1a3bdc51e5c67581c/preview'
+  'http://172.16.10.180/api/v1/documents/67070ff2768011f1a3bdc51e5c67581c/preview'
 # → HTTP 200 type=application/pdf size=346610
 
 # chunk 截图预览(用 reference 中的 image_id)
 curl -s -o /dev/null -w 'HTTP %{http_code} type=%{content_type} size=%{size_download}\n' \
   -H 'Authorization: Bearer <beta_token>' \
-  'http://<ragflow_host>/api/v1/documents/images/5d6b1a42768011f1a3bdc51e5c67581c-3c0ea2cdce04aba5'
+  'http://172.16.10.180/api/v1/documents/images/5d6b1a42768011f1a3bdc51e5c67581c-3c0ea2cdce04aba5'
 # → HTTP 200 type=image/jpeg size=95951
 ```
 
@@ -435,7 +435,7 @@ curl -s -o /dev/null -w 'HTTP %{http_code} type=%{content_type} size=%{size_down
 # 第 1 轮:新建 session(无 session_id)
 curl -sN -X POST -H 'Authorization: Bearer <beta_token>' -H 'Content-Type: application/json' \
   -d '{"question":"什么是合同的效力?","stream":true,"quote":true}' \
-  http://<ragflow_host>/api/v1/chatbots/b4f88272768011f1a3bdc51e5c67581c/completions
+  http://172.16.10.180/api/v1/chatbots/b4f88272768011f1a3bdc51e5c67581c/completions
 # → 首帧:{"data":{"answer":"你好!我是你的助理...","session_id":"26c15bac76a111f1a3bdc51e5c67581c"}}
 # → 末帧:{"data":true}
 # 注意:首调用仅创建 session 返回 prologue,不处理 question
@@ -443,7 +443,7 @@ curl -sN -X POST -H 'Authorization: Bearer <beta_token>' -H 'Content-Type: appli
 # 第 2 轮:用同一 session_id 继续提问
 curl -sN -X POST -H 'Authorization: Bearer <beta_token>' -H 'Content-Type: application/json' \
   -d '{"question":"什么是合同的效力?","stream":true,"quote":true,"session_id":"26c15bac76a111f1a3bdc51e5c67581c"}' \
-  http://<ragflow_host>/api/v1/chatbots/b4f88272768011f1a3bdc51e5c67581c/completions
+  http://172.16.10.180/api/v1/chatbots/b4f88272768011f1a3bdc51e5c67581c/completions
 # → 流式 token:{"answer":"我们","reference":{"chunks":[]},...,"session_id":"26c15bac76a111f1a3bdc51e5c67581c"}
 #   ... 多帧累加 ...
 # → 末帧:{"answer":"<完整答案>","reference":{...},"final":true,"id":"b70b0059-...","session_id":"26c15bac76a111f1a3bdc51e5c67581c"}
@@ -501,7 +501,7 @@ def _validate_iframe_access():
 ```bash
 # 用 tenant A 的 beta token 访问属于另一 tenant 的 dialog(预期拒绝)
 curl -s -H 'Authorization: Bearer <beta_token_tenantA>' \
-  'http://<ragflow_host>/api/v1/chatbots/1a388a26767a11f1a3bdc51e5c67581c/info'
+  'http://172.16.10.180/api/v1/chatbots/1a388a26767a11f1a3bdc51e5c67581c/info'
 # → {"code":102,"message":"Authentication error: no access to this chatbot!"}
 # (dialog 1 属于另一 tenant,被拒)
 ```
@@ -527,7 +527,7 @@ curl -s -H 'Authorization: Bearer <beta_token_tenantA>' \
 
 ```bash
 # 同一 beta token 多次请求,从未被 RAGFlow 主动失效
-curl -s -H 'Authorization: Bearer <beta_token>' http://<ragflow_host>/api/v1/chatbots/.../info
+curl -s -H 'Authorization: Bearer <beta_token>' http://172.16.10.180/api/v1/chatbots/.../info
 # → 始终 200(只要 token 行存在且 dialog 属于该 tenant)
 ```
 
@@ -685,27 +685,27 @@ docker exec docker-mysql-1 mysql -uroot -p'<pwd>' rag_flow \
 
 # 2. 验 dialog 可用性
 curl -s -H 'Authorization: Bearer <beta_token>' \
-  http://<ragflow_host>/api/v1/chatbots/<dialog_id>/info
+  http://172.16.10.180/api/v1/chatbots/<dialog_id>/info
 
 # 3. 新建 session(仅返回 prologue + session_id)
 curl -sN -X POST -H 'Authorization: Bearer <beta_token>' -H 'Content-Type: application/json' \
   -d '{"question":"测试","stream":true,"quote":true}' \
-  http://<ragflow_host>/api/v1/chatbots/<dialog_id>/completions
+  http://172.16.10.180/api/v1/chatbots/<dialog_id>/completions
 
 # 4. 用 session_id 继续对话(产生引用)
 curl -sN -X POST -H 'Authorization: Bearer <beta_token>' -H 'Content-Type: application/json' \
   -d '{"question":"增值税税率是多少?","stream":true,"quote":true,"session_id":"<sid>"}' \
-  http://<ragflow_host>/api/v1/chatbots/<dialog_id>/completions
+  http://172.16.10.180/api/v1/chatbots/<dialog_id>/completions
 
 # 5. PDF 预览(用 reference 中的 document_id)
 curl -s -o /dev/null -w '%{http_code} %{content_type}\n' \
   -H 'Authorization: Bearer <beta_token>' \
-  http://<ragflow_host>/api/v1/documents/<doc_id>/preview
+  http://172.16.10.180/api/v1/documents/<doc_id>/preview
 
 # 6. chunk 截图(用 reference 中的 image_id)
 curl -s -o /dev/null -w '%{http_code} %{content_type}\n' \
   -H 'Authorization: Bearer <beta_token>' \
-  http://<ragflow_host>/api/v1/documents/images/<image_id>
+  http://172.16.10.180/api/v1/documents/images/<image_id>
 
 # 7. DB 直查 session 数据
 docker exec docker-mysql-1 mysql -uroot -p'<pwd>' rag_flow \

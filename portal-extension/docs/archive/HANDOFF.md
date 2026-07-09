@@ -166,12 +166,12 @@ portal-extension/
 
 | 文档 | 路径 |
 |---|---|
-| PRD | `portal-extension/docs/PRD.md` |
-| Issues(7 slice) | `portal-extension/docs/ISSUES.md` |
-| 10 项决策 | `portal-extension/docs/ragflow-portal-decisions.md` |
-| 9 项假设验证 | `portal-extension/docs/ragflow-prototype-handoff.md` |
-| 原型验证结论 | `prototype/NOTES.md`(工作区,未进仓库) |
-| 本交接文档 | `portal-extension/docs/HANDOFF.md` |
+| PRD | `portal-extension/docs/archive/PRD.md` |
+| Issues(7 slice) | `portal-extension/docs/archive/ISSUES.md` |
+| 10 项决策 | `portal-extension/docs/archive/ragflow-portal-decisions.md` |
+| 9 项假设验证 | `portal-extension/docs/archive/ragflow-prototype-handoff.md` |
+| 原型验证结论 | `portal-extension/project-materials/prototype/NOTES.md` |
+| 本交接文档 | `portal-extension/docs/archive/HANDOFF.md` |
 
 ## 十一、运行方式
 

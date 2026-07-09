@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>销售知识库 — RAGFlow 权限门户</title>
+<link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+<nav class="topbar" data-od-id="topbar">
+  <button class="menu-btn" aria-label="菜单"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
+  <div class="brand"><span class="dot"></span><span>RAGFlow 权限门户</span><small>v0.26</small></div>
+  <div class="topbar-right">
+    <a class="btn btn-ghost btn-sm" href="share-list.html"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M15 18l-6-6 6-6"/></svg>返回列表</a>
+    <button class="avatar"><span class="chip">张</span><span class="name">张明</span></button>
+  </div>
+</nav>
+
+<div class="detail-bar" data-od-id="detail-bar">
+  <div class="sc-icon" style="width:36px;height:36px"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-7l-2-2H5a2 2 0 0 0-2 2z"/></svg></div>
+  <div>
+    <div class="db-title">销售知识库</div>
+    <div class="db-meta">分享者 王总监 · 令牌 <span class="mono">T_short · pt_8f2…a1</span> 有效</div>
+  </div>
+  <div class="db-spacer"></div>
+  <span class="badge b-active">会话已绑定</span>
+</div>
+
+<div class="detail-shell" data-od-id="detail-shell">
+  <aside class="conv-list" data-od-id="conv-list">
+    <div class="kicker cl-label">历史会话</div>
+    <div class="conv-item active">
+      <div class="ci-ttl">Q3 销售数据对比</div>
+      <div class="ci-meta"><span>18 条</span><span class="mono">07-09 14:22</span></div>
+    </div>
+    <div class="conv-item">
+      <div class="ci-ttl">华东区续约订单分析</div>
+      <div class="ci-meta"><span>11 条</span><span class="mono">07-08 10:30</span></div>
+    </div>
+    <div class="conv-item">
+      <div class="ci-ttl">竞品功能矩阵梳理</div>
+      <div class="ci-meta"><span>7 条</span><span class="mono">07-06 10:12</span></div>
+    </div>
+    <div class="conv-item">
+      <div class="ci-ttl">客户画像查询 — 大客户 A</div>
+      <div class="ci-meta"><span>5 条</span><span class="mono">07-05 16:48</span></div>
+    </div>
+    <div class="conv-item">
+      <div class="ci-ttl">南区 7 月单月贡献拆解</div>
+      <div class="ci-meta"><span>9 条</span><span class="mono">07-04 09:20</span></div>
+    </div>
+  </aside>
+
+  <section class="chat-main" data-od-id="chat-main">
+    <div class="chat-stream" data-od-id="chat-stream">
+      <div class="msg user">
+        <div class="avatar-sm">张</div>
+        <div class="mb">
+          <div class="who">张明 · 07-09 14:22</div>
+          <div class="mt">本季度华东区销售额同比增长了多少?</div>
+        </div>
+      </div>
+      <div class="msg bot">
+        <div class="avatar-sm">R</div>
+        <div class="mb">
+          <div class="who">RAGFlow</div>
+          <div class="mt">华东区 Q3 销售额 <strong>1.24 亿元</strong>,同比增长 <strong>18.6%</strong>;主要来自企业级续约订单,其中 7 月单月贡献 0.41 亿元。南区与北区分别增长 9.2% / 4.7%。</div>
+          <div class="cites"><span class="cite">销售库 / 03</span><span class="cite">销售库 / 07</span><span class="cite">销售库 / 12</span></div>
+        </div>
+      </div>
+      <div class="msg user">
+        <div class="avatar-sm">张</div>
+        <div class="mb">
+          <div class="who">张明 · 07-09 14:25</div>
+          <div class="mt">把三区放在一起做个对比,北区环比是涨是跌?</div>
+        </div>
+      </div>
+      <div class="msg bot">
+        <div class="avatar-sm">R</div>
+        <div class="mb">
+          <div class="who">RAGFlow</div>
+          <div class="mt">三区对比:华东 <strong>1.24 亿</strong>(+18.6%)、华南 <strong>0.86 亿</strong>(+9.2%)、华北 <strong>0.71 亿</strong>(+4.7%)。北区环比下跌 <strong>3.1%</strong>,主要受 6 月集采延期影响,7 月已回升。</div>
+          <div class="cites"><span class="cite">销售库 / 07</span><span class="cite">销售库 / 15</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="chat-input" data-od-id="chat-input">
+      <form id="chatInputForm">
+        <div class="chat-input-wrap">
+          <textarea rows="1" placeholder="基于「销售知识库」提问…  (Enter 发送,Shift+Enter 换行)"></textarea>
+          <button class="send-btn" type="submit" aria-label="发送"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 12l14-7-5 14-3-6z"/></svg></button>
+        </div>
+        <div class="chat-input-hint"><span>会话将绑定到当前登录用户</span><span>引用来源可在原文档跳转</span></div>
+      </form>
+    </div>
+  </section>
+</div>
+<script src="js/app.js"></script>
+</body>
+</html>

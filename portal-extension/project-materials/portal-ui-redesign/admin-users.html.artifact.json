@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "kind": "html",
+  "title": "portal-ui-redesign/admin-users.html",
+  "entry": "portal-ui-redesign/admin-users.html",
+  "renderer": "html",
+  "status": "complete",
+  "exports": [
+    "html",
+    "pdf",
+    "zip"
+  ],
+  "createdAt": "2026-07-09T03:20:35.625Z",
+  "updatedAt": "2026-07-09T03:20:35.625Z",
+  "metadata": {
+    "inferred": true,
+    "reconciled": true
+  }
+}

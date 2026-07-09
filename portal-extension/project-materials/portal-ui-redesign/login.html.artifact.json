@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "kind": "html",
+  "title": "portal-ui-redesign/login.html",
+  "entry": "portal-ui-redesign/login.html",
+  "renderer": "html",
+  "status": "complete",
+  "exports": [
+    "html",
+    "pdf",
+    "zip"
+  ],
+  "createdAt": "2026-07-09T03:16:03.851Z",
+  "updatedAt": "2026-07-09T03:16:03.851Z",
+  "metadata": {
+    "inferred": true,
+    "reconciled": true
+  }
+}
