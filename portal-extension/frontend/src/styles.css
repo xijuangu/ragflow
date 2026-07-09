@@ -1,17 +1,18 @@
 /* ============================================================
-   RAGFlow 权限门户 — D1 Graphite 设计系统 + 旧 class 兼容层
+   RAGFlow 权限门户 — D1 Graphite 设计系统
    ------------------------------------------------------------
    Issue 52(prefactor):以 portal-ui-redesign/css/styles.css 为基础
-   替换 styles.css。新 D1 token 体系 + 排印阶 + 组件 class 供后续
-   slice(53-58)迁移使用;旧 class(app-layout/app-header/app-main/
+   替换 styles.css。新 D1 token 体系 + 排印阶 + 组件 class。
+   Issue 59:已删除所有无引用旧 class(app-layout/app-header/app-main/
    admin-tabs/page-title/share-page-list/detail-grid/sessions-sidebar/
-   session-list/session-item/login-page/login-card/form-field/admin-form/
-   admin-table/badge-*/btn-*/alert-*/modal-*/iframe-container/...)保留
-   并映射到新 token,让现有 JSX 不破。
+   session-list/session-item/login-page/admin-table-wrap/admin-table/...)。
+   保留的旧 class(仍在 JSX 中使用):login-card/iframe-container/
+   widget-snippet-panel/snippet-*/admin-form/admin-form-row/admin-actions/
+   admin-groups/admin-group-*/member-*/admin-main。
    ------------------------------------------------------------
-   必须保留的布局修复(已验证,不可丢失):
-   - Slice 31:.session-item flex-shrink:0(会话列表不压缩,触发滚动)
-   - Slice 38:.detail-grid flex:1 + min-height:0(无页面级滚动)
+   必须保留的布局修复(已迁移到新 class,不可丢失):
+   - Slice 31:.conv-item flex-shrink:0(会话列表不压缩,触发滚动)
+   - Slice 38:.detail-page > .detail-shell flex:1 + min-height:0(无页面级滚动)
    - Slice 51:.admin-main > section flex:1 + min-height:0 + overflow-y:auto
    令牌见 DESIGN.md。姿态:发丝边、无阴影(除下拉/模态)、紧字距、
    tabular 数字。
@@ -321,7 +322,7 @@ tbody tr:hover { background: var(--surface-2); }
 .detail-shell { display: flex; height: calc(100vh - var(--topbar-h) - 57px); }
 .conv-list { flex: 0 0 280px; border-right: 1px solid var(--border); overflow-y: auto; padding: 8px; }
 .conv-list .cl-label { padding: 12px 12px 6px; }
-.conv-item { padding: 12px; border-radius: var(--radius); cursor: pointer; }
+.conv-item { padding: 12px; border-radius: var(--radius); cursor: pointer; flex-shrink: 0; /* Slice 31:防止 flex 容器内 item 被压缩,触发滚动 */ }
 .conv-item:hover { background: var(--surface-2); }
 .conv-item.active { background: var(--surface-2); }
 .conv-item.active::before { content: ""; display: block; width: 3px; height: 16px; border-radius: 2px; background: var(--accent); margin: -2px 0 6px -15px; }
@@ -438,59 +439,15 @@ tbody tr:hover { background: var(--surface-2); }
 .section-gap { margin-top: 28px; }
 
 /* ============================================================
-   ============================================================
-   旧 class 兼容层(legacy compatibility)
+   旧 class 残留(legacy)
    ------------------------------------------------------------
-   以下 class 在现有 JSX 中使用,迁移 slice(53-58)逐步替换。
-   本层把它们映射到新 D1 token,保证现有 JSX 视觉不破。
-   Issue 59 验收后删除无引用的旧 class。
-   ============================================================
+   Issue 59 已删除所有无引用旧 class。以下保留的 class 仍在 JSX 中使用:
+   - .login-card / .iframe-container / .widget-snippet-panel / .snippet-*
+   - .admin-form / .admin-form-row / .admin-actions / .admin-groups / .admin-group-* / .member-*
+   - .admin-main / .admin-main > section(Slice 51 滚动容器)
    ============================================================ */
 
-/* ---- 布局骨架 ---- */
-.app-layout {
-  height: 100vh;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.app-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 24px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-}
-
-.app-header h1 {
-  font-size: 16px;
-  margin: 0;
-  font-weight: 600;
-}
-
-.app-main {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  padding: 24px;
-  max-width: 1100px;
-  width: 100%;
-  margin: 0 auto;
-}
-
-/* ---- login(旧单栏,Issue 53 迁移到 login-shell)---- */
-.login-page {
-  min-height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-}
-
+/* ---- login(旧单栏,Issue 53 迁移到 login-shell,仅保留 .login-card)---- */
 .login-card {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -599,36 +556,7 @@ tbody tr:hover { background: var(--surface-2); }
   font-size: 13px;
 }
 
-/* ---- share-page-list(旧列表,Issue 56 迁移到 grid-cards)---- */
-.share-page-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.share-page-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 16px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
-}
-
-.share-page-item .name {
-  font-weight: 500;
-}
-
-.share-page-item .meta {
-  color: var(--muted);
-  font-size: 12px;
-}
-
-/* ---- iframe-container(旧,Issue 57 迁移到 chat-main)---- */
+/* ---- iframe-container(旧,Issue 57 迁移到 chat-main,仍被 SharePageDetailPage 使用)---- */
 .iframe-container {
   position: relative;
   width: 100%;
@@ -646,138 +574,12 @@ tbody tr:hover { background: var(--surface-2); }
   display: block;
 }
 
-.back-link {
-  margin-bottom: 12px;
-  font-size: 13px;
-}
-
-.page-title {
-  margin: 0 0 16px;
-  font-size: 18px;
-  font-weight: 600;
-}
-
-/* ---- Slice 10/31/38:分享页详情页 — detail-grid + sessions-sidebar + session-list ---- */
-/* Slice 38 修复:.detail-grid flex:1 + min-height:0,让两栏在 .app-main(flex column,
-   overflow:hidden)内填充剩余空间并各自滚动,而非撑出页面级滚动条。 */
-.detail-grid {
-  display: grid;
-  grid-template-columns: 280px 1fr;
-  gap: 16px;
-  flex: 1;
-  min-height: 0;
-}
-
-.sessions-sidebar {
-  display: flex;
-  flex-direction: column;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
-  overflow: hidden;
-  /* Slice 31:grid/flex item 默认 min-height: auto 会随内容增长而无法触发滚动,
-     显式置 0 让子级 .session-list 的 overflow-y: auto 生效,会话增多时改在列表内滚动
-     而非挤压整个 sidebar。sidebar-header 始终可见(不在此滚动区内)。 */
-  min-height: 0;
-  height: 100%;
-}
-
-.sidebar-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border);
-}
-
-.sidebar-header h3 {
-  margin: 0;
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.sidebar-loading {
-  padding: 24px;
-  color: var(--muted);
-  text-align: center;
-  font-size: 13px;
-}
-
-.session-list {
-  list-style: none;
-  margin: 0;
-  padding: 8px;
-  overflow-y: auto;
-  flex: 1;
-  /* Slice 31:flex item 默认 min-height: auto 不收缩,导致 overflow-y: auto 失效;
-     置 0 后会话超出可见区时在列表内滚动,header 不被挤压。 */
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.session-item {
-  border: 1px solid transparent;
-  border-radius: 6px;
-  background: transparent;
-  overflow: hidden;
-  /* Slice 31 修复:flex column 容器内的子元素默认 flex-shrink: 1,
-     会话增多时被压缩而不触发滚动条。置 0 保持原高度,让 overflow-y: auto 生效。 */
-  flex-shrink: 0;
-}
-
-.session-item-active {
-  border-color: var(--accent);
-  background: var(--accent-tint);
-}
-
-.session-main {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  width: 100%;
-  padding: 8px 10px;
-  background: transparent;
-  border: 0;
-  cursor: pointer;
-  text-align: left;
-  color: var(--fg);
-  font: inherit;
-}
-
-.session-main:hover:not(:disabled) {
-  background: var(--surface-2);
-}
-
-.session-title {
-  font-weight: 500;
-  font-size: 13px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.session-meta {
-  color: var(--muted);
-  font-size: 11px;
-  margin-top: 2px;
-}
-
-.session-actions {
-  display: flex;
-  gap: 4px;
-  padding: 0 10px 8px;
-}
-
-.session-actions .btn {
-  flex: 1;
-}
-
-/* iframe 容器在两栏布局下撑满剩余空间 */
-.detail-grid .iframe-container {
-  height: 100%;
-}
+/* ---- Slice 10/31/38 旧实现(已删除):detail-grid + sessions-sidebar + session-list ----
+   Issue 57 迁移到 detail-page + detail-shell + conv-list + conv-item。
+   Slice 31(flex-shrink:0)与 Slice 38(min-height:0)修复已迁移到新 class:
+   - .conv-item flex-shrink:0(见 conv-item 规则)
+   - .detail-page > .detail-shell flex:1 + min-height:0(见 detail-page 规则)
+   以下旧 class 无 JSX 引用,已删除。 */
 
 /* ---- widget snippet panel(SharePageDetailPage)---- */
 .widget-snippet-panel {
@@ -821,45 +623,17 @@ tbody tr:hover { background: var(--surface-2); }
 }
 
 /* ============================================================
-   Slice 11/51:管理员后台 — tab 导航 + 表格 + 表单 + 弹窗
+   Slice 11/51:管理员后台 — sidebar 导航 + 表格 + 表单 + 弹窗
+   (admin-tabs/admin-tab 已删除,Issue 55 迁移到 .sidebar/.nav-item)
    ============================================================ */
-
-.admin-tabs {
-  display: flex;
-  gap: 0;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
-  padding: 0 24px;
-  overflow-x: auto;
-}
-
-.admin-tab {
-  display: inline-flex;
-  align-items: center;
-  padding: 12px 16px;
-  font-size: 13px;
-  color: var(--muted);
-  border-bottom: 2px solid transparent;
-  white-space: nowrap;
-}
-
-.admin-tab:hover {
-  color: var(--fg);
-}
-
-.admin-tab-active {
-  color: var(--accent);
-  border-bottom-color: var(--accent);
-  font-weight: 500;
-}
 
 .admin-main {
   padding-top: 16px;
 }
 
-/* Issue 51:admin 内容区作为独立滚动容器,与 Slice 38 .detail-grid 同模式。
-   .app-main overflow:hidden 防页面级滚动,admin 根 <section> 需 flex:1 + min-height:0
-   + overflow-y:auto 才能在内容溢出时自身滚动,而非被 .app-main 裁切看不到。 */
+/* Issue 51:admin 内容区作为独立滚动容器,与 Slice 38 detail-shell 同模式。
+   .main overflow:hidden 防页面级滚动,admin 根 <section> 需 flex:1 + min-height:0
+   + overflow-y:auto 才能在内容溢出时自身滚动,而非被 .main 裁切看不到。 */
 .admin-main > section {
   flex: 1;
   min-height: 0;
@@ -913,42 +687,7 @@ tbody tr:hover { background: var(--surface-2); }
   color: var(--fg);
 }
 
-.admin-table-wrap {
-  margin-top: 8px;
-}
-
-.admin-table {
-  width: 100%;
-  border-collapse: collapse;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  overflow: hidden;
-  font-size: 13px;
-}
-
-.admin-table thead th {
-  background: var(--surface-2);
-  text-align: left;
-  padding: 10px 12px;
-  font-weight: 600;
-  color: var(--muted);
-  border-bottom: 1px solid var(--border);
-}
-
-.admin-table tbody td {
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--border);
-  vertical-align: middle;
-}
-
-.admin-table tbody tr:last-child td {
-  border-bottom: 0;
-}
-
-.admin-table tbody tr:hover {
-  background: var(--surface-2);
-}
+/* admin-table-wrap / admin-table 已删除(Issue 58 迁移到 .card.card-table > .card-body > .table-wrap > table) */
 
 .admin-actions {
   display: flex;
@@ -1159,9 +898,7 @@ tbody tr:hover { background: var(--surface-2); }
   .tl-actor, .tl-ip { flex: 0 0 auto; }
   .tl-row { flex-wrap: wrap; gap: 8px; }
   .stats { grid-template-columns: 1fr 1fr; }
-  /* 旧布局小屏适配:detail-grid 改纵向 */
-  .detail-grid { grid-template-columns: 1fr; }
-  .sessions-sidebar { max-height: 240px; }
+  /* 旧布局小屏适配(detail-grid/sessions-sidebar)已随 Issue 57/59 删除 */
 }
 @media (max-width: 430px) {
   .stats { grid-template-columns: 1fr; }
