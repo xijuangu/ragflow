@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<!-- 直接 link 源 styles.css,probe 驱动真实布局规则;修复后 probe 能转绿 -->
+<link rel="stylesheet" href="../../portal-extension/frontend/src/styles.css">
+<style>
+  /* probe 专属:用真实 admin DOM 骨架,无需 React/数据 */
+  body { margin: 0; }
+</style>
+</head>
+<body>
+<div class="app-layout">
+  <header class="app-header">
+    <h1>权限门户</h1>
+    <div>admin</div>
+  </header>
+  <nav class="admin-tabs" aria-label="管理后台导航">
+    <a class="admin-tab admin-tab-active" href="#users">用户管理</a>
+    <a class="admin-tab" href="#groups">用户组</a>
+    <a class="admin-tab" href="#share-pages">分享页</a>
+    <a class="admin-tab" href="#grants">授权</a>
+    <a class="admin-tab" href="#sessions">会话搜索</a>
+    <a class="admin-tab" href="#audit">审计日志</a>
+  </nav>
+  <main class="app-main admin-main">
+    <section>
+      <h2 class="page-title">用户管理</h2>
+      <form class="admin-form card">
+        <h3 class="form-title">创建用户</h3>
+        <div class="admin-form-row">
+          <div class="form-field"><label>用户名</label><input type="text"></div>
+          <div class="form-field"><label>邮箱</label><input type="email"></div>
+          <div class="form-field"><label>初始密码</label><input type="password"></div>
+          <button type="button" class="btn btn-primary">创建用户</button>
+        </div>
+      </form>
+      <div class="admin-table-wrap">
+        <table class="admin-table">
+          <thead>
+            <tr><th>用户名</th><th>邮箱</th><th>角色</th><th>状态</th><th>创建时间</th><th>操作</th></tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+</div>
+<script>
+  // 注入 25 行,确保内容必然溢出 800x600 视口
+  const tb = document.getElementById('rows');
+  for (let i = 0; i < 25; i++) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>user_${i}</td><td>u${i}@ex.com</td><td>普通用户</td><td>启用</td><td>2026-07-0${i%9+1}</td><td>禁用 删除</td>`;
+    tb.appendChild(tr);
+  }
+</script>
+</body>
+</html>

@@ -465,6 +465,15 @@ a:hover {
   padding-top: 16px;
 }
 
+/* Issue 51:admin 内容区作为独立滚动容器,与 Slice 38 .detail-grid 同模式。
+   .app-main overflow:hidden 防页面级滚动,admin 根 <section> 需 flex:1 + min-height:0
+   + overflow-y:auto 才能在内容溢出时自身滚动,而非被 .app-main 裁切看不到。 */
+.admin-main > section {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
 .admin-form {
   margin-bottom: 16px;
 }

@@ -2053,6 +2053,44 @@ None - can start immediately
 
 ---
 
+## Issue 51 — Slice 51: 管理后台页面内容溢出被裁切,无滚动条可看超出部分(portal 前端 CSS)
+
+### Parent
+
+无(2026-07-09 用户报告:后台管理页面中没有全局滚动条,内容超出屏幕就看不到了)。用 `diagnosing-bugs` 纪律诊断,构建 red-capable Playwright probe(`.diag/diag_admin_scroll/probe.py`)复现并定位根因。
+
+### 根因(diagnosing-bugs Phase 1-4 确认)
+
+Slice 38 为消除分享页详情页的页面级滚动条,把 `.app-layout` 改为 `height:100vh; overflow:hidden`,把 `.app-main` 改为 `flex:1; overflow:hidden`,并给分享页详情页的 `.detail-grid` 加 `flex:1; min-height:0` 让其内部滚动。但 **admin 页面的根元素 `<section>` 被遗漏**,没有获得同样的 `flex:1; min-height:0; overflow-y:auto` 处理。
+
+结果:admin 页面内容(创建表单 + 用户/日志表格)超出 `.app-main` 可视区时,被 `.app-main` 的 `overflow:hidden` 直接裁切;又因 `.app-layout` 的 `overflow:hidden` 不产生页面级滚动条 —— 超出内容既不能页面滚动也不能容器滚动,用户「看不到」。
+
+probe metrics(800x600 视口,25 行表格)复现:`.app-main overflowY='hidden'`、`scrollHeight=1332 > clientHeight=502`(溢出 830px)、`documentElement.scrollHeight=600 <= innerHeight=600`(无页面滚动条)、表格最后一行 `bottom=1405 > 600`(视口外 805px)。
+
+### What to build
+
+让 admin 内容区成为独立滚动容器,与 Slice 38 给 `.detail-grid` 的处理一致。推荐方案(Phase 4 probe 验证 GREEN):给 admin 页面的根内容元素加 `flex:1; min-height:0; overflow-y:auto`,使其填满 `.app-main` 剩余空间并在自身内部滚动,而非撑破 `.app-main` 被裁切。
+
+具体落点:`.admin-main > section`(6 个 admin 页面 Users/Groups/SharePages/Grants/Sessions/AuditLogs 的根元素均为 `<section>`),或等价的能覆盖全部 admin 页面的选择器。修复后 `.app-main` 保持 `overflow:hidden`(不产生页面级滚动条,Issue 38 约束不回归),admin 内容超出时在 section 内部滚动可见。
+
+不改动 `.app-layout` / `.app-header` / `.admin-tabs` 的既有布局(Issue 38 验收点不回归)。
+
+### Acceptance criteria
+
+- [x] 窗口缩小到 800x600 时,admin 六个 tab(用户/用户组/分享页/授权/会话搜索/审计日志)内容超出视口,可在内容区内部滚动看到全部内容,无内容被裁切看不到。(2026-07-09 验收:6 个 admin 页面根元素均为 `<section>`(已 grep 确认),CSS 选择器 `.admin-main > section` 结构性覆盖全部 6 页;probe 用用户管理页 DOM 骨架验证滚动机制生效,同构页面同理)
+- [x] 整个页面不出现页面级滚动条(Issue 38 AC 不回归)。(2026-07-09 验收:probe `documentElement.scrollHeight=600 <= innerHeight=600`)
+- [x] 顶部菜单栏 AppHeader 与 admin tab 导航始终固定可见,不随内容滚动(Issue 38 AC 不回归)。(2026-07-09 验收:未改 `.app-layout`/`.app-header`/`.admin-tabs`,section 内部滚动不影响外层固定布局)
+- [x] `.diag/diag_admin_scroll/probe.py` 从 RED 转 GREEN(overflowY 不再是 hidden 裁切,内容可滚入视口)。(2026-07-09 验收:修复前 RED `overflowY='hidden' scrollHeight=1332>clientHeight=502 lastRowBottom=1405>600`;修复后 GREEN `sectionOverflowY='auto' lastRowBottomAfterScroll=575.59<=600`)
+- [x] 既有 portal Vitest 全绿(无回归)。(2026-07-09 验收:81 passed,tsc --noEmit 0 errors)
+
+### Blocked by
+
+None - can start immediately(纯 CSS 改动,无逻辑改动;诊断 probe 已在 `.diag/diag_admin_scroll/` 固化,供实施时 TDD 用)
+
+**验收状态:通过(2026-07-09)**
+
+---
+
 ## 后续待办(Issue 16 AC2 遗留)
 
 > Issue 16 AC2「悬浮组件在任意页面右下角加载,点击展开对话窗,能正常对话」— Slice 16 实现了 `/widget/<id>` 骨架 HTML + 可嵌入 snippet + CSP frame-ancestors 放行,但 **悬浮组件实际 UI 渲染(右下角悬浮按钮 + 点击展开对话窗 + iframe 加载 + SSE 对话)尚未实现**。`/widget/<id>` 当前仅返回含 `<div id="widget-root">` 的占位 HTML,需前端构建产物挂载 React 组件。
