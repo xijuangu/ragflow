@@ -199,7 +199,7 @@ export default function SharePagesAdminPage() {
                       <td className="admin-actions">
                         <button
                           type="button"
-                          className="btn btn-ghost btn-sm"
+                          className="btn btn-outline btn-sm"
                           onClick={() => handleToggleEnabled(p)}
                           disabled={busyId === p.id}
                         >

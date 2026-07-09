@@ -184,7 +184,7 @@ export default function UsersAdminPage() {
                       <td className="admin-actions">
                         <button
                           type="button"
-                          className="btn btn-ghost btn-sm"
+                          className="btn btn-outline btn-sm"
                           onClick={() => handleToggleEnabled(u)}
                           disabled={busyId === u.id || u.is_admin}
                           title={u.is_admin ? '管理员不可禁用' : ''}
