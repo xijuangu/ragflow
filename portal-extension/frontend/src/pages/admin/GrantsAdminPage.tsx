@@ -173,68 +173,62 @@ export default function GrantsAdminPage() {
 
       {error && <div className="alert-error">{error}</div>}
 
-      {/* 选择分享页 */}
-      <div className="card admin-form admin-form-row admin-form-row-compact">
-        <div className="form-field">
-          <label htmlFor="grant-share-page">选择分享页</label>
-          <select
-            id="grant-share-page"
-            value={selectedPageId}
-            onChange={(e) => setSelectedPageId(e.target.value)}
-            disabled={sharePages.length === 0}
-          >
-            {sharePages.length === 0 && <option value="">无可用分享页</option>}
-            {sharePages.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}({p.ragflow_resource_id})
-              </option>
-            ))}
-          </select>
-        </div>
-      </div>
-
-      {/* 创建授权表单(内联,无 drawer) */}
-      {selectedPageId && (
-        <form className="admin-form card" onSubmit={handleCreate} aria-label="创建授权表单">
-          <h3 className="form-title">授权给用户或组</h3>
-          {formError && <div className="alert-error">{formError}</div>}
-          <div className="admin-form-row">
-            <div className="form-field">
-              <label htmlFor="grant-subject-type">主体类型</label>
-              <select
-                id="grant-subject-type"
-                value={subjectType}
-                onChange={(e) => {
-                  setSubjectType(e.target.value as SubjectType);
-                  setSubjectId('');
-                }}
-              >
-                <option value="user">用户</option>
-                <option value="group">用户组</option>
-              </select>
-            </div>
-            <div className="form-field">
-              <label htmlFor="grant-subject-id">授权对象</label>
-              <select
-                id="grant-subject-id"
-                value={subjectId}
-                onChange={(e) => setSubjectId(e.target.value)}
-                disabled={subjectOptions.length === 0}
-              >
-                <option value="">{subjectOptions.length === 0 ? '无可选对象' : '选择…'}</option>
-                {subjectOptions.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <button type="submit" className="btn btn-primary" disabled={creating || !subjectId}>
-              {creating ? '授权中…' : '授权'}
-            </button>
+      {/* 创建授权表单(分享页 + 主体类型 + 授权对象 合并一行) */}
+      <form className="admin-form card" onSubmit={handleCreate} aria-label="创建授权表单">
+        <h3 className="form-title">授权给用户或组</h3>
+        {formError && <div className="alert-error">{formError}</div>}
+        <div className="admin-form-row admin-form-row-compact">
+          <div className="form-field">
+            <label htmlFor="grant-share-page">分享页</label>
+            <select
+              id="grant-share-page"
+              value={selectedPageId}
+              onChange={(e) => setSelectedPageId(e.target.value)}
+              disabled={sharePages.length === 0}
+            >
+              {sharePages.length === 0 && <option value="">无可用分享页</option>}
+              {sharePages.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}({p.ragflow_resource_id})
+                </option>
+              ))}
+            </select>
           </div>
-        </form>
-      )}
+          <div className="form-field">
+            <label htmlFor="grant-subject-type">主体类型</label>
+            <select
+              id="grant-subject-type"
+              value={subjectType}
+              onChange={(e) => {
+                setSubjectType(e.target.value as SubjectType);
+                setSubjectId('');
+              }}
+            >
+              <option value="user">用户</option>
+              <option value="group">用户组</option>
+            </select>
+          </div>
+          <div className="form-field">
+            <label htmlFor="grant-subject-id">授权对象</label>
+            <select
+              id="grant-subject-id"
+              value={subjectId}
+              onChange={(e) => setSubjectId(e.target.value)}
+              disabled={subjectOptions.length === 0}
+            >
+              <option value="">{subjectOptions.length === 0 ? '无可选对象' : '选择…'}</option>
+              {subjectOptions.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <button type="submit" className="btn btn-primary" disabled={creating || !subjectId || !selectedPageId}>
+            {creating ? '授权中…' : '授权'}
+          </button>
+        </div>
+      </form>
 
       {/* 授权列表 */}
       {selectedPageId && (
