@@ -193,7 +193,7 @@ svg { display: block; }
 /* ============================================================
    FILTER BAR / FIELDS / PILLS(新 — Issue 56/58 迁移使用)
    ============================================================ */
-.filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+.filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; padding: 14px 16px; border-bottom: 1px solid var(--border); }
 .field { position: relative; display: flex; align-items: center; }
 .field input, .field select {
   height: 32px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius);
@@ -504,14 +504,16 @@ tbody tr:hover { background: var(--surface-2); }
 
 .form-field label {
   display: block;
-  margin-bottom: 4px;
+  margin-bottom: 6px;
   font-weight: 500;
   font-size: 13px;
 }
 
-.form-field input {
+.form-field input,
+.form-field select {
   width: 100%;
-  padding: 8px 12px;
+  height: 36px;
+  padding: 0 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   font-size: 14px;
@@ -520,9 +522,19 @@ tbody tr:hover { background: var(--surface-2); }
   color: var(--fg);
 }
 
-.form-field input:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px color-mix(in oklch, var(--accent) 15%, transparent);
+/* Issue 69:select 自定义样式(发丝边 + 圆角 + 自定义箭头 + 聚焦 accent 边),
+   与 .form-input 视觉一致;覆盖 .filters 与 .admin-form 两处。 */
+.form-field select {
+  appearance: none;
+  padding-right: 32px;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b6964' stroke-width='2'><path d='m6 9 6 6 6-6'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+}
+
+.form-field input:focus,
+.form-field select:focus {
+  border-color: color-mix(in oklch, var(--accent) 50%, var(--border));
 }
 
 /* ---- alert ---- */
@@ -647,6 +659,7 @@ tbody tr:hover { background: var(--surface-2); }
 }
 
 .admin-form {
+  padding: 16px;
   margin-bottom: 16px;
 }
 
@@ -665,32 +678,12 @@ tbody tr:hover { background: var(--surface-2); }
 
 .admin-form-row .form-field {
   flex: 1;
-  min-width: 160px;
+  min-width: 200px;
   margin-bottom: 0;
 }
 
 .admin-form-row .btn {
   flex-shrink: 0;
-}
-
-.admin-form .form-field select {
-  width: 100%;
-  padding: 8px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  font-size: 14px;
-  background: var(--surface);
-  color: var(--fg);
-}
-
-.admin-form .form-field input {
-  width: 100%;
-  padding: 8px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  font-size: 14px;
-  background: var(--surface);
-  color: var(--fg);
 }
 
 /* admin-table-wrap / admin-table 已删除(Issue 58 迁移到 .card.card-table > .card-body > .table-wrap > table) */
@@ -751,6 +744,29 @@ tbody tr:hover { background: var(--surface-2); }
   flex: 1;
   min-width: 200px;
   margin-bottom: 0;
+}
+
+/* Issue 69:GroupsAdminPage MemberSelect 的裸 <select>(无 .form-field 包裹),
+   与 .btn-sm(30px)高度对齐,复用自定义箭头。 */
+.admin-add-member-form select {
+  flex: 1;
+  min-width: 200px;
+  height: 30px;
+  padding: 0 26px 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  outline: none;
+  background: var(--surface);
+  color: var(--fg);
+  appearance: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b6964' stroke-width='2'><path d='m6 9 6 6 6-6'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+}
+
+.admin-add-member-form select:focus {
+  border-color: color-mix(in oklch, var(--accent) 50%, var(--border));
 }
 
 .member-list {
