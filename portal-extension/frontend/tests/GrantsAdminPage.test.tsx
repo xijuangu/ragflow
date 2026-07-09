@@ -144,7 +144,7 @@ describe('GrantsAdminPage', () => {
     await screen.findByText('admin');
 
     // 切换到"其他分享页"
-    await user.selectOptions(screen.getByLabelText('选择分享页'), 'sp_other');
+    await user.selectOptions(screen.getByLabelText('分享页'), 'sp_other');
 
     // 空状态出现
     expect(await screen.findByText('暂无授权')).toBeInTheDocument();

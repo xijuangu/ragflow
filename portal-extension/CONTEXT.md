@@ -1,8 +1,8 @@
 # Portal Extension — 项目上下文
 
 > 整个项目的持久上下文:目标、架构、代码结构、约束、约定、已知限制、教训、运维。
-> 接手前必读本文 + `docs/ISSUES.md` + `docs/PRD.md`。
-> `docs/HANDOFF-phase3.md` 记录 Phase 3 早期操作历史,本文 §9 已内联所有长期有效的运维命令,不再依赖 HANDOFF。
+> 接手前先读 `README.md` + `docs/README.md`;历史 PRD/ISSUES/NOTES/handoff 已归档到 `docs/archive/`。
+> `docs/archive/HANDOFF-phase3.md` 记录 Phase 3 早期操作历史,本文 §9 已内联所有长期有效的运维命令,不再依赖 HANDOFF。
 
 ## 1. 项目概述与目标
 
@@ -90,13 +90,14 @@ portal-extension/
 │   ├── conftest.py
 │   └── test_slice*.py        # 按 slice 组织的 E2E + 单测
 └── docs/
-    ├── PRD.md                # 产品需求文档
-    ├── ISSUES.md             # Issue 跟踪(Issue 1-40 + TD1-TD20)
-    ├── NOTES.md              # 原型验证记录(H1-H9 假设验证)
-    ├── HANDOFF-phase3.md     # Phase 3 操作细节(部署命令、环境状态)
-    ├── HANDOFF.md            # 早期 handoff
-    ├── ragflow-portal-decisions.md  # 关键技术决策
-    └── ragflow-prototype-handoff.md
+    ├── README.md             # 文档目录
+    ├── architecture.md       # 当前架构
+    ├── configuration.md      # 配置说明
+    ├── api.md                # API 说明
+    ├── data-model.md         # 数据模型
+    ├── development-and-testing.md
+    ├── deployment-and-operations.md
+    └── archive/              # 历史 PRD / ISSUES / NOTES / handoff / 早期决策
 ```
 
 ## 4. 硬约束(不可违反)
@@ -372,7 +373,7 @@ config.py 还支持可选变量(有默认值,不配不影响运行):`T_SHORT_TTL
 - **后端**:pytest,按 slice 组织(`tests/test_slice*.py`),基线 415 passed + 5 skipped(Slice 40 后)
 - **前端**:Vitest,按页面/组件组织(`frontend/tests/*.test.tsx`),基线 76 passed(Slice 28 后)
 - **RAGFlow web**:Jest 跑不起来(`umi/test` 缺失),靠 `npm run build` 兜底
-- **E2E**:Playwright + 浏览器手动验收结合。`test/playwright/portal_extension/` 覆盖 portal 实际使用主路径、6 个管理后台 tab、Slice 44 缓存回归、临时用户创建/禁用/启用/授权/撤销/审计/硬删除、已有用户组添加/移除临时成员、分享页管理表单;`PORTAL_E2E_RUN_CHAT=1` 时额外发送真实 RAGFlow 问题并等待回复完成;acceptance criteria 仍记录在 `docs/ISSUES.md` 各 slice
+- **E2E**:Playwright + 浏览器手动验收结合。`test/playwright/portal_extension/` 覆盖 portal 实际使用主路径、6 个管理后台 tab、Slice 44 缓存回归、临时用户创建/禁用/启用/授权/撤销/审计/硬删除、已有用户组添加/移除临时成员、分享页管理表单;`PORTAL_E2E_RUN_CHAT=1` 时额外发送真实 RAGFlow 问题并等待回复完成;acceptance criteria 仍记录在 `docs/archive/ISSUES.md` 各 slice
 - 类型检查:前端 `tsc --noEmit`,后端 `ruff check`
 
 Portal Playwright 运行命令(需真实已部署环境,本地 agent 不默认执行):
@@ -432,4 +433,4 @@ uv run --python 3.13 pytest -q test/playwright/portal_extension -s --junitxml=/t
 - **不纳入默认回归**:`PORTAL_E2E_RUN_CHAT=1` 真实聊天慢用例(每次跑会产生不可控对话内容 + ~20s 耗时),仅在验收聊天相关 Slice 或发版前手动追加
 - 失败处理:看 `FAILURES` 段 + `test/playwright/artifacts/` 截图;CRUD 用例失败时 finally 会用管理员 API 清理临时用户(`pw-user-*` / `pw-group-user-*`)
 
-**回归不通过的处置**:任一套件失败即阻塞该次部署 / 合并;先定位失败用例对应的 Slice,看 `docs/ISSUES.md` 该 Slice 的验收记录与 AC,判断是代码回归还是测试本身需更新。基线数字更新时机:新增 Slice 测试用例后,在对应 Slice 验收记录里更新基线并在本节同步。
+**回归不通过的处置**:任一套件失败即阻塞该次部署 / 合并;先定位失败用例对应的 Slice,看 `docs/archive/ISSUES.md` 该 Slice 的验收记录与 AC,判断是代码回归还是测试本身需更新。基线数字更新时机:新增 Slice 测试用例后,在对应 Slice 验收记录里更新基线并在本节同步。

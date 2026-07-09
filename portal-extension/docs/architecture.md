@@ -1,0 +1,98 @@
+# 架构文档
+
+## 目标
+
+权限门户解决 RAGFlow 原生 iframe 在企业落地中的三个问题：
+
+1. RAGFlow iframe URL 暴露租户级 beta token。
+2. iframe 会话存放在 `API4Conversation`，用户无法在门户中管理自己的历史会话。
+3. RAGFlow tenant 不等于企业用户/角色体系，缺少用户组、ACL 和审计。
+
+门户的原则是保留 RAGFlow 原生问答、引用和文档预览体验，只在外层补身份、授权、会话归属和审计。
+
+## 组件
+
+```text
+React Portal
+  - 登录、分享页列表、分享页详情、管理员后台
+  - 不拼接 RAGFlow token
+
+FastAPI Portal/Gateway
+  - 账号、组、分享页、授权、会话归属、审计
+  - 签发 pt_ 短期令牌
+  - 代理 RAGFlow bot_api / agentbot_api
+  - 托管 frontend/dist
+
+RAGFlow
+  - 原生 iframe UI
+  - 原生 completions 流式问答
+  - API4Conversation 作为消息、引用、文档信息事实源
+```
+
+## 请求链路
+
+### 登录后打开分享页
+
+1. 用户登录门户，后端写入 `portal_session` HTTP-only cookie。
+2. 前端调用 `GET /share-pages` 获取当前用户有权访问的分享页。
+3. 前端进入详情页后调用 `GET /share-pages/{id}/embed-url`。
+4. 网关检查登录态、分享页状态、用户/组授权。
+5. 网关签发 `pt_...` 短期令牌，返回 RAGFlow iframe URL。
+6. RAGFlow 前端从 URL `auth` 参数读取令牌，后续 `/api/v1/...` 请求走同源网关。
+
+### iframe 流式问答
+
+1. iframe 发起 `POST /api/v1/chatbots/{id}/completions` 或 `POST /api/v1/agentbots/{id}/completions`。
+2. 网关读取 `Authorization: Bearer pt_...`。
+3. 网关校验短期令牌、cookie 登录态、分享页授权、会话归属和 resource id。
+4. 网关把 Authorization 替换成服务端保存的 `RAGFLOW_BETA_TOKEN`，转发给 RAGFlow。
+5. 网关流式回传 SSE，并在成功后绑定新 `session_id` 或更新会话活跃时间/消息数。
+
+### 恢复历史会话
+
+1. 前端调用 `GET /share-pages/{id}/sessions` 获取当前用户自己的会话列表。
+2. 用户选择会话后，前端调用 `GET /share-pages/{id}/sessions/{sid}`。
+3. 网关校验会话归属，再调用 RAGFlow sessions 端点读取消息和引用。
+4. 前端用返回数据恢复 iframe/会话状态。
+
+## 安全模型
+
+- 真实 RAGFlow beta token 只存在服务端环境变量 `RAGFLOW_BETA_TOKEN` 中。
+- 门户令牌统一使用 `pt_` 前缀，默认 5 分钟过期，重启后全部失效。
+- 授权撤销后，网关每次请求都会重新检查 grant；即使旧 `pt_` 未过期也会被拒绝。
+- 用户会话隔离依赖 `chat_session_owner`，任何带 `session_id` 的请求都必须匹配当前用户和分享页 resource。
+- 管理员 elevated 查看正文必须显式传 `elevated=true`，并写入 `session_view_elevated` 审计。
+- 普通页面默认 `X-Frame-Options: SAMEORIGIN`；widget 页面使用 CSP `frame-ancestors`。
+
+## 数据事实源
+
+| 数据 | 事实源 |
+|---|---|
+| 门户用户、用户组、分享页、授权 | Portal DB |
+| 会话归属、门户显示标题、消息数缓存 | Portal DB |
+| 消息正文、引用、文档预览信息 | RAGFlow `API4Conversation` |
+| 短期门户令牌 | Portal 进程内存 |
+| 公开分享 IP 限流 | Portal 进程内存 |
+
+## 功能边界
+
+已完成并应作为一期主体维护：
+
+- 自建账号、cookie 登录、用户启停。
+- 用户/组/分享页/ACL 管理。
+- 授权分享页列表和详情页。
+- 会话列表、恢复、重命名、删除。
+- 管理员会话搜索、审计、待删除重试。
+- 同源 iframe 网关代理和 token 替换。
+
+已有代码但生产使用需单独确认范围：
+
+- OIDC SSO。
+- org 字段隔离和 org_admin。
+- 公开分享。
+- widget 嵌入。
+- agent 类型分享页。
+
+## 与 RAGFlow 的关系
+
+`portal-extension` 不维护 RAGFlow 上游源码。它依赖 RAGFlow 已有的 iframe、bot API 和 sessions 能力。生产环境中如对 RAGFlow 容器通过 `docker cp` 增加 chatbot sessions GET/PATCH/DELETE 端点，该改动属于运行时补丁，容器重建后需要重新应用。

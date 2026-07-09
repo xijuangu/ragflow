@@ -1,117 +1,131 @@
-# RAGFlow 权限门户 — Slice 1 最小可登录分享页骨架
+# RAGFlow 权限门户
 
-门户 + 嵌入访问网关,打通「用户登录 → 网关签发短期嵌入令牌 → iframe URL 注入令牌 →
-RAGFlow 原生 bot_api 对话」端到端链路。**RAGFlow 侧无任何修改**;真实 beta Token
-全程不离开网关服务端。
+这是一个部署在 RAGFlow 旁路的权限门户与嵌入访问网关。它不替换 RAGFlow 原生问答界面，而是在外层补齐企业使用需要的登录、用户/用户组、分享页 ACL、历史会话、管理员审计和同源代理能力。
 
-> 对应 `docs/ISSUES.md` 的 Issue 1 / Slice 1。
->
-> 说明:portal-extension 用 FastAPI 作为独立网关服务,与主项目 Quart 分离
-> (FastAPI 适合 SSE 异步代理,与主项目互不依赖)。
+RAGFlow 上游源码不是本目录的维护对象。本目录只维护 `portal-extension` 自身的后端、前端、测试、部署脚本和项目文档。
+
+## 当前状态
+
+一期权限门户已完成，主要能力包括：
+
+- 自建账号登录、登出、会话 cookie、账号启用/禁用。
+- 用户、用户组、分享页、授权的管理员维护。
+- 普通用户只看到被授权分享页，并能查看、恢复、重命名、删除自己的历史会话。
+- 网关签发 `pt_` 前缀短期门户令牌，通过 RAGFlow iframe URL 的 `auth` 参数注入，真实 `RAGFLOW_BETA_TOKEN` 只留在服务端。
+- `/api/v1/chatbots/*` 和 `/api/v1/agentbots/*` 的同源代理，覆盖 completions、info/inputs、sessions history。
+- 管理员会话搜索、元数据查看、正文 elevated 查看审计、待删除会话重试。
+- SQLAlchemy 持久化，支持 SQLite/MySQL；短期令牌和公开分享限流保留内存态。
+- OIDC SSO、org 字段隔离、公开分享、widget/agent 路径已有代码与测试覆盖，但部分能力是否纳入生产使用要按当前验收范围单独确认。
+- React + Vite 前端，提供登录页、分享页列表、分享页详情、6 个管理员页面。
+- 本地后端 pytest、前端 Vitest、生产 Playwright 回归路径已建立。
 
 ## 架构
 
-```
-用户 ──登录──> 门户(同源 cookie 会话)
-用户 ──请求分享页──> 网关签发 T_short(5分钟,内存,可撤销)
-                  └─> 返回 iframe URL: {RAGFLOW_HOST}/chat/share?shared_id={dialog_id}&auth={T_short}&from=chat
-iframe ──SSE──> 网关代理:校验 T_short → 用 beta Token 调 RAGFlow bot_api → 流式回传
+```text
+浏览器
+  -> /portal/ React 权限门户
+  -> /api/v1/... 同源网关代理
+       - 校验 portal_session
+       - 校验分享页授权和会话归属
+       - 校验/替换 pt_ 短期令牌
+       - 用服务端 RAGFLOW_BETA_TOKEN 调 RAGFlow
+  -> RAGFlow 原生 iframe
 ```
 
-- iframe URL 的 `auth` 参数是 RAGFlow 前端 `getAuthorization()` 原生注入点(优先读 URL `?auth=`,
-  回退才读 localStorage),真实 beta Token 全程不进浏览器。
-- 网关 SSE 代理路径与 RAGFlow 前端原生调用路径一致(`/api/v1/chatbots/<id>/completions`),
-  同源部署下 iframe 内前端发起的 SSE 天然走网关,无需反向代理配置。
-- T_short 绑定用户 + 分享页,过期/撤销/dialog 不匹配均返回 401。
+核心边界：
 
-## 目录结构
+- 门户只保存身份、授权、会话归属、审计和展示标题。
+- 消息正文、引用片段、文档预览仍以 RAGFlow `API4Conversation` 为事实源。
+- 浏览器拿到的是短期 `pt_` 门户令牌，不拿 RAGFlow beta token。
+- 非 widget 页面默认 `X-Frame-Options: SAMEORIGIN`；widget 页面通过 CSP `frame-ancestors` 控制跨域嵌入。
 
-```
+更详细的说明见 [架构文档](docs/architecture.md)。
+
+## 目录
+
+```text
 portal-extension/
-├── portal/
-│   ├── main.py        # FastAPI app 入口(create_app + X-Frame-Options 中间件)
-│   ├── config.py      # 配置(全部从环境变量读)
-│   ├── auth.py        # 会话校验依赖(get_current_user)
-│   ├── password.py    # bcrypt 密码哈希(独立模块避免循环导入)
-│   ├── models.py      # 硬编码数据(portal_user / share_page / grant,字段用 Literal 约束)
-│   ├── gateway.py     # T_short 签发/校验/撤销 + iframe URL 构造 + SSE 代理
-│   └── routes.py      # /login、/share-pages/{id}/embed-url、/api/v1/chatbots/{id}/completions
-├── tests/
-│   ├── conftest.py    # pytest fixtures(测试客户端 + integration 跳过逻辑)
-│   └── test_slice1_e2e.py  # 端到端测试(14 个:12 单元 + 2 integration)
-├── docs/              # PRD / ISSUES / NOTES
-├── pyproject.toml
-└── README.md
+├── portal/                 # FastAPI 后端与网关
+├── frontend/               # React + Vite 前端
+├── tests/                  # 后端 pytest
+├── docs/                   # 当前文档 + 历史 PRD/ISSUES/验证记录
+├── deploy.sh               # 同步并重启生产 portal
+├── start.sh                # 服务器侧启动脚本
+├── pyproject.toml          # 后端依赖和 pytest/ruff 配置
+└── CONTEXT.md              # 长上下文/历史运维记录
 ```
 
-## 环境变量
+## 快速开始
 
-全部敏感值只走环境变量,不写入代码或文件。`.env` 已被 `.gitignore` 忽略。
-
-| 变量 | 说明 | 示例 |
-|---|---|---|
-| `PORTAL_ADMIN_USERNAME` | 硬编码 admin 用户名 | `admin` |
-| `PORTAL_ADMIN_PASSWORD` | admin 明文密码(启动时哈希) | 自定义 |
-| `PORTAL_SESSION_SECRET` | 会话 cookie 签名密钥 | 随机长字符串 |
-| `RAGFLOW_HOST` | RAGFlow web 地址 | `http://172.16.10.180` |
-| `RAGFLOW_BETA_TOKEN` | RAGFlow `api_token.beta` 列值(网关持有) | 32 位字符串 |
-| `RAGFLOW_DIALOG_ID` | 硬编码分享页关联的 dialog_id | `b4f88...` |
-| `T_SHORT_TTL_SECONDS` | T_short 有效期(秒) | `300` |
-| `PORTAL_DB_URL` | DB 连接 URL(SQLite/MySQL;默认 `sqlite://` in-memory) | `mysql+pymysql://user:pass@host:3306/portal` |
-| `RETRY_DELETE_INTERVAL_SECONDS` | Slice 12 双删重试定时任务间隔(秒;默认 `300`;`<=0` 禁用,管理员仍可手动触发) | `300` |
-
-## 一条命令运行
-
-依赖管理用 [uv](https://docs.astral.sh/uv/)(与主项目一致,见 `AGENTS.md` / `CLAUDE.md`)。
-若系统无 uv,先安装:`curl -LsSf https://astral.sh/uv/install.sh | sh`。
+后端：
 
 ```bash
-# 安装依赖(创建 .venv 并锁定)
+cd /Users/xijuangu/Developer/Work/thqh_projects/rag/ragflow/portal-extension
 uv sync --python 3.13 --extra dev
 
-# 配置环境变量(示例,真实值请自行设置)
-export PORTAL_ADMIN_PASSWORD=your-password
-export PORTAL_SESSION_SECRET=$(python3 -c "import secrets; print(secrets.token_hex(32))")
-export RAGFLOW_HOST=http://your-ragflow-host
-export RAGFLOW_BETA_TOKEN=your-beta-token
-export RAGFLOW_DIALOG_ID=your-dialog-id
+export PORTAL_ADMIN_PASSWORD=testpass123
+export PORTAL_SESSION_SECRET=dev-secret-change-me
+export RAGFLOW_HOST=http://localhost:9380
+export RAGFLOW_BROWSER_ORIGIN=
+export RAGFLOW_BETA_TOKEN=fake-beta-token
+export RAGFLOW_DIALOG_ID=test-dialog-id
+export PORTAL_DB_URL=sqlite:///./portal-dev.db
 
-# 启动
-uv run uvicorn portal.main:app --port 8000 --reload
+uv run uvicorn portal.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-## API
-
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| POST | `/login` | 登录,建立同源会话 cookie |
-| GET | `/share-pages/{id}/embed-url` | 返回 iframe URL(含 `auth=T_short`,需登录) |
-| POST | `/api/v1/chatbots/{dialog_id}/completions` | SSE 代理(与 RAGFlow 前端原生路径一致;校验 T_short,用 beta Token 调 RAGFlow) |
-
-所有响应附带 `X-Frame-Options: SAMEORIGIN`(PRD D10 同源嵌入,阻止外部站点 iframe)。
-
-## 测试
+前端开发：
 
 ```bash
-# 单元测试(无需 RAGFlow,12 个,默认占位值)
-uv run pytest tests/test_slice1_e2e.py -v
-
-# 集成测试(需真实 RAGFlow,导出 RAGFLOW_BETA_TOKEN 与 RAGFLOW_HOST 后运行)
-uv run pytest tests/test_slice1_e2e.py -v -m integration
-
-# 全套(含 integration,需真实 RAGFlow 环境变量)
-uv run pytest tests/test_slice1_e2e.py -v
-
-# 静态检查与格式化
-uv run ruff check portal/ tests/
-uv run ruff format portal/ tests/
+cd /Users/xijuangu/Developer/Work/thqh_projects/rag/ragflow/portal-extension/frontend
+npm install
+npm run dev
 ```
 
-覆盖 7 个验收点:
-1. admin 登录获同源会话 ✅
-2. embed-url 含 `auth=T_short`,不含 beta Token ✅
-3. iframe 对话流式 + 引用片段可见 ✅ [integration]
-4. 无效/过期/撤销 T_short → 401 ✅
-5. 未登录请求分享页 → 403 ✅
-6. beta Token 调 RAGFlow SSE 流式回传 ✅ [integration]
-7. beta Token 全程不泄露 ✅
+生产构建由 FastAPI 托管 `frontend/dist`：
+
+```bash
+cd /Users/xijuangu/Developer/Work/thqh_projects/rag/ragflow/portal-extension/frontend
+npm run build
+```
+
+## 常用命令
+
+```bash
+# 后端测试
+cd /Users/xijuangu/Developer/Work/thqh_projects/rag/ragflow/portal-extension
+uv run pytest -q
+uv run ruff check portal tests
+
+# 前端测试
+cd /Users/xijuangu/Developer/Work/thqh_projects/rag/ragflow/portal-extension/frontend
+npm run test
+npm run typecheck
+npm run lint
+
+# 生产部署
+cd /Users/xijuangu/Developer/Work/thqh_projects/rag/ragflow/portal-extension
+bash deploy.sh
+```
+
+详见 [开发与测试](docs/development-and-testing.md) 和 [部署运维](docs/deployment-and-operations.md)。
+
+## 文档地图
+
+- [架构文档](docs/architecture.md)：系统边界、请求链路、安全模型、功能边界。
+- [配置文档](docs/configuration.md)：环境变量、默认值、生产建议。
+- [API 文档](docs/api.md)：门户、网关、管理员、公开分享接口。
+- [数据模型](docs/data-model.md)：ORM 表、字段语义、持久化策略。
+- [开发与测试](docs/development-and-testing.md)：本地运行、测试套件、质量门禁。
+- [部署运维](docs/deployment-and-operations.md)：生产拓扑、部署脚本、健康检查、回滚。
+- [前端说明](frontend/README.md)：前端路由、API 客户端、构建和测试。
+- [历史归档](docs/archive/README.md)：PRD、ISSUES、NOTES、handoff、早期决策和 UI PRD 等追溯材料。
+
+## 重要约束
+
+- 不要把真实 `RAGFLOW_BETA_TOKEN` 写入代码、文档示例或前端构建产物。
+- `PORTAL_DB_URL` 生产必须指向持久化数据库；默认 `sqlite://` 是内存库，重启会丢运行数据。
+- iframe URL 必须使用 `RAGFLOW_BROWSER_ORIGIN` 生成浏览器可访问地址；内部上游调用使用 `RAGFLOW_HOST`。
+- `pt_` 前缀是门户短期令牌边界，网关用它区分门户令牌和 RAGFlow 原生 token。
+- 生产部署时运行时数据和 `.env` 必须与代码目录分离，`deploy.sh` 已排除 `.env`、`.venv`、`*.db` 和日志。
+- RAGFlow 官方容器内的 chatbot sessions 扩展端点如果通过 `docker cp` 临时替换，容器重建后会丢失，需要重新部署。
