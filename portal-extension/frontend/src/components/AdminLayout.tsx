@@ -57,7 +57,7 @@ const ADMIN_NAVS: readonly NavDef[] = [
   },
   {
     to: '/admin/share-pages',
-    label: '分享页',
+    label: '分享页管理',
     icon: (
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
         <path d="M4 13v7h16v-7" />
