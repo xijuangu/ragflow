@@ -2668,7 +2668,11 @@ admin 6 页表格「操作」列的按钮视觉统一与对齐,两处问题:
 
 ## 完成
 
-2026-07-09 commit `ad4c891`。UsersAdminPage/SessionsAdminPage/SharePagesAdminPage 操作列 `btn-ghost` → `btn-outline`(GroupsAdminPage 的 btn-ghost 为表单提交按钮非操作列,保留;GrantsAdminPage 操作列仅 btn-danger,无改)。`.admin-actions` 无 padding,分隔线本就连贯,无需 CSS 调整。Issue 关闭。
+2026-07-09 commit `ad4c891`(className 改动)+ 修正 commit(diagnosing-bugs)。
+
+**真实根因(诊断后确认):** 初版 `btn-ghost` → `btn-outline` 改动已部署生效,但 `.btn-outline { border-color: var(--border) }` 中 `--border: oklch(92% 0.005 250)` 在白底上 1px 几乎不可见(lightness 92%),用户感知"没修复"。修正:`.btn-outline` border-color 改为 `color-mix(in oklch, var(--fg) 18%, var(--border))`(lightness ≈ 78.7%,清晰可见)。Playwright 计算样式验证:borderColor 由 oklch 0.92 → 0.7868。
+
+`.admin-actions` 无 padding,分隔线本就连贯,无需 CSS 调整。Issue 关闭。
 
 ---
 
@@ -2701,7 +2705,13 @@ admin 表单对齐收尾,两处 Issue 69 遗漏:
 
 ## 完成
 
-2026-07-09 commit `b0bf990`。GrantsAdminPage「选择分享页」块加 `admin-form` class(复用 padding:16px);styles.css 新增 `.filters .btn { height: 36px }`(scoped 防御,锁定筛选按钮与 input 同高)。Issue 关闭。
+2026-07-09 commit `b0bf990`(padding)+ 修正 commit(diagnosing-bugs)。
+
+**真实根因(诊断后确认):**
+- AC1(GrantsAdmin padding):`b0bf990` 加 `admin-form` class 已生效(padding=16px 验证通过),无需修正。
+- AC2(筛选按钮对齐):初版加 `.filters .btn { height: 36px }` 是 **no-op**(`.btn` 基类本就 36px),基于错误假设。真实根因:`.form-field { margin-bottom: 16px }`(基类规则)在 `.filters` 内生效,按钮无 margin-bottom,`align-items:flex-end` 按 margin-box 对齐 → 按钮可视下沉 16px(Playwright 实测:input y=214.4 vs button y=230.4)。修正:新增 `.filters .form-field { margin-bottom: 0 }`,移除 no-op 的 `.filters .btn`。修后实测:button y=214.4 = input y=214.4,完全对齐。
+
+Issue 关闭。
 
 ---
 

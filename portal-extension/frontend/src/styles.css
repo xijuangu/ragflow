@@ -157,7 +157,7 @@ svg { display: block; }
 .btn-secondary:hover:not(:disabled) { background: var(--surface-2); }
 .btn-ghost { color: var(--muted); }
 .btn-ghost:hover:not(:disabled) { background: var(--surface-2); color: var(--fg); }
-.btn-outline { background: transparent; color: var(--fg); border-color: var(--border); }
+.btn-outline { background: transparent; color: var(--fg); border-color: color-mix(in oklch, var(--fg) 18%, var(--border)); }
 .btn-outline:hover:not(:disabled) { background: var(--surface-2); }
 .btn-danger { color: var(--danger); border-color: color-mix(in oklch, var(--danger) 30%, var(--border)); }
 .btn-danger:hover:not(:disabled) { background: color-mix(in oklch, var(--danger) 10%, var(--surface)); }
@@ -194,8 +194,9 @@ svg { display: block; }
    FILTER BAR / FIELDS / PILLS(新 — Issue 56/58 迁移使用)
    ============================================================ */
 .filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; padding: 14px 16px; border-bottom: 1px solid var(--border); }
-/* Issue 73:筛选按钮高度锁定 36px,与 .form-field input/select 对齐(.filters align-items:flex-end 底对齐) */
-.filters .btn { height: 36px; }
+/* Issue 73 修正:form-field 基类有 margin-bottom:16px,在 .filters 内会令按钮(无 margin)按 margin-box
+   flex-end 对齐时可视下沉 16px。清零后 form-field border-box 底边与按钮底边对齐。 */
+.filters .form-field { margin-bottom: 0; }
 .field { position: relative; display: flex; align-items: center; }
 .field input, .field select {
   height: 32px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius);
