@@ -181,25 +181,27 @@ export default function UsersAdminPage() {
                         )}
                       </td>
                       <td className="mono">{formatTime(u.created_at, 'date')}</td>
-                      <td className="admin-actions">
-                        <button
-                          type="button"
-                          className="btn btn-outline btn-sm"
-                          onClick={() => handleToggleEnabled(u)}
-                          disabled={busyId === u.id || u.is_admin}
-                          title={u.is_admin ? '管理员不可禁用' : ''}
-                        >
-                          {u.enabled ? '禁用' : '启用'}
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-danger btn-sm"
-                          onClick={() => handleDelete(u)}
-                          disabled={busyId === u.id || u.is_admin}
-                          title={u.is_admin ? '管理员不可删除' : ''}
-                        >
-                          硬删除
-                        </button>
+                      <td>
+                        <div className="admin-actions">
+                          <button
+                            type="button"
+                            className="btn btn-outline btn-sm"
+                            onClick={() => handleToggleEnabled(u)}
+                            disabled={busyId === u.id || u.is_admin}
+                            title={u.is_admin ? '管理员不可禁用' : ''}
+                          >
+                            {u.enabled ? '禁用' : '启用'}
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-danger btn-sm"
+                            onClick={() => handleDelete(u)}
+                            disabled={busyId === u.id || u.is_admin}
+                            title={u.is_admin ? '管理员不可删除' : ''}
+                          >
+                            硬删除
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}

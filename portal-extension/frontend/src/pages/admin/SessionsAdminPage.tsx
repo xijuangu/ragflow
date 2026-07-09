@@ -224,15 +224,17 @@ export default function SessionsAdminPage() {
                       <td className="mono">{formatTime(s.created_at, 'datetime')}</td>
                       <td className="mono">{formatTime(s.last_active_at, 'datetime')}</td>
                       <td className="mono">{s.message_count}</td>
-                      <td className="admin-actions">
-                        <button
-                          type="button"
-                          className="btn btn-outline btn-sm"
-                          onClick={() => handleViewElevated(s)}
-                          disabled={elevatedLoading}
-                        >
-                          {elevatedLoading ? '加载中…' : '查看正文'}
-                        </button>
+                      <td>
+                        <div className="admin-actions">
+                          <button
+                            type="button"
+                            className="btn btn-outline btn-sm"
+                            onClick={() => handleViewElevated(s)}
+                            disabled={elevatedLoading}
+                          >
+                            {elevatedLoading ? '加载中…' : '查看正文'}
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}

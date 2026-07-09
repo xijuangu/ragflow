@@ -196,15 +196,17 @@ export default function SharePagesAdminPage() {
                           <span className="badge b-archived">禁用</span>
                         )}
                       </td>
-                      <td className="admin-actions">
-                        <button
-                          type="button"
-                          className="btn btn-outline btn-sm"
-                          onClick={() => handleToggleEnabled(p)}
-                          disabled={busyId === p.id}
-                        >
-                          {p.enabled ? '禁用' : '启用'}
-                        </button>
+                      <td>
+                        <div className="admin-actions">
+                          <button
+                            type="button"
+                            className="btn btn-outline btn-sm"
+                            onClick={() => handleToggleEnabled(p)}
+                            disabled={busyId === p.id}
+                          >
+                            {p.enabled ? '禁用' : '启用'}
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}

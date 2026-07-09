@@ -2670,9 +2670,11 @@ admin 6 页表格「操作」列的按钮视觉统一与对齐,两处问题:
 
 2026-07-09 commit `ad4c891`(className 改动)+ 修正 commit(diagnosing-bugs)。
 
-**真实根因(诊断后确认):** 初版 `btn-ghost` → `btn-outline` 改动已部署生效,但 `.btn-outline { border-color: var(--border) }` 中 `--border: oklch(92% 0.005 250)` 在白底上 1px 几乎不可见(lightness 92%),用户感知"没修复"。修正:`.btn-outline` border-color 改为 `color-mix(in oklch, var(--fg) 18%, var(--border))`(lightness ≈ 78.7%,清晰可见)。Playwright 计算样式验证:borderColor 由 oklch 0.92 → 0.7868。
+**真实根因(诊断后确认):**
+- AC1(边框不可见):初版 `btn-ghost` → `btn-outline` 改动已部署生效,但 `.btn-outline { border-color: var(--border) }` 中 `--border: oklch(92% 0.005 250)` 在白底上 1px 几乎不可见(lightness 92%),用户感知"没修复"。修正:`.btn-outline` border-color 改为 `color-mix(in oklch, var(--fg) 18%, var(--border))`(lightness ≈ 78.7%,清晰可见)。Playwright 计算样式验证:borderColor 由 oklch 0.92 → 0.7868。
+- AC2(分隔线断开):`.admin-actions { display:flex }` 直接加在 `<td>` 上,**把 td 从 `display:table-cell` 变成 flex 容器**,脱离表格布局 → 操作列 td 按按钮内容计算高度,不再与同行 td 等高(实测 td[0] h=65.3 vs td[last] h=55.0,差 10px)→ border-bottom 位置不同 → 分隔线断开。修正:4 个 admin 页 JSX 把 `className="admin-actions"` 从 `<td>` 移到内层 `<div>`,td 恢复原生 table-cell(同行等高)。修后实测:4 页所有行 bottom 差=0.0px。
 
-`.admin-actions` 无 padding,分隔线本就连贯,无需 CSS 调整。Issue 关闭。
+Issue 关闭。
 
 ---
 

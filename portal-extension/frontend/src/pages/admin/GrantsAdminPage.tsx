@@ -263,15 +263,17 @@ export default function GrantsAdminPage() {
                           <td>{g.subject_type === 'user' ? '用户' : '用户组'}</td>
                           <td>{resolveSubjectName(g)}</td>
                           <td>{g.permission}</td>
-                          <td className="admin-actions">
-                            <button
-                              type="button"
-                              className="btn btn-danger btn-sm"
-                              onClick={() => handleRevoke(g)}
-                              disabled={busyKey === `${g.subject_type}:${g.subject_id}`}
-                            >
-                              撤销
-                            </button>
+                          <td>
+                            <div className="admin-actions">
+                              <button
+                                type="button"
+                                className="btn btn-danger btn-sm"
+                                onClick={() => handleRevoke(g)}
+                                disabled={busyKey === `${g.subject_type}:${g.subject_id}`}
+                              >
+                                撤销
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       );
