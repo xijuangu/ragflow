@@ -126,6 +126,7 @@ export default function SharePagesAdminPage() {
               value={form.ragflow_resource_id}
               onChange={(e) => setForm((f) => ({ ...f, ragflow_resource_id: e.target.value }))}
               placeholder="chat 类型填 dialog_id;agent 类型填 agent_id"
+              title="chat 类型填 dialog_id;agent 类型填 agent_id"
               required
             />
           </div>
