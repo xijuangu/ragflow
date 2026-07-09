@@ -144,7 +144,7 @@ export interface AdminAuditLog {
   meta: Record<string, unknown> | null;
 }
 
-/** 8 类敏感操作(供审计日志筛选下拉选项与 UI 触发入口对照)。 */
+/** 管理后台敏感操作(供审计日志筛选下拉选项与 UI 触发入口对照)。 */
 export const AUDIT_ACTIONS = [
   'login_success',
   'login_failure',
@@ -152,6 +152,7 @@ export const AUDIT_ACTIONS = [
   'grant_revoke',
   'session_delete',
   'session_view_elevated',
+  'user_password_change',
   'user_enable',
   'user_disable',
 ] as const;
@@ -304,6 +305,14 @@ export const api = {
     return request<AdminUser>(`/admin/users/${encodeURIComponent(userId)}`, {
       method: 'PATCH',
       body: JSON.stringify({ enabled }),
+    });
+  },
+
+  /** 修改用户密码(PATCH /admin/users/:id/password,写 user_password_change 审计)。 */
+  updateAdminUserPassword(userId: string, password: string): Promise<AdminUser> {
+    return request<AdminUser>(`/admin/users/${encodeURIComponent(userId)}/password`, {
+      method: 'PATCH',
+      body: JSON.stringify({ password }),
     });
   },
 

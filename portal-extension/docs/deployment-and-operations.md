@@ -102,7 +102,25 @@ ssh 172.16.10.180 'curl -s -X POST http://localhost:8000/login -H "Content-Type:
 
 ## 修改用户密码
 
-当前没有改密码 UI 或 API。管理员需要在服务器上生成新的 bcrypt hash，并更新 `portal_user.password_hash`。
+优先使用管理后台：`/portal/admin/users` → 用户行里的“改密码”。
+
+也可以用 API 修改。接口会更新 `portal_user.password_hash` 并写 `user_password_change` 审计：
+
+```bash
+curl -s -c /tmp/portal-cookie.txt \
+  -X POST http://localhost:8000/login \
+  -H "Content-Type: application/json" \
+  -d "{\"username\":\"admin\",\"password\":\"<admin-password>\"}" \
+  -w "\nHTTP %{http_code}\n"
+
+curl -s -X PATCH http://localhost:8000/admin/users/<user_id>/password \
+  -H "Content-Type: application/json" \
+  -b /tmp/portal-cookie.txt \
+  -d "{\"password\":\"<new-password>\"}" \
+  -w "\nHTTP %{http_code}\n"
+```
+
+如果无法使用 UI/API，再在服务器上生成新的 bcrypt hash 并直接更新数据库。
 
 推荐在服务器交互式执行，避免把新密码写进 shell 历史：
 

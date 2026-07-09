@@ -104,13 +104,20 @@ widget 响应：
 | `GET` | `/admin/users` | 列出用户，支持 `org_id`。 |
 | `GET` | `/admin/users/{id}` | 查看用户。 |
 | `PATCH` | `/admin/users/{id}` | 启用/禁用用户。 |
+| `PATCH` | `/admin/users/{id}/password` | 修改用户密码，写 `user_password_change` 审计。 |
 | `DELETE` | `/admin/users/{id}` | 硬删除用户并级联清理会话归属。 |
 | `POST` | `/admin/groups` | 创建用户组。 |
 | `GET` | `/admin/groups` | 列出用户组，含成员。 |
 | `POST` | `/admin/groups/{id}/members` | 添加成员。 |
 | `DELETE` | `/admin/groups/{id}/members/{user_id}` | 移除成员。 |
 
-当前没有修改用户密码的 API。改密码需按 [部署运维文档](deployment-and-operations.md#修改用户密码) 在服务器侧更新 `portal_user.password_hash`。
+`PATCH /admin/users/{id}/password` 请求：
+
+```json
+{"password":"new-password"}
+```
+
+响应返回脱敏用户对象，不包含 `password_hash`。空密码返回 `400 密码不能为空`。
 
 ## 管理员分享页与授权
 

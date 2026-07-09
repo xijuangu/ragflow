@@ -1,14 +1,14 @@
 /**
- * 审计日志页(Slice 11,验收点 7)— 列出 8 类敏感操作日志,按 action/actor/时间筛选。
+ * 审计日志页(Slice 11,验收点 7)— 列出敏感操作日志,按 action/actor/时间筛选。
  *
  * 对应后端:
  *   - GET /admin/audit-logs?actor_user_id=&action=&since=&until=&limit=
  *     返回 { audit_logs: [{ id, actor_user_id, action, target_type, target_id, at, meta }] }
  *
- * 8 类敏感操作(action):login_success / login_failure / grant_create / grant_revoke /
- *   session_delete / session_view_elevated / user_enable / user_disable。
+ * 敏感操作(action):login_success / login_failure / grant_create / grant_revoke /
+ *   session_delete / session_view_elevated / user_password_change / user_enable / user_disable。
  *
- * 对应 PRD D8:管理员分级查看 + 敏感操作审计(8 类)。
+ * 对应 PRD D8:管理员分级查看 + 敏感操作审计。
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
@@ -113,7 +113,7 @@ export default function AuditLogsAdminPage() {
         <div>
           <div className="kicker">管理后台 / 审计日志</div>
           <h1>审计日志</h1>
-          <div className="sub">查看 8 类敏感操作记录:登录、授权、会话查看、用户启停。按操作者、类型与时间筛选。</div>
+          <div className="sub">查看敏感操作记录:登录、授权、会话查看、改密、用户启停。按操作者、类型与时间筛选。</div>
         </div>
       </div>
 

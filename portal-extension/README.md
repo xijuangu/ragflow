@@ -9,7 +9,7 @@ RAGFlow 上游源码不是本目录的维护对象。本目录只维护 `portal-
 一期权限门户已完成，主要能力包括：
 
 - 自建账号登录、登出、会话 cookie、账号启用/禁用。
-- 用户、用户组、分享页、授权的管理员维护。
+- 用户、用户组、分享页、授权的管理员维护，支持管理员修改用户密码。
 - 普通用户只看到被授权分享页，并能查看、恢复、重命名、删除自己的历史会话。
 - 网关签发 `pt_` 前缀短期门户令牌，通过 RAGFlow iframe URL 的 `auth` 参数注入，真实 `RAGFLOW_BETA_TOKEN` 只留在服务端。
 - `/api/v1/chatbots/*` 和 `/api/v1/agentbots/*` 的同源代理，覆盖 completions、info/inputs、sessions history。

@@ -1,11 +1,12 @@
 """Slice 6 端到端测试 — 管理员后台 + 审计日志。
 
 覆盖验收点(ISSUES.md Issue 6):
-  1. 8 类敏感操作分别触发 → 审计日志有对应记录:
+  1. 9 类敏感操作分别触发 → 审计日志有对应记录:
      - login_success(登录)/ login_failure(错误密码)
      - grant_create(管理员授权)/ grant_revoke(管理员撤销)
      - session_delete(用户删自己的会话)
      - session_view_elevated(管理员查正文)
+     - user_password_change(管理员改密码)
      - user_enable / user_disable(管理员改 enabled)
   2. 管理员列出所有会话(按用户/分享页/时间过滤)。
   3. 管理员默认看元数据(不含 messages/reference)。
@@ -75,7 +76,7 @@ def _audit_actions(app) -> list:
 
 
 # ---------------------------------------------------------------------------
-# 验收点 1:8 类敏感操作分别触发 → 审计日志有对应记录。
+# 验收点 1:9 类敏感操作分别触发 → 审计日志有对应记录。
 # ---------------------------------------------------------------------------
 
 
@@ -207,8 +208,20 @@ async def test_audit_user_disable(client, app):
     assert any(log.target_id == alice["id"] and log.target_type == "user" for log in disable_logs)
 
 
-async def test_all_8_audit_actions_covered(client, app, monkeypatch):
-    """综合:8 类敏感操作全部触发 → 审计日志全部覆盖(对应 PRD D7b 8 类枚举)。"""
+async def test_audit_user_password_change(client, app):
+    """user_password_change:管理员修改用户密码后审计日志有 user_password_change 记录。"""
+    await _login(client)
+    alice = await _create_user_and_grant(client, username="alice_password")
+    resp = await client.patch(f"/admin/users/{alice['id']}/password", json={"password": "newpass123"})
+    assert resp.status_code == 200
+    actions = _audit_actions(app)
+    assert "user_password_change" in actions, f"user_password_change 未记审计: {actions}"
+    password_logs = app.state.audit_store.list(action="user_password_change", limit=1000)
+    assert any(log.target_id == alice["id"] and log.target_type == "user" for log in password_logs)
+
+
+async def test_all_9_audit_actions_covered(client, app, monkeypatch):
+    """综合:9 类敏感操作全部触发 → 审计日志全部覆盖。"""
     fake_session_id = "slice6-all-001"
     await _precreate_session(client, monkeypatch, fake_session_id)
     alice = await _create_user_and_grant(client, username="alice_all8")
@@ -236,9 +249,11 @@ async def test_all_8_audit_actions_covered(client, app, monkeypatch):
         AsyncMock(return_value={"messages": [], "reference": {}}),
     )
     await client.get(f"/admin/sessions/{fake_session_id_2}?elevated=true")
-    # 7. user_disable
+    # 7. user_password_change
+    await client.patch(f"/admin/users/{alice['id']}/password", json={"password": "newpass123"})
+    # 8. user_disable
     await client.patch(f"/admin/users/{alice['id']}", json={"enabled": False})
-    # 8. user_enable
+    # 9. user_enable
     await client.patch(f"/admin/users/{alice['id']}", json={"enabled": True})
 
     actions = set(_audit_actions(app))
@@ -249,6 +264,7 @@ async def test_all_8_audit_actions_covered(client, app, monkeypatch):
         "grant_revoke",
         "session_delete",
         "session_view_elevated",
+        "user_password_change",
         "user_enable",
         "user_disable",
     }

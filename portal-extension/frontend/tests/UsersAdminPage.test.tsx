@@ -9,7 +9,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthProvider } from '../src/auth/AuthContext';
 import UsersAdminPage from '../src/pages/admin/UsersAdminPage';
-import { mockFetch } from './setup';
+import { getFetchCalls, mockFetch } from './setup';
 
 const USERS_RESPONSE = {
   users: [
@@ -245,6 +245,44 @@ describe('UsersAdminPage', () => {
     expect(window.confirm).toHaveBeenCalled();
     // 行仍存在
     expect(screen.getByTestId('user-row-u_user1')).toBeInTheDocument();
+  });
+
+  it('修改密码 — 点击"改密码"后提交新密码并调 PATCH /admin/users/:id/password', async () => {
+    const user = userEvent.setup();
+    const fetchMock = mockFetch([
+      { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
+      { url: '/admin/users', status: 200, body: USERS_RESPONSE },
+      {
+        url: '/admin/users/u_user1/password',
+        method: 'PATCH',
+        status: 200,
+        body: {
+          id: 'u_user1',
+          username: 'user1',
+          email: 'user1@example.com',
+          is_admin: false,
+          enabled: true,
+          created_at: 1700000100,
+          sso_provider: null,
+          sso_external_id: null,
+        },
+      },
+    ]);
+    globalThis.fetch = fetchMock;
+
+    renderPage();
+
+    const row = await screen.findByTestId('user-row-u_user1');
+    await user.click(within(row).getByRole('button', { name: '改密码' }));
+    await user.type(screen.getByLabelText('新密码'), 'newpass123');
+    await user.click(screen.getByRole('button', { name: '保存密码' }));
+
+    expect(await screen.findByText('密码已更新')).toBeInTheDocument();
+    expect(getFetchCalls(fetchMock)).toContainEqual({
+      url: '/admin/users/u_user1/password',
+      method: 'PATCH',
+      body: { password: 'newpass123' },
+    });
   });
 
   it('加载失败显示错误提示', async () => {

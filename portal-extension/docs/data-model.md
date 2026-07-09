@@ -119,6 +119,7 @@ grant_create
 grant_revoke
 session_delete
 session_view_elevated
+user_password_change
 user_enable
 user_disable
 public_chat

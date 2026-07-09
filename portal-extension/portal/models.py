@@ -11,12 +11,12 @@
                      ragflow_resource_id, title, created_at, last_active_at,
                      deleted_at)  — Slice 5 加 deleted_at(双删失败标记)
   audit_log(id, actor_user_id, action, target_type, target_id, at, meta_json)
-    — Slice 6 加审计日志(8 类敏感操作,内存存储,永久保留)
+    — Slice 6 加审计日志(敏感操作,内存存储,永久保留)
 
 Slice 4 把 Slice 1-3 的硬编码 SeedData 改为可变内存存储,新增用户组与完整 CRUD 方法;
 has_use_grant 升级支持 user + group 两种 subject_type(用户组继承)。
 Slice 5 加会话重命名/删除/标记删除方法,用户硬删除(delete_user 级联清理组成员关系)。
-Slice 6 加 AuditLog + AuditStore(8 类敏感操作审计,内存存储,永久保留无 TTL),
+Slice 6 加 AuditLog + AuditStore(敏感操作审计,内存存储,永久保留无 TTL),
 SessionStore.list_all 支持管理员跨用户会话查询(按用户/分享页/时间过滤)。
 
 Slice 8 DB 持久化迁移(内存存储 → SQLAlchemy):
@@ -57,7 +57,7 @@ Permission = Literal["use", "manage"]
 RagflowType = Literal["chat", "agent"]
 EmbedType = Literal["fullscreen", "widget"]
 SubjectType = Literal["user", "group"]
-# Slice 6 审计日志枚举(PR D7b:仅覆盖敏感操作,8 类)
+# Slice 6 审计日志枚举(PR D7b:仅覆盖敏感操作)
 # Slice 15 加 public_chat(公开访问审计,可选开关 PUBLIC_AUDIT_ENABLED)
 AuditAction = Literal[
     "login_success",
@@ -66,6 +66,7 @@ AuditAction = Literal[
     "grant_revoke",
     "session_delete",
     "session_view_elevated",
+    "user_password_change",
     "user_enable",
     "user_disable",
     "public_chat",
@@ -611,8 +612,9 @@ def _gen_id(prefix: str) -> str:
 class AuditLog:
     """审计日志记录(对应 audit_log 表,Slice 6)。
 
-    8 类敏感操作(PR D7b):login_success | login_failure | grant_create |
-    grant_revoke | session_delete | session_view_elevated | user_enable | user_disable。
+    敏感操作(PR D7b):login_success | login_failure | grant_create |
+    grant_revoke | session_delete | session_view_elevated | user_password_change |
+    user_enable | user_disable。
     永久保留,无 TTL/自动清理(PR D8b)。
 
     Slice 13 加 org_id(默认 'default',审计日志按 org 维度筛选,对应验收点 5)。
@@ -657,7 +659,7 @@ class AuditStore(_StoreBase):
         meta: dict | None = None,
         org_id: str = "default",
     ) -> AuditLog:
-        """记录一条审计日志(8 类敏感操作之一)。
+        """记录一条审计日志(敏感操作之一)。
 
         meta 为可选上下文 dict,序列化为 JSON 字符串存入 meta_json。
         返回新建的 AuditLog(已写入 DB)。
@@ -891,6 +893,18 @@ class SeedData(_StoreBase):
             if row is None:
                 return False
             row.enabled = enabled
+            return True
+
+        return self._transact(_do)
+
+    def set_user_password_hash(self, user_id: str, password_hash: str) -> bool:
+        """更新用户密码哈希;返回 True 表示找到并更新。"""
+
+        def _do(session) -> bool:
+            row = session.get(PortalUserModel, user_id)
+            if row is None:
+                return False
+            row.password_hash = password_hash
             return True
 
         return self._transact(_do)

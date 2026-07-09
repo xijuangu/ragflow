@@ -31,7 +31,7 @@
 Slice 7 review 修复(本文件增量):
   - AC1 加正向用例(登录成功 + 获得分享页权限)。
   - 补 5 项额外分支测试(双删失败标记 / 禁用用户保留会话 / 级联删除无孤儿 /
-    elevated 审计 / 8 类审计全记录)。
+    elevated 审计 / 9 类审计全记录)。
   - 抽 _login_and_precreate helper 消除 AC3/4/5/8 三段式重复。
   - AC2 测试加注释说明验证范围(客户端侧不暴露 beta token)。
 """
@@ -524,7 +524,7 @@ async def test_ac8_revoke_preserves_history(client, app, mock_precreate):
 # ===========================================================================
 #
 # 覆盖 5 个分支:双删事务失败标记 / 禁用用户保留会话 / 级联删除无孤儿 /
-# 管理员 elevated 查正文写审计 / 8 类敏感操作全部入审计。
+# 管理员 elevated 查正文写审计 / 9 类敏感操作全部入审计。
 
 
 async def test_branch_dual_delete_failure_marks_deleted_at(client, app, mock_precreate, mock_delete_session):
@@ -730,14 +730,14 @@ async def test_branch_admin_elevated_view_writes_audit(client, app, mock_precrea
     )
 
 
-async def test_branch_all_8_audit_actions_recorded(
+async def test_branch_all_9_audit_actions_recorded(
     client, app, mock_precreate, mock_delete_session, mock_fetch_history
 ):
-    """分支 1e:依次触发 8 类敏感操作,验证 audit_log 每类至少一条记录。
+    """分支 1e:依次触发 9 类敏感操作,验证 audit_log 每类至少一条记录。
 
-    对应 ISSUES.md L293 + Slice 6 验收点 5:8 类敏感操作全部入审计:
+    对应 Slice 6 验收点 5:敏感操作全部入审计:
       login_success / login_failure / grant_create / grant_revoke /
-      session_delete / session_view_elevated / user_enable / user_disable。
+      session_delete / session_view_elevated / user_password_change / user_enable / user_disable。
     用 audit_store.list() 查询验证每类至少一条。
     """
     # 1. login_success(管理员登录)
@@ -746,7 +746,7 @@ async def test_branch_all_8_audit_actions_recorded(
     resp = await client.post("/login", json={"username": "admin", "password": "wrong-password"})
     assert resp.status_code == 401
     # 3. grant_create(管理员创建用户并授权)
-    alice = await _create_user_and_grant(client, username="alice_audit_all8")
+    alice = await _create_user_and_grant(client, username="alice_audit_all9")
     # 4. grant_revoke(管理员撤销授权)
     resp = await client.delete(f"/share-pages/sp_default/grants/user/{alice['id']}")
     assert resp.status_code == 200
@@ -758,27 +758,30 @@ async def test_branch_all_8_audit_actions_recorded(
     assert resp.status_code == 201
 
     # 5. session_delete(用户删自己的会话,mock RAGFlow 成功)
-    fake_session = "branch-audit8-001"
+    fake_session = "branch-audit9-001"
     await _login_and_precreate(client, mock_precreate, fake_session)
     mock_delete_session()  # mock RAGFlow DELETE 成功(双删成功才记 session_delete)
     resp = await client.delete(f"/share-pages/sp_default/sessions/{fake_session}")
     assert resp.status_code == 200
 
     # 6. session_view_elevated(管理员 elevated 查正文)
-    fake_session_2 = "branch-audit8-002"
+    fake_session_2 = "branch-audit9-002"
     await _login_and_precreate(client, mock_precreate, fake_session_2)
     mock_fetch_history({"messages": [{"role": "user", "content": "hi"}], "reference": {}})
     resp = await client.get(f"/admin/sessions/{fake_session_2}?elevated=true")
     assert resp.status_code == 200
 
-    # 7. user_disable(管理员禁用 alice)
+    # 7. user_password_change(管理员修改 alice 密码)
+    resp = await client.patch(f"/admin/users/{alice['id']}/password", json={"password": "newpass123"})
+    assert resp.status_code == 200
+    # 8. user_disable(管理员禁用 alice)
     resp = await client.patch(f"/admin/users/{alice['id']}", json={"enabled": False})
     assert resp.status_code == 200
-    # 8. user_enable(管理员启用 alice)
+    # 9. user_enable(管理员启用 alice)
     resp = await client.patch(f"/admin/users/{alice['id']}", json={"enabled": True})
     assert resp.status_code == 200
 
-    # 验证 audit_log 8 类 action 每类至少一条
+    # 验证 audit_log 9 类 action 每类至少一条
     audit_store = app.state.audit_store
     expected_actions = {
         "login_success",
@@ -787,6 +790,7 @@ async def test_branch_all_8_audit_actions_recorded(
         "grant_revoke",
         "session_delete",
         "session_view_elevated",
+        "user_password_change",
         "user_enable",
         "user_disable",
     }

@@ -131,6 +131,35 @@ async def test_admin_get_unknown_user_returns_404(client):
     assert resp.status_code == 404
 
 
+async def test_admin_update_user_password_changes_login_password(client):
+    """管理员修改用户密码后:旧密码失效,新密码可登录,响应不泄露 password_hash。"""
+    await _login_admin(client)
+    created = await _create_user(client, username="alice", email="alice@example.com", password="oldpass123")
+
+    resp = await client.patch(f"/admin/users/{created['id']}/password", json={"password": "newpass123"})
+    assert resp.status_code == 200, f"修改密码失败: {resp.text}"
+    body = resp.json()
+    assert body["id"] == created["id"]
+    assert body["username"] == "alice"
+    assert "password" not in str(body).lower()
+
+    old_login = await client.post("/login", json={"username": "alice", "password": "oldpass123"})
+    assert old_login.status_code == 401
+    assert old_login.json()["detail"] == "密码错误"
+
+    new_login = await client.post("/login", json={"username": "alice", "password": "newpass123"})
+    assert new_login.status_code == 200, f"新密码登录失败: {new_login.text}"
+
+
+async def test_admin_update_user_password_rejects_empty_password(client):
+    """管理员修改用户密码时空密码 → 400,避免写入不可用密码哈希。"""
+    await _login_admin(client)
+    created = await _create_user(client, username="alice", email="alice@example.com", password="oldpass123")
+
+    resp = await client.patch(f"/admin/users/{created['id']}/password", json={"password": ""})
+    assert resp.status_code == 400
+
+
 # ---------------------------------------------------------------------------
 # 验收点 2:管理员创建用户组 → 返回组详情;添加成员;移除成员。
 # ---------------------------------------------------------------------------
@@ -445,6 +474,17 @@ async def test_non_admin_cannot_list_users(client, app):
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as alice_client:
         await alice_client.post("/login", json={"username": "alice", "password": "alicepass123"})
         resp = await alice_client.get("/admin/users")
+        assert resp.status_code == 403
+
+
+async def test_non_admin_cannot_update_user_password(client, app):
+    """普通用户调修改用户密码 API → 403。"""
+    await _login_admin(client)
+    alice = await _create_user(client, username="alice", email="alice@example.com", password="alicepass123")
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as alice_client:
+        await alice_client.post("/login", json={"username": "alice", "password": "alicepass123"})
+        resp = await alice_client.patch(f"/admin/users/{alice['id']}/password", json={"password": "newpass123"})
         assert resp.status_code == 403
 
 

@@ -215,7 +215,7 @@ class ChatSessionOwnerModel(Base):
 
 
 class AuditLogModel(Base):
-    """audit_log 表 ORM 模型(Slice 6,8 类敏感操作,永久保留 PR D8b)。
+    """audit_log 表 ORM 模型(Slice 6,敏感操作,永久保留 PR D8b)。
 
     Slice 13:加 org_id(默认 'default',审计日志按 org 维度筛选,对应验收点 5)。
     """

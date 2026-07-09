@@ -551,6 +551,16 @@ tbody tr:hover { background: var(--surface-2); }
   font-size: 13px;
 }
 
+.alert-success {
+  background: color-mix(in oklch, var(--success) 12%, var(--surface));
+  color: var(--success);
+  border: 1px solid color-mix(in oklch, var(--success) 30%, var(--border));
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  margin-bottom: 16px;
+  font-size: 13px;
+}
+
 .alert-sm {
   padding: 6px 10px;
   margin: 8px;
@@ -838,6 +848,14 @@ tbody tr:hover { background: var(--surface-2); }
   margin: 0 0 12px;
   color: var(--muted);
   font-size: 12px;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+  flex-wrap: wrap;
 }
 
 .message-list {

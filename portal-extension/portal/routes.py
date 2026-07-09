@@ -13,8 +13,8 @@ Slice 5 新增:
   - DELETE /admin/users/{id} — 管理员硬删除用户(级联硬删所有会话,无孤儿;RAGFlow 失败记日志)。
 
 Slice 6 新增:
-  - 审计日志写入点:8 类敏感操作(login_success/failure、grant_create/revoke、session_delete、
-    session_view_elevated、user_enable/disable)。
+  - 审计日志写入点:敏感操作(login_success/failure、grant_create/revoke、session_delete、
+    session_view_elevated、user_password_change、user_enable/disable)。
   - GET /admin/sessions — 管理员列出所有会话(按用户/分享页/时间过滤,返回元数据)。
   - GET /admin/sessions/pending-deletion — 管理员查看待重试删除的会话。
   - GET /admin/sessions/{session_id} — 管理员查看会话(默认元数据;?elevated=true 写审计+返回正文)。
@@ -111,6 +111,10 @@ class UpdateEnabledRequest(BaseModel):
 
     enabled: bool | None = None
     is_public: bool | None = None
+
+
+class UpdatePasswordRequest(BaseModel):
+    password: str
 
 
 class RenameSessionRequest(BaseModel):
@@ -1024,6 +1028,39 @@ async def admin_get_user(user_id: str, request: Request, user=Depends(require_or
     return _user_to_dict(target)
 
 
+@router.patch("/admin/users/{user_id}/password")
+async def admin_update_user_password(
+    user_id: str, body: UpdatePasswordRequest, request: Request, user=Depends(require_org_admin)
+):
+    """管理员修改用户密码。
+
+    响应不返回 password_hash。修改 `.env` 中的种子密码不会覆盖已有用户,
+    因此生产改密应走此接口或服务器侧 SQLAlchemy 命令。
+
+    Slice 13:org_admin 跨 org 修改用户密码 → 403。
+    """
+    password = body.password
+    if not password:
+        raise HTTPException(status_code=400, detail="密码不能为空")
+    seed = request.app.state.seed
+    target = seed.get_user(user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    _assert_same_org_admin(user, target.org_id)
+    if not seed.set_user_password_hash(user_id, hash_password(password)):
+        raise HTTPException(status_code=404, detail="用户不存在")
+    target = seed.get_user(user_id)
+    _audit(
+        request,
+        user,
+        "user_password_change",
+        "user",
+        user_id,
+        username=target.username,
+    )
+    return _user_to_dict(target)
+
+
 @router.patch("/admin/users/{user_id}")
 async def admin_update_user(
     user_id: str, body: UpdateEnabledRequest, request: Request, user=Depends(require_org_admin)
@@ -1433,7 +1470,7 @@ async def revoke_grant(
 #
 # 全部 require_org_admin(普通用户调任何 /admin/* → 403,Slice 4 已强制;
 # Slice 13 扩展为 is_admin 或 org_admin,org_admin 限本 org)。
-# 审计日志写入点散落在 login / grant / session_delete / user_enable/disable 等
+# 审计日志写入点散落在 login / grant / session_delete / user_password_change / user_enable/disable 等
 # 已有路由;此处只新增查询端点与 elevated 查正文端点。
 
 
@@ -1592,7 +1629,7 @@ async def admin_retry_delete_session(session_id: str, request: Request, user=Dep
 async def admin_list_audit_logs(
     request: Request,
     actor_user_id: str | None = Query(None, description="按操作者用户 ID 过滤"),
-    action: str | None = Query(None, description="按 action 过滤(8 类敏感操作之一)"),
+    action: str | None = Query(None, description="按 action 过滤(敏感操作之一)"),
     since: float | None = Query(None, description="起始时间(unix 时间戳)"),
     until: float | None = Query(None, description="截止时间(unix 时间戳)"),
     org_id: str | None = Query(None, description="按 org_id 过滤(仅 is_admin 生效;org_admin 强制本 org)"),

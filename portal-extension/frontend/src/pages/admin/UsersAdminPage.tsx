@@ -5,6 +5,7 @@
  *   - GET /admin/users(列表)
  *   - POST /admin/users(创建,201)
  *   - PATCH /admin/users/:id(启用/禁用,后端写 user_enable/user_disable 审计)
+ *   - PATCH /admin/users/:id/password(修改密码,后端写 user_password_change 审计)
  *   - DELETE /admin/users/:id(硬删除,级联删会话,无孤儿)
  *
  * 硬删除前用 window.confirm 提示级联清会话(对应验收点 2:硬删除时有确认提示)。
@@ -27,6 +28,11 @@ export default function UsersAdminPage() {
   const [form, setForm] = useState({ username: '', email: '', password: '' });
   const [formError, setFormError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [passwordTarget, setPasswordTarget] = useState<AdminUser | null>(null);
+  const [passwordValue, setPasswordValue] = useState('');
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [passwordSuccess, setPasswordSuccess] = useState<string | null>(null);
+  const [passwordSaving, setPasswordSaving] = useState(false);
 
   const handleCreate = useCallback(
     async (e: FormEvent) => {
@@ -94,6 +100,46 @@ export default function UsersAdminPage() {
     [run, setUsers],
   );
 
+  const openPasswordModal = useCallback((u: AdminUser) => {
+    setPasswordTarget(u);
+    setPasswordValue('');
+    setPasswordError(null);
+    setPasswordSuccess(null);
+  }, []);
+
+  const closePasswordModal = useCallback(() => {
+    if (passwordSaving) return;
+    setPasswordTarget(null);
+    setPasswordValue('');
+    setPasswordError(null);
+  }, [passwordSaving]);
+
+  const handlePasswordSubmit = useCallback(
+    async (e: FormEvent) => {
+      e.preventDefault();
+      if (!passwordTarget || passwordSaving) return;
+      setPasswordError(null);
+      setPasswordSuccess(null);
+      const password = passwordValue;
+      if (!password) {
+        setPasswordError('新密码不能为空');
+        return;
+      }
+      setPasswordSaving(true);
+      try {
+        await api.updateAdminUserPassword(passwordTarget.id, password);
+        setPasswordSuccess('密码已更新');
+        setPasswordTarget(null);
+        setPasswordValue('');
+      } catch (e) {
+        setPasswordError(e instanceof ApiError ? e.message : '修改密码失败');
+      } finally {
+        setPasswordSaving(false);
+      }
+    },
+    [passwordTarget, passwordValue, passwordSaving],
+  );
+
   return (
     <section>
       <div className="page-head">
@@ -105,6 +151,7 @@ export default function UsersAdminPage() {
       </div>
 
       {error && <div className="alert-error">{error}</div>}
+      {passwordSuccess && <div className="alert-success">{passwordSuccess}</div>}
 
       {/* 创建表单(内联,无 drawer) */}
       <form className="admin-form card" onSubmit={handleCreate} aria-label="创建用户表单">
@@ -186,6 +233,14 @@ export default function UsersAdminPage() {
                           <button
                             type="button"
                             className="btn btn-outline btn-sm"
+                            onClick={() => openPasswordModal(u)}
+                            disabled={busyId === u.id}
+                          >
+                            改密码
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-outline btn-sm"
                             onClick={() => handleToggleEnabled(u)}
                             disabled={busyId === u.id || u.is_admin}
                             title={u.is_admin ? '管理员不可禁用' : ''}
@@ -211,6 +266,53 @@ export default function UsersAdminPage() {
           </div>
         </div>
       </div>
+
+      {passwordTarget && (
+        <div className="modal-backdrop" role="presentation">
+          <form className="modal-card" onSubmit={handlePasswordSubmit} aria-label="修改用户密码">
+            <div className="modal-header">
+              <h3>修改密码</h3>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={closePasswordModal}
+                disabled={passwordSaving}
+                aria-label="关闭"
+              >
+                关闭
+              </button>
+            </div>
+            <div className="modal-body">
+              <p className="modal-meta">用户: {passwordTarget.username}</p>
+              {passwordError && <div className="alert-error">{passwordError}</div>}
+              <div className="form-field">
+                <label htmlFor="admin-user-new-password">新密码</label>
+                <input
+                  id="admin-user-new-password"
+                  type="password"
+                  value={passwordValue}
+                  onChange={(e) => setPasswordValue(e.target.value)}
+                  autoComplete="new-password"
+                  required
+                />
+              </div>
+              <div className="modal-actions">
+                <button
+                  type="button"
+                  className="btn btn-outline"
+                  onClick={closePasswordModal}
+                  disabled={passwordSaving}
+                >
+                  取消
+                </button>
+                <button type="submit" className="btn btn-primary" disabled={passwordSaving}>
+                  {passwordSaving ? '保存中…' : '保存密码'}
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
+      )}
     </section>
   );
 }
