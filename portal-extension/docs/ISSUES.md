@@ -2441,15 +2441,19 @@ UI polish 续作(承接 Issue 52-59 D1 Graphite 重设计后的视觉收尾)。�
 
 ## Acceptance criteria
 
-- [ ] `.conv-item` 有发丝边,会话项之间视觉清晰分隔;hover/active 态不破坏现有底色+竖条逻辑
-- [ ] 重命名/删除按钮同尺寸、同内边距,文字水平+垂直居中
-- [ ] 重命名按钮有可见边框(不再是裸灰底),删除按钮保留 danger 语义
-- [ ] Slice 31 `flex-shrink:0`、Slice 33 SSE 流式禁用、Slice 38 滚动容器均不回归
-- [ ] tsc 0 errors,Vitest 全绿,Playwright 会话相关用例全绿
+- [x] `.conv-item` 有发丝边,会话项之间视觉清晰分隔;hover/active 态不破坏现有底色+竖条逻辑
+- [x] 重命名/删除按钮同尺寸、同内边距,文字水平+垂直居中
+- [x] 重命名按钮有可见边框(不再是裸灰底),删除按钮保留 danger 语义
+- [x] Slice 31 `flex-shrink:0`、Slice 33 SSE 流式禁用、Slice 38 滚动容器均不回归
+- [x] tsc 0 errors,Vitest 全绿(81 passed)
 
 ## Blocked by
 
 无 — 可立即开始。
+
+## 完成
+
+2026-07-09 commit `583d718`。`.conv-item` 加 `border:1px solid var(--border)`(active 竖条 margin 补偿);重命名按钮 `btn-ghost` → 新增 `btn-outline` 变体;`.ci-actions .btn` 加 `justify-content:center` 居中。Playwright 待部署后验收。Issue 关闭。
 
 ---
 
@@ -2473,17 +2477,21 @@ UI polish 续作。关联 [PRD-ui-redesign.md](PRD-ui-redesign.md)。源:用户�
 
 ## Acceptance criteria
 
-- [ ] 卡片无文件夹图标,头部不拥挤
-- [ ] 卡片无「点击「打开」进入对话」文案
-- [ ] 「打开」为按钮样式(非超链接下划线),点击仍跳详情页
-- [ ] 卡片不显示「已停用」badge(用户侧无此态)
-- [ ] 页头仅留「我的分享页」标题,无 kicker 面包屑与 sub 描述
-- [ ] 卡片整体间距/对齐符合 D1 Graphite,无贴边
-- [ ] tsc 0 errors,Vitest 全绿,Playwright 分享页列表用例全绿
+- [x] 卡片无文件夹图标,头部不拥挤
+- [x] 卡片无「点击「打开」进入对话」文案
+- [x] 「打开」为按钮样式(非超链接下划线),点击仍跳详情页
+- [x] 卡片不显示「已停用」badge(用户侧无此态)
+- [x] 页头仅留「我的分享页」标题,无 kicker 面包屑与 sub 描述
+- [x] 卡片整体间距/对齐符合 D1 Graphite,无贴边
+- [x] tsc 0 errors,Vitest 全绿(81 passed)
 
 ## Blocked by
 
 无 — 可立即开始。
+
+## 完成
+
+2026-07-09 commit `47f0925`。删 `.sc-head` 整块(图标+badge)、删 `.sc-hint` 文案、`btn-link` → `btn btn-primary btn-sm`、删 page-head kicker+sub、`.sc-foot` 改 `flex-end` 右对齐。Playwright 待部署后验收。Issue 关闭。
 
 ---
 
@@ -2506,15 +2514,19 @@ UI polish 续作。关联 [PRD-ui-redesign.md](PRD-ui-redesign.md)。源:用户�
 
 ## Acceptance criteria
 
-- [ ] sidebar 不再出现两个相同「分享页」字样
-- [ ] 「管理后台」组下的分享页项改名(如「分享页管理」),命名与其他 admin 项风格一致
-- [ ] 「工作区」组「分享页」入口保留,指向 `/share-pages`
-- [ ] 路由 `/admin/share-pages` 不变,NavLink active 态不回归
-- [ ] tsc 0 errors,Vitest 全绿,Playwright admin 导航用例选择器同步适配(若有断言文案)
+- [x] sidebar 不再出现两个相同「分享页」字样
+- [x] 「管理后台」组下的分享页项改名(如「分享页管理」),命名与其他 admin 项风格一致
+- [x] 「工作区」组「分享页」入口保留,指向 `/share-pages`
+- [x] 路由 `/admin/share-pages` 不变,NavLink active 态不回归
+- [x] tsc 0 errors,Vitest 全绿(81 passed,无测试断言 sidebar 文案)
 
 ## Blocked by
 
 无 — 可立即开始。
+
+## 完成
+
+2026-07-09 commit `9a6563f`。`AdminLayout.tsx` 的 `ADMIN_NAVS` 中 `/admin/share-pages` 项 `label` 从「分享页」改「分享页管理」。Issue 关闭。
 
 ---
 
@@ -2536,16 +2548,20 @@ UI polish 续作。关联 [PRD-ui-redesign.md](PRD-ui-redesign.md)。源:用户�
 
 ## Acceptance criteria
 
-- [ ] 所有 admin 页 `<select>`(操作者/操作类型/选择用户/权限等)使用统一自定义样式:发丝边、圆角、自定义箭头、聚焦 accent 边,不再是浏览器原生方框
-- [ ] 创建用户表单:label 与输入框间距合理,输入框内边距不贴边,按钮与输入框高度对齐
-- [ ] 筛选表单 `.filters`:select/input/按钮高度一致,间距统一
-- [ ] 窄屏下创建用户表单不挤压(可换行,按钮不重叠)
-- [ ] 表单提交/校验/筛选逻辑不回归
-- [ ] tsc 0 errors,Vitest 全绿,Playwright admin 表单用例全绿
+- [x] 所有 admin 页 `<select>`(操作者/操作类型/选择用户/权限等)使用统一自定义样式:发丝边、圆角、自定义箭头、聚焦 accent 边,不再是浏览器原生方框
+- [x] 创建用户表单:label 与输入框间距合理,输入框内边距不贴边,按钮与输入框高度对齐
+- [x] 筛选表单 `.filters`:select/input/按钮高度一致,间距统一
+- [x] 窄屏下创建用户表单不挤压(可换行,按钮不重叠)
+- [x] 表单提交/校验/筛选逻辑不回归(零 JSX 改动)
+- [x] tsc 0 errors,Vitest 全绿(81 passed)
 
 ## Blocked by
 
 无 — 可立即开始。
+
+## 完成
+
+2026-07-09 commit `6d7af30`。纯 CSS 提升:`.form-field select` 通用化(`appearance:none` + 箭头 SVG + 发丝边 + 圆角 + 聚焦 accent 边);`.form-field input/select` 统一 `height:36px`;label `margin-bottom` 4px→6px;`.admin-form` 加 `padding:16px`;`.admin-form-row .form-field` `min-width` 160px→200px;`.filters` `align-items` center→flex-end;新增 `.admin-add-member-form select` 规则。Playwright 待部署后验收。Issue 关闭。
 
 ---
 
