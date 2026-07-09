@@ -701,7 +701,7 @@ tbody tr:hover { background: var(--surface-2); }
   white-space: nowrap;
 }
 
-/* ---- Groups admin(旧 card 布局)---- */
+/* ---- Groups admin ---- */
 .admin-groups {
   display: flex;
   flex-direction: column;
@@ -739,21 +739,13 @@ tbody tr:hover { background: var(--surface-2); }
 .admin-add-member-form {
   display: flex;
   gap: 8px;
-  align-items: flex-end;
+  align-items: center;
   flex-wrap: wrap;
 }
 
-.admin-add-member-form .form-field {
-  flex: 1;
-  min-width: 200px;
-  margin-bottom: 0;
-}
-
-/* Issue 69:GroupsAdminPage MemberSelect 的裸 <select>(无 .form-field 包裹),
-   与 .btn-sm(30px)高度对齐,复用自定义箭头。 */
+/* Issue 74:添加成员 select 固定宽,不再 flex:1 撑满整行 */
 .admin-add-member-form select {
-  flex: 1;
-  min-width: 200px;
+  flex: 0 0 220px;
   height: 30px;
   padding: 0 26px 0 10px;
   border: 1px solid var(--border);
@@ -772,23 +764,30 @@ tbody tr:hover { background: var(--surface-2); }
   border-color: color-mix(in oklch, var(--accent) 50%, var(--border));
 }
 
+/* Issue 74:创建用户组表单 — 单字段表单不撑满,input 固定宽 */
+.admin-form-row-compact .form-field {
+  flex: 0 0 240px;
+}
+
+/* Issue 74:成员列表两列网格紧凑排列,不再单列撑满 */
 .member-list {
   list-style: none;
   margin: 0;
   padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 6px;
 }
 
 .member-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 10px;
-  border-radius: 6px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
   background: var(--surface-2);
   font-size: 13px;
+  border: 1px solid var(--border);
 }
 
 /* ---- elevated 弹窗 — 显示会话正文 ---- */

@@ -166,7 +166,7 @@ export default function GroupsAdminPage() {
       {/* 创建用户组表单(内联,无 drawer) */}
       <form className="admin-form card" onSubmit={handleCreate} aria-label="创建用户组表单">
         <h3 className="form-title">创建用户组</h3>
-        <div className="admin-form-row">
+        <div className="admin-form-row admin-form-row-compact">
           <div className="form-field">
             <label htmlFor="new-group-name">用户组名称</label>
             <input
@@ -284,7 +284,7 @@ function MemberSelect({
           </option>
         ))}
       </select>
-      <button type="submit" className="btn btn-ghost btn-sm" disabled={disabled || !selected}>
+      <button type="submit" className="btn btn-outline btn-sm" disabled={disabled || !selected}>
         添加
       </button>
     </form>
