@@ -2717,6 +2717,264 @@ Issue 关闭。
 
 ---
 
+## Issue 75 — 审计日志详情列超长内容查看
+
+## Parent
+
+UI polish 续作(Issue 66-74 后)。源:用户反馈 + UI 审查报告(2026-07-09)。
+
+## What to build
+
+审计日志页(`/admin/audit`)表格「详情」列(`td.audit-meta`)直接渲染 `formatMeta(log.meta)` 的文本。当 meta 内容较长(如 grant_create 含 subject_type/subject_id/permission、user_create 含 username/email)时,文本超出单元格宽度被截断或撑开表格,后续内容无法直接查看。
+
+修复:让详情列支持查看完整内容。两种可行方案(任选其一,倾向前者):
+- **行内截断 + title 悬浮**:td 加 `max-width` + `overflow:hidden` + `text-overflow:ellipsis` + `white-space:nowrap`,同时给文本加 `title` 属性显示完整内容(鼠标悬浮 tooltip)。最小改动。
+- **点击展开 modal**:点击详情单元格弹出 modal 显示完整 meta(JSON 格式化)。改动较大但体验更好,可复用 SessionsAdminPage 的 elevated modal 模式。
+
+若选方案一,需确保 `formatMeta` 返回的字符串同时用于 title。若选方案二,需新建一个轻量 modal 组件(或复用现有 `.modal-backdrop`/`.modal-card`)。
+
+**纯前端,不改后端 API。**
+
+## Acceptance criteria
+
+- [ ] 审计日志详情列超长内容可被查看(悬浮 tooltip 或点击展开 modal)
+- [ ] 表格布局不被超长 meta 撑开变形
+- [ ] 短 meta 正常显示,无视觉回归
+- [ ] tsc 0 errors,Vitest 全绿
+- [ ] (可选)Playwright 验证详情列长文本可见
+
+## Blocked by
+
+无 — 可立即开始。
+
+---
+
+## Issue 76 — 前端样式收口:统一表单 class + 清理 legacy 占位规则
+
+## Parent
+
+UI 审查报告第 1 批「样式收口,先稳住一致性」。源:2026-07-09 UI 审查。
+
+## What to build
+
+当前 styles.css 中新 D1 设计系统(`.form-group`/`.form-input`)与旧 class(`.form-field`)在同一层混用。注释(line 503)标注"form-field 旧,Issue 53/58 迁移到 form-group/form-input",但 `.form-field` 仍被 admin-form-row、filters、login 等广泛使用,`.form-group` 也存在(line 255)却未全面接管。这导致后续每个页面出现"这里 form-group,那里 form-field"的漂移。
+
+同时 styles.css 保留了"已砍但保留"的 drawer、stats、mobile-cards 占位规则(Issue 60-65 deferred 项),这些规则无对应 JSX 元素,易被误用。
+
+**两件事:**
+
+1. **表单 class 收口**:选定一套表单模式作为唯一标准(倾向保留 `.form-field` 因使用面更广,或全面迁移到 `.form-group`),删除另一套。统一 label + input/select 的结构约定。若迁移面大,可分页进行但目标是一套 class。
+
+2. **清理 legacy 占位规则**:删除 styles.css 中无对应 JSX 元素的 CSS 规则——`.mobile-cards`(768px 显示,但无 admin 页渲染该元素,见 Issue 77 会补真实内容)、drawer 相关(若 Issue 60 未实现)、stats 卡片(若 Issue 62 未实现)。**注意:只删确认无 JSX 引用的规则,有引用的保留。** 删前必须 grep 确认 JSX 无 className 引用。
+
+**纯前端样式收口,不改业务逻辑。**
+
+## Acceptance criteria
+
+- [ ] styles.css 中表单 class 只保留一套(`.form-field` 或 `.form-group`),另一套删除或合并
+- [ ] 所有 admin 页表单使用统一的 label + input/select 结构
+- [ ] 无 JSX 引用的 legacy CSS 规则(drawer/stats/mobile-cards 占位)已删除
+- [ ] grep 确认删除的 class 无 JSX 引用
+- [ ] tsc 0 errors,Vitest 全绿,Playwright 全绿
+- [ ] 无视觉回归(表单外观不变)
+
+## Blocked by
+
+无 — 可立即开始(但建议在 Issue 77 之前做,因为 77 会新增 mobile-cards JSX,届时需确认 76 已清理或保留该规则)。
+
+---
+
+## Issue 77 — 移动端 admin 表格真实可用性:补 .mobile-cards 内容 + 侧栏开关接状态
+
+## Parent
+
+UI 审查报告第 2 批「修移动端真实可用性」。源:2026-07-09 UI 审查(High 风险)。
+
+## What to build
+
+当前 CSS 在 768px 以下隐藏 `.table-wrap` 并显示 `.mobile-cards`(styles.css line 244/916),但**所有 admin 页 JSX 都没有渲染 `.mobile-cards` 元素**(grep 确认无匹配)。结果:移动端访问 admin 页只看到筛选栏 + 空白内容,表格数据完全不可见。这是 High 风险功能缺陷。
+
+同时 admin 侧栏的 `.sidebar.open` 有 CSS 规则,但 menu-btn 未接上开关状态(移动端侧栏无法打开)。
+
+**三件事:**
+
+1. **6 个 admin 页补 `.mobile-cards` 内容**:每个 admin 页(Users/Sessions/SharePages/Groups/Grants/AuditLogs)在 table 下方渲染 `.mobile-cards` 元素,用卡片形式展示同份数据。每张卡片对应一行数据,字段用 label: value 布局,操作按钮保留。可抽一个 `<MobileCards>` 通用组件接收 columns + data + actions props,避免 6 页重复代码。
+
+2. **侧栏开关接状态**:AdminLayout 的 menu-btn 点击切换 `.sidebar.open` 状态( useState),移动端可打开/关闭侧栏。
+
+3. **详情页小屏适配**:SharePageDetailPage 小屏(768px 以下)优先展示 iframe,历史会话列表改为折叠面板(默认收起,点击展开),避免 200px 会话区挤压对话区。
+
+**纯前端,不改后端。** 依赖 Issue 76 先清理 mobile-cards 占位规则(避免冲突)。
+
+## Acceptance criteria
+
+- [ ] 6 个 admin 页在 768px 以下显示 `.mobile-cards` 卡片列表,数据与 table 一致
+- [ ] 移动端卡片含操作按钮(启用/禁用/删除/查看正文/撤销),功能与桌面端一致
+- [ ] AdminLayout 侧栏 menu-btn 可切换 .open 状态,移动端侧栏可打开关闭
+- [ ] SharePageDetailPage 小屏会话列表折叠,iframe 优先展示
+- [ ] 桌面端(>768px)无视觉回归,table 仍正常显示
+- [ ] tsc 0 errors,Vitest 全绿,Playwright 移动端视口验证
+
+## Blocked by
+
+- Issue 76(样式收口,清理 mobile-cards 占位规则后再补 JSX)
+
+---
+
+## Issue 78 — 登录页 SSO 按钮降级:未配置时隐藏或标注"未配置"
+
+## Parent
+
+UI 审查报告 Mid 项。源:2026-07-09 UI 审查。
+
+## What to build
+
+LoginPage 的 SSO 按钮当前始终展示,代码注释明确"后端未启用时 /sso/login 返回 404"。用户点击后跳转收到 404,体验差且易误点。
+
+**修复方案(任选其一,倾向前者):**
+
+1. **构建配置控制**:通过环境变量(如 `VITE_SSO_ENABLED`)控制是否渲染 SSO 按钮。`.env` 设 `VITE_SSO_ENABLED=false` 时不渲染;部署时若启用 SSO 则设 true。后端 `/sso/login` 是否可用由部署方决定,前端跟随配置。
+
+2. **运行时探测 + 降级**:登录页挂载时 fetch `/sso/login` 探测(HEAD 请求),404 则隐藏按钮或标注"SSO 未配置"。有额外网络开销,不推荐。
+
+3. **后端返回 SSO 状态**:后端 `/login` 或新接口返回 `sso_enabled: boolean`,前端据此渲染。需改后端,违反"纯前端"约束,不推荐。
+
+方案 1 最简且不引入运行时开销。需在 `.env.example` 文档化该变量。
+
+**纯前端 + 构建配置,不改后端接口。**
+
+## Acceptance criteria
+
+- [ ] SSO 按钮根据 `VITE_SSO_ENABLED` 环境变量决定是否渲染
+- [ ] 未配置/设为 false 时按钮不显示,登录页布局不破
+- [ ] 设为 true 时按钮正常显示,点击跳转 `/sso/login`
+- [ ] `.env.example` 文档化该变量
+- [ ] tsc 0 errors,Vitest 全绿
+
+## Blocked by
+
+无 — 可立即开始。
+
+---
+
+## Issue 79 — 高风险操作统一确认弹窗:替代 window.confirm/prompt
+
+## Parent
+
+UI 审查报告第 3 批「把高风险操作做成同一套确认体验」。源:2026-07-09 UI 审查(Low 项,但体验价值高)。
+
+## What to build
+
+当前 4 处高风险操作使用浏览器原生 `window.confirm`/`window.prompt`,与 D1 Graphite 视觉系统割裂,且无法展示"会写审计""会级联删除""不可恢复"等业务后果提示:
+
+- `UsersAdminPage`(line 80):`window.confirm` 硬删除用户
+- `SharePageDetailPage`(line 240):`window.prompt` 重命名会话
+- `SharePageDetailPage`(line 260):`window.confirm` 删除会话
+- `SessionsAdminPage`(line 117):`window.confirm` 管理员查看正文
+
+**构建统一确认弹窗组件 `<ConfirmDialog>`:**
+
+- 基于 D1 Graphite 视觉(复用 `.modal-backdrop`/`.modal-card` 样式)
+- props:`title`、`message`、`confirmText`、`cancelText`、`variant`(danger/warning/info,控制确认按钮颜色)、`details`(可选,展示业务后果列表如"此操作会写审计日志""会级联删除会话")
+- 返回 Promise<boolean>,`await ConfirmDialog.confirm({...})` 替代 `window.confirm`
+
+**重命名会话** 用 `<InputDialog>`(或 ConfirmDialog 带 input):替代 `window.prompt`,支持键盘 Enter 确认/Esc 取消,预填当前标题。
+
+**4 处替换:**
+- 硬删除用户:variant=danger,details=["会级联删除该用户的所有会话","此操作不可恢复","会写审计日志"]
+- 删除会话:variant=danger,details=["此操作不可恢复"]
+- 查看正文:variant=warning,details=["以管理员身份查看","此操作将记录到审计日志"]
+- 重命名会话:InputDialog,预填当前标题
+
+**纯前端组件,不改后端。**
+
+## Acceptance criteria
+
+- [ ] 新建 `<ConfirmDialog>` 组件,基于 D1 Graphite,支持 title/message/variant/details
+- [ ] 新建 `<InputDialog>` 组件(或 ConfirmDialog 带 input),支持预填 + 键盘确认/取消
+- [ ] 4 处 window.confirm/window.prompt 全部替换为统一弹窗
+- [ ] 确认弹窗展示业务后果(danger/warning variant + details 列表)
+- [ ] 弹窗键盘可达(Enter 确认/Esc 取消/焦点管理)
+- [ ] tsc 0 errors,Vitest 全绿,Playwright 验证弹窗交互
+- [ ] 原生 confirm/prompt 不再被调用(grep window.confirm/window.prompt 无匹配)
+
+## Blocked by
+
+无 — 可立即开始(但建议在 Issue 76 样式收口后做,复用统一 modal 样式)。
+
+---
+
+## Issue 80 — 分享页详情页门户外壳与 RAGFlow iframe 视觉衔接
+
+## Parent
+
+UI 审查报告第 4 批「打磨门户和 RAGFlow iframe 的连接感」。源:2026-07-09 UI 审查(Mid 项)。
+
+## What to build
+
+SharePageDetailPage 的外层会话栏、顶部详情条、iframe 容器之间的视觉密度可能不一致,存在割裂感。需用边界、标题和空状态降低割裂感,但不替换 RAGFlow 原生 chat UI(避免破坏引用、文档片段、PDF 预览能力)。
+
+**三件事:**
+
+1. **顶部详情条精简**:详情页顶部只保留必要上下文(分享页名 + 状态),避免与 iframe 内 RAGFlow 标题重复竞争。若 iframe 内已有对话标题,外层不再重复显示同名标题。
+
+2. **历史会话栏层级化**:会话列表增加"当前会话 / 最近会话 / 无标题会话"的视觉层级,让列表更可扫。当前会话高亮(active 已有),最近会话按时间分组或置顶,无标题会话显示"(未命名)"而非空白。
+
+3. **边界与空状态**:外层会话栏与 iframe 容器之间加分隔线/留白明确边界;会话列表为空时显示空状态引导("暂无历史会话,开始新对话")。
+
+**纯前端视觉打磨,不改 iframe 内容、不改后端。**
+
+## Acceptance criteria
+
+- [ ] 详情页顶部不与 iframe 内 RAGFlow 标题重复
+- [ ] 历史会话栏有当前/最近/无标题的视觉层级
+- [ ] 会话栏与 iframe 容器边界清晰(分隔线或留白)
+- [ ] 空会话列表有空状态引导
+- [ ] RAGFlow 原生 chat UI(引用/文档片段/PDF 预览)不受影响
+- [ ] tsc 0 errors,Vitest 全绿,Playwright 全绿
+
+## Blocked by
+
+无 — 可立即开始(建议在 Issue 77 移动端折叠面板之后做,会话栏结构可能调整)。
+
+---
+
+## Issue 81 — 强调色(accent)使用预算统一:活跃条 + 主按钮 + badge + 权限 + 头像
+
+## Parent
+
+UI 审查报告 Low 项「强调色使用总体克制,但活跃条和主按钮需要统一预算」。源:2026-07-09 UI 审查。
+
+## What to build
+
+D1 Graphite 的蓝紫色 accent 适合作为"当前状态 + 主动作",但当前同屏可能有多处使用 accent:`.nav-item.active::before`、`.btn-primary`、`.badge-info`、`.perm-chat`、`.msg.bot .avatar-sm`。若同屏出现多个 accent 元素,后台页面略显繁忙。
+
+**统一 accent 使用预算,限定语义:**
+
+- **主动作**:`.btn-primary`(accent 底色)— 每屏最多 1-2 个 primary 按钮
+- **当前状态**:`.nav-item.active`(accent 左边框)— 导航唯一
+- **权限/状态 badge**:重新分配语义色。`.badge-info` 改用非 accent 色(如 muted 或 surface-2 描边),accent 留给"当前选中/主动作"。`.perm-chat`(权限)用独立语义色(如 green/success)区分"可对话"权限。
+- **机器人头像**:`.msg.bot .avatar-sm` 用非 accent 色(如 muted 底 + 首字母),accent 不滥用到装饰元素。
+
+**目标:accent 在同屏只表示"当前状态 + 主动作"两类语义,其他用中性色或独立语义色。**
+
+**纯前端 CSS token 调整,不改业务逻辑。**
+
+## Acceptance criteria
+
+- [ ] `.badge-info` 不使用 accent 色(改 muted/中性)
+- [ ] `.perm-chat` 用独立语义色(非 accent)
+- [ ] `.msg.bot .avatar-sm` 用非 accent 色
+- [ ] accent 只用于 .btn-primary(主动作)+ .nav-item.active(当前状态)
+- [ ] admin 页同屏 accent 元素数量减少,视觉不繁忙
+- [ ] tsc 0 errors,Vitest 全绿,无视觉回归(badge/权限/头像仍可辨识)
+
+## Blocked by
+
+无 — 可立即开始(建议在 Issue 76 样式收口之后做,token 系统已稳定)。
+
+---
+
 ## 后续待办(Issue 16 AC2 遗留)
 
 > Issue 16 AC2「悬浮组件在任意页面右下角加载,点击展开对话窗,能正常对话」— Slice 16 实现了 `/widget/<id>` 骨架 HTML + 可嵌入 snippet + CSP frame-ancestors 放行,但 **悬浮组件实际 UI 渲染(右下角悬浮按钮 + 点击展开对话窗 + iframe 加载 + SSE 对话)尚未实现**。`/widget/<id>` 当前仅返回含 `<div id="widget-root">` 的占位 HTML,需前端构建产物挂载 React 组件。
