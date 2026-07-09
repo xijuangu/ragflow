@@ -8,6 +8,7 @@
 - [prototype/](prototype/)：令牌注入、mock 网关和 RAGFlow iframe 行为验证原型。
 - [portal-ui-redesign/](portal-ui-redesign/)：D1/D2/D3 视觉方向和各页面 HTML 设计稿。
 - [rag-files/](rag-files/)：RAG 验证用法规 PDF 和基础事实题。
+- [diagnostics/](diagnostics/)：阶段性诊断脚本，例如 Slice 41 输入框抖动 Playwright 复现脚本。
 
 ## 使用边界
 

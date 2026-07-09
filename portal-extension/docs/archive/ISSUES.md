@@ -1696,7 +1696,7 @@ None - can start immediately(纯 portal 后端改动,无前端改动,无 RAGFlow
 
 ### 诊断(diagnosing-bugs 纪律,Phase 1-4)
 
-**Phase 1 red-capable 循环**:Playwright 脚本(`/Users/xijuangu/Developer/Work/thqh_projects/rag/.diag/diag_slice41_v2.mjs`)登录分享页 → iframe 内提交长问题 → SSE 流式输出期间以 8ms 间隔采样 textarea `getBoundingClientRect()`。基线期(不发消息)jitter=0 作对照。红时输出:`streaming: yRange=10, jitter=100, dirChanges=35, hRange=10`(textarea 高度 40-50px 振荡)。
+**Phase 1 red-capable 循环**:Playwright 脚本(`project-materials/diagnostics/slice41-input-jitter/diag_slice41_v2.mjs`)登录分享页 → iframe 内提交长问题 → SSE 流式输出期间以 8ms 间隔采样 textarea `getBoundingClientRect()`。基线期(不发消息)jitter=0 作对照。红时输出:`streaming: yRange=10, jitter=100, dirChanges=35, hRange=10`(textarea 高度 40-50px 振荡)。
 
 **Phase 3 假设 + Phase 4 probe 对比**(4 模式):
 
@@ -2095,7 +2095,7 @@ None - can start immediately(纯 CSS 改动,无逻辑改动;诊断 probe 已在 
 
 ## Parent
 
-[PRD-ui-redesign.md](PRD-ui-redesign.md) §3 设计系统。决策见 [CONTEXT.md §6.5](../CONTEXT.md#L149-L161)。
+[PRD-ui-redesign.md](PRD-ui-redesign.md) §3 设计系统。决策见 [CONTEXT.md §6.5](../../CONTEXT.md#L149-L161)。
 
 ## What to build
 
@@ -2119,7 +2119,7 @@ None - can start immediately
 
 ## Parent
 
-[PRD-ui-redesign.md](PRD-ui-redesign.md) §4 LoginPage 行。决策见 [CONTEXT.md §6.5](../CONTEXT.md#L149-L161)。
+[PRD-ui-redesign.md](PRD-ui-redesign.md) §4 LoginPage 行。决策见 [CONTEXT.md §6.5](../../CONTEXT.md#L149-L161)。
 
 ## What to build
 
@@ -2142,7 +2142,7 @@ LoginPage 从单栏表单改为左右分屏(`login-shell` = `login-aside` + `log
 
 ## Parent
 
-[PRD-ui-redesign.md](PRD-ui-redesign.md) §4。决策见 [CONTEXT.md §6.5](../CONTEXT.md#L149-L161)。
+[PRD-ui-redesign.md](PRD-ui-redesign.md) §4。决策见 [CONTEXT.md §6.5](../../CONTEXT.md#L149-L161)。
 
 ## What to build
 
@@ -2166,7 +2166,7 @@ LoginPage 从单栏表单改为左右分屏(`login-shell` = `login-aside` + `log
 
 ## Parent
 
-[PRD-ui-redesign.md](PRD-ui-redesign.md) §4 admin 行。决策见 [CONTEXT.md §6.5](../CONTEXT.md#L149-L161)。
+[PRD-ui-redesign.md](PRD-ui-redesign.md) §4 admin 行。决策见 [CONTEXT.md §6.5](../../CONTEXT.md#L149-L161)。
 
 ## What to build
 
@@ -2191,7 +2191,7 @@ AdminLayout 从横向 6 tab 改为 topbar(Issue 54)+ 左侧栏(`shell` = `sideba
 
 ## Parent
 
-[PRD-ui-redesign.md](PRD-ui-redesign.md) §4 share-pages 行。决策见 [CONTEXT.md §6.5](../CONTEXT.md#L149-L161)。
+[PRD-ui-redesign.md](PRD-ui-redesign.md) §4 share-pages 行。决策见 [CONTEXT.md §6.5](../../CONTEXT.md#L149-L161)。
 
 ## What to build
 
@@ -2215,7 +2215,7 @@ SharePagesPage 从 `share-page-list` 列表改为 `grid-cards` + `share-card` �
 
 ## Parent
 
-[PRD-ui-redesign.md](PRD-ui-redesign.md) §4 share-pages/:id 行。决策见 [CONTEXT.md §6.5](../CONTEXT.md#L149-L161)。
+[PRD-ui-redesign.md](PRD-ui-redesign.md) §4 share-pages/:id 行。决策见 [CONTEXT.md §6.5](../../CONTEXT.md#L149-L161)。
 
 ## What to build
 
@@ -2241,7 +2241,7 @@ SharePageDetailPage 视觉升级到 detail-shell 布局(设计稿 `share-detail.
 
 ## Parent
 
-[PRD-ui-redesign.md](PRD-ui-redesign.md) §4 admin 行。决策见 [CONTEXT.md §6.5](../CONTEXT.md#L149-L161)。
+[PRD-ui-redesign.md](PRD-ui-redesign.md) §4 admin 行。决策见 [CONTEXT.md §6.5](../../CONTEXT.md#L149-L161)。
 
 ## What to build
 
@@ -2267,7 +2267,7 @@ SharePageDetailPage 视觉升级到 detail-shell 布局(设计稿 `share-detail.
 
 ## Parent
 
-[PRD-ui-redesign.md](PRD-ui-redesign.md) §6 验收标准。决策见 [CONTEXT.md §6.5](../CONTEXT.md#L149-L161)。
+[PRD-ui-redesign.md](PRD-ui-redesign.md) §6 验收标准。决策见 [CONTEXT.md §6.5](../../CONTEXT.md#L149-L161)。
 
 ## What to build
 

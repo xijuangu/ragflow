@@ -126,7 +126,7 @@ ssh 172.16.10.180 'curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1/api
 
 - 前端改子路径:`vite.config.ts` base `/portal/`、`main.tsx` Router basename、`client.ts` API_BASE、`LoginPage.tsx` SSO 跳转 —— 本地 build 成功,服务器 dist 已含 `/portal/assets/`。
 - nginx 容器 + RAGFlow :8080 + portal :8000 三层就绪,路由 curl 验证通过(`/`→RAGFlow, `/portal/`→portal)。
-- portal 后端新增 `spa_html_fallback` 中间件([portal/main.py:112-126](portal/main.py)):浏览器导航(Accept: text/html)命中 API 返回 JSON 时改返 index.html,解决刷新 `/portal/share-pages` 返回 JSON 的问题。350 测试通过。
+- portal 后端新增 `spa_html_fallback` 中间件([portal/main.py:112-126](../../portal/main.py)):浏览器导航(Accept: text/html)命中 API 返回 JSON 时改返 index.html,解决刷新 `/portal/share-pages` 返回 JSON 的问题。350 测试通过。
 - 上述改动已 rsync + 重启到服务器,curl 验证 SPA 兜底生效。
 
 ## 7. 下一步(接手即做)
