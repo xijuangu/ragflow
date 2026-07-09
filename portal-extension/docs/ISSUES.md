@@ -2091,6 +2091,203 @@ None - can start immediately(纯 CSS 改动,无逻辑改动;诊断 probe 已在 
 
 ---
 
+## Issue 52 — Slice 52: 设计系统基础层 + 旧 class 兼容(prefactor)
+
+## Parent
+
+[PRD-ui-redesign.md](PRD-ui-redesign.md) §3 设计系统。决策见 [CONTEXT.md §6.5](../CONTEXT.md#L149-L161)。
+
+## What to build
+
+把 `frontend/src/styles.css` 替换为 D1 Graphite 设计系统(以 `portal-ui-redesign/css/styles.css` 为基础):完整 oklch token 体系(bg/surface×3/fg/muted/border/accent+accent-fg+accent-tint/success/warn/danger)+ 排印阶(48/32/24/20/16/13/11)+ 组件 class(topbar/sidebar/btn/card/badge/table/form/pill/filters/page-head/grid-cards/detail-shell)+ 反 AI-slop 基础(发丝边、无阴影、紧字距)。**关键:保留旧 class**(app-layout/app-main/app-header/admin-tabs/admin-tab/page-title/share-page-list/share-page-item/detail-grid/sessions-sidebar/session-list/session-item 等)映射到新 token,让现有 JSX 不破。合并 Slice 31(`flex-shrink:0`)/ Slice 38(`min-height:0` + `.detail-grid flex:1`)/ Slice 51(`.admin-main > section` 滚动容器)已验证的布局修复。这是 prefactor —— 让后续逐屏迁移(53-58)安全,每个 slice 只改 JSX 不再动全局 CSS。
+
+## Acceptance criteria
+
+- [ ] `frontend/src/styles.css` 含完整 D1 token 体系(对照 `portal-ui-redesign/css/styles.css` `:root`)
+- [ ] 旧 class 保留并映射到新 token,所有现有页面视觉不破(布局不崩、文字可读、功能正常)
+- [ ] Slice 31/38/51 修复保留(会话列表不挤压、无页面级滚动条、admin section 可滚动)
+- [ ] tsc 0 errors,Vitest 全绿(无回归)
+- [ ] 桌面 1024+ 无布局 bug,小屏 <768 不崩(内容可滚)
+
+## Blocked by
+
+None - can start immediately
+
+---
+
+## Issue 53 — Slice 53: LoginPage 左右分屏(tracer bullet)
+
+## Parent
+
+[PRD-ui-redesign.md](PRD-ui-redesign.md) §4 LoginPage 行。决策见 [CONTEXT.md §6.5](../CONTEXT.md#L149-L161)。
+
+## What to build
+
+LoginPage 从单栏表单改为左右分屏(`login-shell` = `login-aside` + `login-main`),套新 login CSS。左侧 aside 深色背景展示产品文案(保留设计稿 `login.html` 文案:pt_ 令牌/SSE 归属/双删保障,已贴合项目),右侧 main 居中登录卡片(`login-card`:kicker + h1 + form + SSO 占位 + 注册引导)。登录逻辑不动(POST /login + AuthContext)。这是 tracer bullet —— 验证新设计系统在 React JSX 中的迁移模式,为后续 slice 建立信心。
+
+## Acceptance criteria
+
+- [ ] LoginPage 视觉对齐 `portal-ui-redesign/login.html`(左右分屏,aside 文案 + main 表单)
+- [ ] 登录功能不回归:正确账号登录成功跳转,错误账号显示错误
+- [ ] SSO 按钮保留(若 OIDC 未配置则不显示,与现有一致)
+- [ ] tsc 0 errors,Vitest 全绿(无回归)
+
+## Blocked by
+
+- Issue 52(设计系统基础层)
+
+---
+
+## Issue 54 — Slice 54: AppHeader → topbar 全局
+
+## Parent
+
+[PRD-ui-redesign.md](PRD-ui-redesign.md) §4。决策见 [CONTEXT.md §6.5](../CONTEXT.md#L149-L161)。
+
+## What to build
+
+新 `topbar` 组件(brand: dot + "RAGFlow 权限门户" + version small;topbar-right: avatar chip + 用户名 + 登出按钮)替换现有 `AppHeader`。砍掉设计稿的全局搜索框和通知铃铛(纯视觉换皮,无后端)。topbar 是粘性毛玻璃(`position:sticky` + `backdrop-filter: blur`),所有非 login 页共享(SharePagesPage / SharePageDetailPage / AdminLayout)。AdminLayout 用 topbar + sidebar 组合(Issue 55 处理 sidebar),非 admin 页用 topbar + main。
+
+## Acceptance criteria
+
+- [ ] topbar 视觉对齐 `portal-ui-redesign/css/styles.css` `.topbar`(粘性毛玻璃、发丝边、brand 左对齐、avatar 右对齐)
+- [ ] 登出功能不回归(POST /logout + 跳转 /login)
+- [ ] 管理员可见 admin 入口(保留现有 isAdmin 逻辑)
+- [ ] 无全局搜索框、无通知铃铛(已砍)
+- [ ] tsc 0 errors,Vitest 全绿(无回归)
+
+## Blocked by
+
+- Issue 52(设计系统基础层)
+
+---
+
+## Issue 55 — Slice 55: AdminLayout sidebar 重构
+
+## Parent
+
+[PRD-ui-redesign.md](PRD-ui-redesign.md) §4 admin 行。决策见 [CONTEXT.md §6.5](../CONTEXT.md#L149-L161)。
+
+## What to build
+
+AdminLayout 从横向 6 tab 改为 topbar(Issue 54)+ 左侧栏(`shell` = `sidebar` + `main`)。sidebar 含两组导航:工作区("分享页"入口,Link 到 /share-pages)+ 管理后台(6 个 nav-item:用户/用户组/分享页/授权/会话搜索/审计日志,NavLink)。砍掉设计稿的"系统-设置"项(无对应页)。逻辑不动:`<Outlet/>` 保留,6 个子路由渲染不变。nav-item active 态用左侧 accent 竖条(设计稿 `::before`)。此时 6 个 admin 页内容 JSX 未改(仍用旧 class),视觉半新半旧可接受(Issue 58 统一迁移)。
+
+## Acceptance criteria
+
+- [ ] AdminLayout 为 topbar + sidebar 布局,横向 tab 移除
+- [ ] sidebar 含"分享页"入口 + 6 admin nav-item,无"设置"项
+- [ ] nav-item active 态视觉对齐设计稿(accent 竖条 + surface-2 背景)
+- [ ] 6 个 admin 子路由通过 `<Outlet/>` 正常渲染,功能不回归
+- [ ] sidebar 是 admin 专属(share-list / share-detail / login 不套 sidebar)
+- [ ] tsc 0 errors,Vitest 全绿(无回归)
+
+## Blocked by
+
+- Issue 54(topbar 全局)
+
+---
+
+## Issue 56 — Slice 56: SharePagesPage 卡片网格
+
+## Parent
+
+[PRD-ui-redesign.md](PRD-ui-redesign.md) §4 share-pages 行。决策见 [CONTEXT.md §6.5](../CONTEXT.md#L149-L161)。
+
+## What to build
+
+SharePagesPage 从 `share-page-list` 列表改为 `grid-cards` + `share-card` 卡片网格(设计稿 `share-list.html`)。每张 share-card 含:sc-icon(文档图标)+ 标题 + 描述 + sc-meta(创建时间/会话数等现有字段)+ sc-foot(进入按钮)。page-title 升级为 page-head(kicker "工作区 / 分享页" + h1 + sub 描述)。空状态用新 empty-state。逻辑不动:GET /share-pages + Link 到详情。
+
+## Acceptance criteria
+
+- [ ] 分享页列表为卡片网格(grid-cards),视觉对齐 `portal-ui-redesign/share-list.html`
+- [ ] page-head 视觉对齐(kicker + h1 + sub)
+- [ ] 空状态、加载态、错误态用新设计系统
+- [ ] 点击卡片进入详情页,功能不回归
+- [ ] tsc 0 errors,Vitest 全绿(无回归)
+
+## Blocked by
+
+- Issue 54(topbar 全局)
+
+---
+
+## Issue 57 — Slice 57: SharePageDetailPage detail-shell 视觉升级
+
+## Parent
+
+[PRD-ui-redesign.md](PRD-ui-redesign.md) §4 share-pages/:id 行。决策见 [CONTEXT.md §6.5](../CONTEXT.md#L149-L161)。
+
+## What to build
+
+SharePageDetailPage 视觉升级到 detail-shell 布局(设计稿 `share-detail.html`):detail-bar(标题 + 元信息 + 返回)+ detail-shell(conv-list 左侧会话列表 + chat-main 右侧 iframe 容器)。sessions-sidebar → conv-list(会话项 ci-ttl + ci-meta 视觉),iframe-container → chat-main。**逻辑全部不动**:Slice 10 会话列表 / Slice 22 SSE 绑定 / Slice 23 轮询 / Slice 33 流式禁切换 / Slice 28 新建会话 / widget snippet 全部保留。widget 类型仍展示 snippet panel(套新 form/code 视觉)。
+
+## Acceptance criteria
+
+- [ ] detail-shell 布局视觉对齐 `portal-ui-redesign/share-detail.html`
+- [ ] 会话列表(新建/切换/重命名/删除)功能不回归
+- [ ] iframe Chat 加载 + SSE 对话不回归
+- [ ] widget 类型 snippet 展示 + 复制不回归
+- [ ] Slice 33 流式期间禁切换提示不回归
+- [ ] Slice 31 会话列表滚动 + Slice 38 无页面级滚动 不回归
+- [ ] tsc 0 errors,Vitest 全绿(无回归)
+
+## Blocked by
+
+- Issue 54(topbar 全局)
+
+---
+
+## Issue 58 — Slice 58: 6 个 admin 页视觉迁移
+
+## Parent
+
+[PRD-ui-redesign.md](PRD-ui-redesign.md) §4 admin 行。决策见 [CONTEXT.md §6.5](../CONTEXT.md#L149-L161)。
+
+## What to build
+
+6 个 admin 页(Users/Groups/SharePages/Grants/Sessions/AuditLogs)逐一视觉迁移:page-head(kicker "管理后台 / X" + h1 + sub)+ filter bar(搜索 field + 筛选 pill,砍设计稿的 stats 统计卡)+ card-table(table 套新 thead/tbody/badge/row-act 视觉)。交互全部不动:内联创建表单保留(不引入 drawer)、window.prompt/confirm 保留、icon-btn 不改(保留文字按钮)。每页的 CRUD 逻辑(POST/PATCH/DELETE + 乐观更新)不动。
+
+## Acceptance criteria
+
+- [ ] 6 页均有 page-head + filter + card-table,视觉对齐 `portal-ui-redesign/admin-*.html`
+- [ ] 无 stats 统计卡(已砍)
+- [ ] 内联表单/prompt/confirm 交互保留,无 drawer
+- [ ] 6 页 CRUD 功能不回归(创建/编辑/启用禁用/删除)
+- [ ] 表格文字操作按钮保留(不改 icon-btn)
+- [ ] Issue 51 admin section 滚动不回归
+- [ ] tsc 0 errors,Vitest 全绿(无回归)
+
+## Blocked by
+
+- Issue 55(admin sidebar 布局)
+
+---
+
+## Issue 59 — Slice 59: 清理旧 class + 全局验收
+
+## Parent
+
+[PRD-ui-redesign.md](PRD-ui-redesign.md) §6 验收标准。决策见 [CONTEXT.md §6.5](../CONTEXT.md#L149-L161)。
+
+## What to build
+
+确认所有页面 JSX 已迁移到新 class 后,删除 `styles.css` 中 Issue 52 保留的旧 class(app-layout/app-main/app-header/admin-tabs/page-title/share-page-list/share-page-item/detail-grid/sessions-sidebar/session-list/session-item 等无 JSX 引用的旧 class)。全局视觉验收:9 屏对齐 D1 Graphite 设计稿(允许砍掉元素的差异)。响应式验收:桌面 1024+ 无布局 bug,小屏 <768 不崩。回归测试:tsc + Vitest + Playwright E2E 全绿。Deferred 项记录到后续 issue。
+
+## Acceptance criteria
+
+- [ ] styles.css 无未引用的旧 class(grep 确认 JSX 无引用)
+- [ ] 9 屏视觉对齐 D1 Graphite 设计稿
+- [ ] tsc 0 errors,Vitest 全绿
+- [ ] Playwright E2E 全绿(CONTEXT.md §10.1 套件 3)
+- [ ] 桌面 1024+ 无布局 bug,小屏 <768 不崩
+- [ ] Deferred 项(移动端/drawer/stats/搜索/通知/批量导入)记录为后续 issue
+
+## Blocked by
+
+- Issue 53, 54, 55, 56, 57, 58(所有迁移 slice 完成)
+
+---
+
 ## 后续待办(Issue 16 AC2 遗留)
 
 > Issue 16 AC2「悬浮组件在任意页面右下角加载,点击展开对话窗,能正常对话」— Slice 16 实现了 `/widget/<id>` 骨架 HTML + 可嵌入 snippet + CSP frame-ancestors 放行,但 **悬浮组件实际 UI 渲染(右下角悬浮按钮 + 点击展开对话窗 + iframe 加载 + SSE 对话)尚未实现**。`/widget/<id>` 当前仅返回含 `<div id="widget-root">` 的占位 HTML,需前端构建产物挂载 React 组件。

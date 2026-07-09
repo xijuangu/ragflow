@@ -146,6 +146,20 @@ RAGFlow 前端 `getAuthorization()` 优先读 URL `?auth=` 参数,回退读 `loc
 
 portal 网关 `_ragflow_bot_segment` 用于 completions(agent → "agentbots"),sessions 端点需用 `_ragflow_sessions_segment`(agent → "agents")。Slice 30 修复 agent sessions URL。
 
+### 6.5 UI 重设计边界(2026-07-09 grilling 决策)
+
+基于 `portal-ui-redesign/` 设计稿(Open Design 产出,D1 Graphite 方向,9 屏 HTML 原型 + 完整设计系统 token)。本轮为 **纯视觉换皮**,以下决策已锁定:
+
+1. **范围:纯视觉换皮**。现有功能边界不动,不排后端工作。设计稿里的新元素(顶部全局搜索、stats 统计卡、通知铃铛、批量导入)本轮砍掉或装饰占位,不做真功能。补功能后续独立 issue。
+2. **Admin 布局:横向 tab → topbar + 左侧栏**。逻辑不动(保留 `<Outlet/>`),只改 JSX 骨架 + CSS。sidebar 是 admin 专属(share-list / share-detail / login 不套)。理由:6+ 项左侧栏更适合管理后台(DESIGN.md 结论)。
+3. **响应式:桌面优先(1024+),小屏不崩**(<768 内容可滚、不裁切)。不实现移动端卡片态 / sidebar 抽屉 / 菜单按钮。移动端全响应式适配后续独立 issue。
+4. **迁移方式:直接迁 CSS class**,不抽 React UI 组件。以设计稿 `css/styles.css` 为基础替换现有 `styles.css`,JSX 改 className 对齐。**必须保留并合并**现有已验证的布局修复:Slice 31 `flex-shrink:0`、Slice 38 `min-height:0` + `.detail-grid flex:1`、Slice 51 `.admin-main > section` 滚动容器。
+5. **交互模式:保留现有交互**(内联表单 / window.prompt / window.confirm),不引入设计稿的 drawer 抽屉。drawer 后续可独立 issue。
+6. **stats 统计卡:砍掉**。Admin 页直接 filter + table,不显示统计卡(后端无聚合接口,占位假数据会误导)。
+7. **设计方向:D1 Graphite**(`css/styles.css` 已实现)。D2 Midnight / D3 Coral 为对比稿,不采用。
+
+细节决策:图标用内联 SVG(设计稿已是,不引 icon 库);topbar 砍全局搜索/通知,保留 brand + avatar + 登出;sidebar 保留"分享页"入口(回用户侧)+ 6 项 admin,砍"系统-设置"(无页);表格操作保留文字按钮,不改 icon-btn。
+
 ## 7. 已知限制(待后续 issue 修复)
 
 - **agent 类型 sessions 端点 404**:portal 网关对 agent sessions 用 "agentbots",但 RAGFlow 官方只有 `/agents/<id>/sessions/<sid>`。Slice 30 修复(拆分 segment 函数),但 agent 类型暂时搁置不验收
