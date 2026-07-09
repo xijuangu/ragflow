@@ -2619,14 +2619,18 @@ UI polish 续作(Issue 66-70 后的 admin 表单收尾)。源:用户人工视觉
 
 ## Acceptance criteria
 
-- [ ] 「RAGFlow 资源 ID」输入框有 `title` 属性,值为完整提示文字
-- [ ] 鼠标悬浮输入框时显示完整提示(tooltip)
-- [ ] placeholder 文案不变,表单提交逻辑不回归
-- [ ] tsc 0 errors,Vitest 全绿
+- [x] 「RAGFlow 资源 ID」输入框有 `title` 属性,值为完整提示文字
+- [x] 鼠标悬浮输入框时显示完整提示(tooltip)
+- [x] placeholder 文案不变,表单提交逻辑不回归
+- [x] tsc 0 errors,Vitest 全绿(81 passed)
 
 ## Blocked by
 
 无 — 可立即开始。
+
+## 完成
+
+2026-07-09 commit `69d4f74`。`SharePagesAdminPage.tsx` 的 `new-sp-dialog` input 加 `title` 属性。Issue 关闭。
 
 ---
 
@@ -2652,15 +2656,19 @@ admin 6 页表格「操作」列的按钮视觉统一与对齐,两处问题:
 
 ## Acceptance criteria
 
-- [ ] 所有 admin 页操作列的 `btn-ghost btn-sm` 改为 `btn-outline btn-sm`(有可见发丝边)
-- [ ] 操作列按钮(描边次级 + danger)视觉统一,左对齐整齐
-- [ ] 会话搜索操作列分隔线与同行其他列 `border-bottom` 连贯对齐,无断开
-- [ ] CRUD 逻辑(handleToggleEnabled/handleDelete/handleViewElevated/handleRevoke)不回归
-- [ ] tsc 0 errors,Vitest 全绿
+- [x] 所有 admin 页操作列的 `btn-ghost btn-sm` 改为 `btn-outline btn-sm`(有可见发丝边)
+- [x] 操作列按钮(描边次级 + danger)视觉统一,左对齐整齐
+- [x] 会话搜索操作列分隔线与同行其他列 `border-bottom` 连贯对齐,无断开(核查 `.admin-actions` 无 padding,边框本就连贯)
+- [x] CRUD 逻辑(handleToggleEnabled/handleDelete/handleViewElevated/handleRevoke)不回归
+- [x] tsc 0 errors,Vitest 全绿(81 passed)
 
 ## Blocked by
 
 无 — 可立即开始。
+
+## 完成
+
+2026-07-09 commit `ad4c891`。UsersAdminPage/SessionsAdminPage/SharePagesAdminPage 操作列 `btn-ghost` → `btn-outline`(GroupsAdminPage 的 btn-ghost 为表单提交按钮非操作列,保留;GrantsAdminPage 操作列仅 btn-danger,无改)。`.admin-actions` 无 padding,分隔线本就连贯,无需 CSS 调整。Issue 关闭。
 
 ---
 
@@ -2682,14 +2690,18 @@ admin 表单对齐收尾,两处 Issue 69 遗漏:
 
 ## Acceptance criteria
 
-- [ ] 授权管理「选择分享页」块 label 与 select 不贴边,有合理 padding(与创建授权表单一致)
-- [ ] 会话搜索/审计日志筛选表单的「搜索/筛选」按钮与 input/select 高度一致,顶底对齐
-- [ ] 表单提交/筛选逻辑不回归
-- [ ] tsc 0 errors,Vitest 全绿
+- [x] 授权管理「选择分享页」块 label 与 select 不贴边,有合理 padding(与创建授权表单一致)
+- [x] 会话搜索/审计日志筛选表单的「搜索/筛选」按钮与 input/select 高度一致,顶底对齐
+- [x] 表单提交/筛选逻辑不回归
+- [x] tsc 0 errors,Vitest 全绿(81 passed)
 
 ## Blocked by
 
 无 — 可立即开始。
+
+## 完成
+
+2026-07-09 commit `b0bf990`。GrantsAdminPage「选择分享页」块加 `admin-form` class(复用 padding:16px);styles.css 新增 `.filters .btn { height: 36px }`(scoped 防御,锁定筛选按钮与 input 同高)。Issue 关闭。
 
 ---
 
