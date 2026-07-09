@@ -2603,6 +2603,96 @@ UI polish 续作。关联 [PRD-ui-redesign.md](PRD-ui-redesign.md)。源:交接�
 
 ---
 
+## Issue 71 — RAGFlow 资源 ID 输入框 placeholder 悬浮显示完整文字
+
+## Parent
+
+UI polish 续作(Issue 66-70 后的 admin 表单收尾)。源:用户人工视觉验收反馈(2026-07-09)。
+
+## What to build
+
+分享页管理页(`/admin/share-pages`)创建表单中「RAGFlow 资源 ID」输入框的 placeholder `"chat 类型填 dialog_id;agent 类型填 agent_id"` 较长,窄屏/窄输入框下被截断显示不全。给该 `<input>` 加 `title` 属性(值为完整提示文字),鼠标悬浮时浏览器原生 tooltip 显示完整文字。
+
+纯属性新增,不改 placeholder 文案本身(placeholder 仍作输入框内提示),不改表单逻辑。
+
+**要改的文件:** `frontend/src/pages/admin/SharePagesAdminPage.tsx`(该 input 加 `title` 属性)。
+
+## Acceptance criteria
+
+- [ ] 「RAGFlow 资源 ID」输入框有 `title` 属性,值为完整提示文字
+- [ ] 鼠标悬浮输入框时显示完整提示(tooltip)
+- [ ] placeholder 文案不变,表单提交逻辑不回归
+- [ ] tsc 0 errors,Vitest 全绿
+
+## Blocked by
+
+无 — 可立即开始。
+
+---
+
+## Issue 72 — admin 表格操作列按钮加边框 + 对齐(含会话搜索查看正文 + 分隔线对齐)
+
+## Parent
+
+UI polish 续作。源:用户人工视觉验收反馈(2026-07-09)。承接 Issue 66(引入 `.btn-outline`)+ Issue 69(表单视觉统一)。
+
+## What to build
+
+admin 6 页表格「操作」列的按钮视觉统一与对齐,两处问题:
+
+1. **操作列按钮无边界显得歪** — 多个 admin 页操作列用 `btn-ghost btn-sm`(无边框灰底),与同列的 `btn-danger btn-sm`(有边框)并列时视觉不统一,且无边界按钮看起来「歪」未对齐。将所有操作列的 `btn-ghost btn-sm` 改为 `btn-outline btn-sm`(发丝边描边按钮,Issue 66 已新增该变体),使操作列所有按钮都有可见边框,视觉左对齐整齐。涉及:
+   - `UsersAdminPage.tsx`:启用/禁用按钮 `btn-ghost` → `btn-outline`(删除按钮已是 `btn-danger` 保留)
+   - `SharePagesAdminPage.tsx`:启用/禁用按钮 `btn-ghost` → `btn-outline`
+   - `SessionsAdminPage.tsx`:「查看正文」按钮 `btn-ghost` → `btn-outline`
+   - 检查 `GroupsAdminPage.tsx` / `GrantsAdminPage.tsx` 是否有 `btn-ghost` 操作按钮,同步改
+
+2. **会话搜索操作列分隔线与表格分隔线断开** — `SessionsAdminPage` 操作列 `.admin-actions` 的 flex 布局可能导致该单元格内容与同行其他单元格的 `border-bottom` 分隔线视觉断开(如 `.admin-actions` 有额外 padding 或 align 导致按钮区高度不一)。检查 `.admin-actions` 与 `tbody td` 的 `border-bottom` 对齐,确保每行分隔线连贯(操作列 td 的 `vertical-align` 与 `padding` 与其他列一致,`.admin-actions` 不引入额外垂直 padding 打断分隔线)。
+
+纯视觉,不改 CRUD 逻辑。改各 admin 页 JSX 按钮 className + `styles.css`(`.admin-actions` 对齐,若需)。
+
+## Acceptance criteria
+
+- [ ] 所有 admin 页操作列的 `btn-ghost btn-sm` 改为 `btn-outline btn-sm`(有可见发丝边)
+- [ ] 操作列按钮(描边次级 + danger)视觉统一,左对齐整齐
+- [ ] 会话搜索操作列分隔线与同行其他列 `border-bottom` 连贯对齐,无断开
+- [ ] CRUD 逻辑(handleToggleEnabled/handleDelete/handleViewElevated/handleRevoke)不回归
+- [ ] tsc 0 errors,Vitest 全绿
+
+## Blocked by
+
+无 — 可立即开始。
+
+---
+
+## Issue 73 — admin 表单对齐:授权管理选择分享页 padding + 筛选按钮与输入框对齐
+
+## Parent
+
+UI polish 续作。承接 Issue 69(全站表单视觉统一)的遗漏项。源:用户人工视觉验收反馈(2026-07-09)。
+
+## What to build
+
+admin 表单对齐收尾,两处 Issue 69 遗漏:
+
+1. **授权管理「选择分享页」表单贴边** — `GrantsAdminPage.tsx` 顶部「选择分享页」块用 `<div className="card admin-form-row">`,但 `.card` 无 padding(`overflow:hidden` + 无内边距),`.admin-form-row` 也无 padding,导致 label 与 select 贴卡片边缘。Issue 69 给 `.admin-form` 加了 `padding:16px`,但此块用 `.card admin-form-row` 非 `.admin-form`,漏了 padding。修复:给该块加 `.admin-form` class(复用 padding),或给 `.card.admin-form-row` 组合补 padding(倾向加 `.admin-form` class,与创建授权表单一致)。
+
+2. **会话搜索/审计日志筛选按钮与输入框未对齐** — `.filters { align-items: flex-end }`(Issue 69 改),按钮(`.btn btn-primary`,无 label)与 form-field(label 上 + input 下)底对齐。但基础 `.btn` 无显式 height(高度由 padding+font 决定),而 `.form-field input/select` 是 `height:36px`(Issue 69 设),两者高度不一致导致 flex-end 底对齐时顶部不齐,视觉「歪」。修复:让 `.filters` 内的按钮高度与 input 一致(`.filters .btn { height: 36px }`),或统一 `.btn` 基础高度为 36px(影响范围大,倾向前者,只作用 filters)。
+
+纯视觉,不改表单提交/筛选逻辑。改 `GrantsAdminPage.tsx`(加 class)+ `styles.css`(`.filters .btn` 高度对齐)。
+
+## Acceptance criteria
+
+- [ ] 授权管理「选择分享页」块 label 与 select 不贴边,有合理 padding(与创建授权表单一致)
+- [ ] 会话搜索/审计日志筛选表单的「搜索/筛选」按钮与 input/select 高度一致,顶底对齐
+- [ ] 表单提交/筛选逻辑不回归
+- [ ] tsc 0 errors,Vitest 全绿
+
+## Blocked by
+
+无 — 可立即开始。
+
+---
+
 ## 后续待办(Issue 16 AC2 遗留)
 
 > Issue 16 AC2「悬浮组件在任意页面右下角加载,点击展开对话窗,能正常对话」— Slice 16 实现了 `/widget/<id>` 骨架 HTML + 可嵌入 snippet + CSP frame-ancestors 放行,但 **悬浮组件实际 UI 渲染(右下角悬浮按钮 + 点击展开对话窗 + iframe 加载 + SSE 对话)尚未实现**。`/widget/<id>` 当前仅返回含 `<div id="widget-root">` 的占位 HTML,需前端构建产物挂载 React 组件。
