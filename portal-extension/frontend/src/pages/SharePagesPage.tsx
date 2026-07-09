@@ -2,8 +2,10 @@
  * 分享页列表页 — 调 GET /share-pages 列出当前用户被授权的分享页,点击进入详情。
  *
  * Slice 56:从 `share-page-list` 列表迁移到 `grid-cards` + `share-card` 卡片网格
- *   (设计稿 `portal-ui-redesign/share-list.html`)。page-title 升级为 page-head
- *   (kicker + h1 + sub)。逻辑不动:GET /share-pages + Link 到详情。
+ *   (设计稿 `portal-ui-redesign/share-list.html`)。逻辑不动:GET /share-pages + Link 到详情。
+ *
+ * Issue 67:卡片精简 — 删文件夹图标/状态 badge/「点击打开」提示文案,「打开」改实心按钮,
+ *   页头仅留标题(去 kicker 面包屑与 sub 描述)。
  *
  * 对应 Slice 9 验收点 2:列表页显示用户被授权的分享页(至少 sp_default)。
  */
@@ -46,9 +48,7 @@ export default function SharePagesPage() {
       <main className="main">
         <div className="page-head">
           <div>
-            <div className="kicker">工作区 / 分享页</div>
             <h1>我的分享页</h1>
-            <div className="sub">以下是管理员分享给你的 RAGFlow 知识库,点击「打开」即可开始对话。</div>
           </div>
         </div>
 
@@ -64,16 +64,6 @@ export default function SharePagesPage() {
           <div className="grid-cards">
             {pages.map((p) => (
               <div key={p.id} className="share-card">
-                <div className="sc-head">
-                  <div className="sc-icon">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
-                      <path d="M3 7v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-7l-2-2H5a2 2 0 0 0-2 2z" />
-                    </svg>
-                  </div>
-                  <span className={`badge ${p.enabled ? 'b-active' : 'b-archived'}`}>
-                    {p.enabled ? '活跃' : '已停用'}
-                  </span>
-                </div>
                 <div>
                   <h3>{p.name}</h3>
                   <div className="sc-desc">
@@ -95,10 +85,7 @@ export default function SharePagesPage() {
                   </div>
                 </div>
                 <div className="sc-foot">
-                  <span className="sc-hint">
-                    点击「打开」进入对话
-                  </span>
-                  <Link className="btn-link" to={`/share-pages/${p.id}`}>
+                  <Link className="btn btn-primary btn-sm" to={`/share-pages/${p.id}`}>
                     打开
                   </Link>
                 </div>
