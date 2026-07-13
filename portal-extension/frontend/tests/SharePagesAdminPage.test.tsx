@@ -66,9 +66,10 @@ describe('SharePagesAdminPage', () => {
 
     renderPage();
 
-    expect(await screen.findByText('默认分享页')).toBeInTheDocument();
-    expect(screen.getByText('dialog-123')).toBeInTheDocument();
-    expect(screen.getByText('已禁用分享页')).toBeInTheDocument();
+    const defaultRow = await screen.findByTestId('share-page-row-sp_default');
+    expect(within(defaultRow).getByText('默认分享页')).toBeInTheDocument();
+    expect(within(defaultRow).getByText('dialog-123')).toBeInTheDocument();
+    expect(screen.getByTestId('share-page-row-sp_disabled')).toBeInTheDocument();
   });
 
   it('创建分享页 — 填名称与 dialog_id 提交后调 POST /admin/share-pages', async () => {
@@ -94,14 +95,15 @@ describe('SharePagesAdminPage', () => {
 
     renderPage();
 
-    await screen.findByText('默认分享页');
+    await screen.findByTestId('share-page-row-sp_default');
 
     await user.type(screen.getByLabelText('分享页名称'), '新分享页');
     await user.type(screen.getByLabelText('RAGFlow 资源 ID'), 'dialog-new');
     await user.click(screen.getByRole('button', { name: '创建分享页' }));
 
-    expect(await screen.findByText('新分享页')).toBeInTheDocument();
-    expect(screen.getByText('dialog-new')).toBeInTheDocument();
+    const createdRow = await screen.findByTestId('share-page-row-sp_new');
+    expect(within(createdRow).getByText('新分享页')).toBeInTheDocument();
+    expect(within(createdRow).getByText('dialog-new')).toBeInTheDocument();
   });
 
   it('禁用分享页 — 点击"禁用"调 PATCH enabled=false', async () => {

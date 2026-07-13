@@ -19,12 +19,14 @@
  * Slice 16:widget 类型展示 snippet(可复制 iframe HTML)而非 iframe;
  *   agent 类型 iframe URL 走 /agent/share 路径(由后端构造,前端透明)。
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
+import { Link, useLocation, useParams } from 'react-router-dom';
 import { ApiError, api, type EmbedUrlResponse, type SessionSummary } from '../api/client';
 import { formatTime } from '../utils/formatTime';
 import { useAuth } from '../auth/AuthContext';
 import AppHeader from '../components/AppHeader';
+import ConfirmDialog from '../components/ConfirmDialog';
+import InputDialog from '../components/InputDialog';
 
 /** 在 iframe URL 后追加 session_id 参数(RAGFlow 前端原生读 URL ?session_id= 恢复历史)。 */
 function appendSessionId(url: string, sessionId: string): string {
@@ -37,7 +39,10 @@ const SESSION_POLL_INTERVAL_MS = 2000;
 
 export default function SharePageDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const location = useLocation();
   const { user, logout } = useAuth();
+  const routeSharePageName = (location.state as { sharePageName?: string } | null)?.sharePageName;
+  const [sharePageName, setSharePageName] = useState<string | null>(routeSharePageName ?? null);
 
   // iframe / widget 状态
   const [iframeUrl, setIframeUrl] = useState<string | null>(null);
@@ -58,6 +63,9 @@ export default function SharePageDetailPage() {
   const [isStreaming, setIsStreaming] = useState(false);
   // 流式期间点击「新建/切换会话」时弹出的提示(不禁用按钮,点击给反馈)
   const [streamingNotice, setStreamingNotice] = useState(false);
+  const [renameTarget, setRenameTarget] = useState<SessionSummary | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<SessionSummary | null>(null);
+  const [sessionsExpanded, setSessionsExpanded] = useState(false);
 
   // 初始加载:embed-url(判断 embed_type + 取 iframe URL)+ 会话列表
   // Slice 22:回退 Slice 21 — fullscreen 类型改回只调 embed-url(不 precreate)。
@@ -105,10 +113,24 @@ export default function SharePageDetailPage() {
       }
     })();
 
+    // 列表内跳转会通过 route state 立即带入名称；直接打开详情 URL 时再从可访问列表补齐。
+    if (!routeSharePageName) {
+      (async () => {
+        try {
+          const res = await api.listSharePages();
+          if (cancelled) return;
+          const current = res.share_pages.find((page) => page.id === id);
+          if (current) setSharePageName(current.name);
+        } catch {
+          // 名称是辅助上下文，失败不阻塞 iframe 与会话列表。
+        }
+      })();
+    }
+
     return () => {
       cancelled = true;
     };
-  }, [id]);
+  }, [id, routeSharePageName]);
 
   // Slice 23:会话列表定时轮询(每 SESSION_POLL_INTERVAL_MS)— 检测 iframe 内发消息后
   // 网关 bind 的新 session。根因:原列表只在挂载时调一次 listSessions,iframe 发消息后
@@ -233,42 +255,53 @@ export default function SharePageDetailPage() {
     }
   }, [id, sessionBusy, isWidget, isStreaming]);
 
-  /** 重命名会话:prompt 输入新标题 → PATCH → 乐观更新本地列表标题。 */
-  const handleRename = useCallback(
-    async (sessionId: string, currentTitle: string) => {
-      if (!id) return;
-      const title = window.prompt('重命名会话', currentTitle);
-      if (title === null) return; // 用户取消
+  /** 重命名会话:统一输入弹窗 → PATCH → 更新本地列表标题。 */
+  const confirmRename = useCallback(
+    async (title: string) => {
+      if (!id || !renameTarget) return;
       const trimmed = title.trim();
-      if (!trimmed || trimmed === currentTitle) return;
+      if (!trimmed || trimmed === renameTarget.title) {
+        setRenameTarget(null);
+        return;
+      }
+      setSessionBusy(true);
       try {
-        await api.renameSession(id, sessionId, trimmed);
+        await api.renameSession(id, renameTarget.session_id, trimmed);
         setSessions((prev) =>
-          prev ? prev.map((s) => (s.session_id === sessionId ? { ...s, title: trimmed } : s)) : prev,
+          prev
+            ? prev.map((s) => (s.session_id === renameTarget.session_id ? { ...s, title: trimmed } : s))
+            : prev,
         );
+        setRenameTarget(null);
       } catch (e) {
         setSessionsError(e instanceof ApiError ? e.message : '重命名失败');
+      } finally {
+        setSessionBusy(false);
       }
     },
-    [id],
+    [id, renameTarget],
   );
 
-  /** 删除会话:confirm → DELETE → 乐观移除本地列表项。 */
-  const handleDelete = useCallback(
-    async (sessionId: string) => {
-      if (!id) return;
-      if (!window.confirm('确定删除该会话?删除后不可恢复。')) return;
+  /** 删除会话:统一确认弹窗 → DELETE → 移除本地列表项。 */
+  const confirmDelete = useCallback(
+    async () => {
+      if (!id || !deleteTarget) return;
+      const sessionId = deleteTarget.session_id;
+      setSessionBusy(true);
       try {
         await api.deleteSession(id, sessionId);
         setSessions((prev) => (prev ? prev.filter((s) => s.session_id !== sessionId) : prev));
         if (activeSessionId === sessionId) {
           setActiveSessionId(null);
         }
+        setDeleteTarget(null);
       } catch (e) {
         setSessionsError(e instanceof ApiError ? e.message : '删除失败');
+      } finally {
+        setSessionBusy(false);
       }
     },
-    [id, activeSessionId],
+    [id, activeSessionId, deleteTarget],
   );
 
   /** Slice 16:复制 snippet 到剪贴板。 */
@@ -284,6 +317,13 @@ export default function SharePageDetailPage() {
     }
   }, [snippet]);
 
+  const activeSession = sessions?.find((session) => session.session_id === activeSessionId);
+  const orderedSessions = sessions
+    ? activeSession
+      ? [activeSession, ...sessions.filter((session) => session.session_id !== activeSessionId)]
+      : sessions
+    : [];
+
   return (
     <>
       <AppHeader username={user?.username} onLogout={logout} isAdmin={user?.is_admin ?? false} />
@@ -296,8 +336,10 @@ export default function SharePageDetailPage() {
             返回列表
           </Link>
           <div>
-            <div className="db-title" role="heading" aria-level={1}>{isWidget ? '悬浮组件嵌入' : '分享页对话'}</div>
-            <div className="db-meta">会话归属当前登录用户 · 切换 / 重命名 / 删除均同步门户与 RAGFlow</div>
+            <div className="db-title" role="heading" aria-level={1}>
+              {sharePageName ?? (isWidget ? '悬浮组件嵌入' : '知识库对话')}
+            </div>
+            <div className="db-meta">已连接 · 会话归属当前账号</div>
           </div>
           <div className="db-spacer" />
         </div>
@@ -315,77 +357,96 @@ export default function SharePageDetailPage() {
             detail-page 为 flex column(固定高度),detail-shell flex:1 + min-height:0,
             两栏各自 overflow-y:auto,保留 Slice 38 无页面级滚动。 */}
         <div className="detail-shell">
-          <aside className="conv-list" aria-label="我的会话">
-            <div className="kicker cl-label">历史会话</div>
-            <div className="new-session-action">
+          <aside className={`conv-list${sessionsExpanded ? ' expanded' : ''}`} aria-label="我的会话">
+            <div className="conv-list-head">
+              <div className="kicker cl-label">历史会话</div>
               <button
                 type="button"
-                className="btn btn-primary btn-sm btn-block"
-                onClick={handleNewSession}
-                disabled={sessionBusy}
+                className="conv-list-toggle btn btn-outline btn-sm"
+                aria-expanded={sessionsExpanded}
+                aria-controls="conversation-history"
+                onClick={() => setSessionsExpanded((expanded) => !expanded)}
               >
-                新建会话
+                {sessionsExpanded ? '收起' : '展开'}
               </button>
             </div>
-
-            {sessionsError && <div className="alert-error alert-sm">{sessionsError}</div>}
-
-            {sessions === null && !sessionsError && (
-              <div className="loading compact">
-                加载中…
+            <div id="conversation-history" className="conv-list-content">
+              <div className="new-session-action">
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm btn-block"
+                  onClick={handleNewSession}
+                  disabled={sessionBusy}
+                >
+                  新建会话
+                </button>
               </div>
-            )}
 
-            {sessions !== null && sessions.length === 0 && (
-              <div className="empty-state empty-state-sm">暂无会话</div>
-            )}
+              {sessionsError && <div className="alert-error alert-sm">{sessionsError}</div>}
 
-            {sessions !== null && sessions.length > 0 && (
-              <ul role="list" className="conv-list-items">
-                {sessions.map((s) => {
-                  const isActive = s.session_id === activeSessionId;
-                  return (
-                    <li
-                      key={s.session_id}
-                      data-session-item
-                      className={`conv-item${isActive ? ' active' : ''}`}
-                    >
-                      <button
-                        type="button"
-                        className="ci-trigger"
-                        onClick={() => handleReopen(s.session_id)}
-                        disabled={sessionBusy || isWidget}
-                        title={s.title || '(未命名)'}
-                      >
-                        <div className="ci-ttl">{s.title || '(未命名)'}</div>
-                        <div className="ci-meta">
-                          <span>{s.message_count} 条</span>
-                          <span className="mono">{formatTime(s.last_active_at, 'datetime')}</span>
-                        </div>
-                      </button>
-                      <div className="ci-actions">
-                        <button
-                          type="button"
-                          className="btn btn-outline btn-xs"
-                          onClick={() => handleRename(s.session_id, s.title || '')}
-                          disabled={sessionBusy}
+              {sessions === null && !sessionsError && (
+                <div className="loading compact">
+                  加载中…
+                </div>
+              )}
+
+              {sessions !== null && sessions.length === 0 && (
+                <div className="empty-state empty-state-sm">暂无历史会话，开始新对话</div>
+              )}
+
+              {sessions !== null && sessions.length > 0 && (
+                <ul role="list" className="conv-list-items">
+                  {orderedSessions.map((s, index) => {
+                    const isActive = s.session_id === activeSessionId;
+                    return (
+                      <Fragment key={s.session_id}>
+                        {(index === 0 || (activeSession && index === 1)) && (
+                          <li className="conv-group-label" aria-hidden="true">
+                            {isActive ? '当前会话' : '最近会话'}
+                          </li>
+                        )}
+                        <li
+                          data-session-item
+                          className={`conv-item${isActive ? ' active' : ''}`}
                         >
-                          重命名
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-danger btn-xs"
-                          onClick={() => handleDelete(s.session_id)}
-                          disabled={sessionBusy}
-                        >
-                          删除
-                        </button>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
+                          <button
+                            type="button"
+                            className="ci-trigger"
+                            onClick={() => handleReopen(s.session_id)}
+                            disabled={sessionBusy || isWidget}
+                            title={s.title || '(未命名)'}
+                          >
+                            <div className="ci-ttl">{s.title || '(未命名)'}</div>
+                            <div className="ci-meta">
+                              <span>{s.message_count} 条</span>
+                              <span className="mono">{formatTime(s.last_active_at, 'datetime')}</span>
+                            </div>
+                          </button>
+                          <div className="ci-actions">
+                            <button
+                              type="button"
+                              className="btn btn-outline btn-xs"
+                              onClick={() => setRenameTarget(s)}
+                              disabled={sessionBusy}
+                            >
+                              重命名
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn-danger btn-xs"
+                              onClick={() => setDeleteTarget(s)}
+                              disabled={sessionBusy}
+                            >
+                              删除
+                            </button>
+                          </div>
+                        </li>
+                      </Fragment>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
           </aside>
 
           <section className="chat-main">
@@ -425,6 +486,27 @@ export default function SharePageDetailPage() {
           </section>
         </div>
       </div>
+      <InputDialog
+        open={renameTarget !== null}
+        title="重命名会话"
+        label="会话名称"
+        initialValue={renameTarget?.title ?? ''}
+        confirmText="保存"
+        busy={sessionBusy}
+        onConfirm={confirmRename}
+        onCancel={() => setRenameTarget(null)}
+      />
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        title="删除会话"
+        message={`确定删除「${deleteTarget?.title || '(未命名)'}」吗?`}
+        confirmText="确认删除"
+        variant="danger"
+        details={['此操作不可恢复']}
+        busy={sessionBusy}
+        onConfirm={confirmDelete}
+        onCancel={() => setDeleteTarget(null)}
+      />
     </>
   );
 }

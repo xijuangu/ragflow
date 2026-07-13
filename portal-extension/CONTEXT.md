@@ -83,10 +83,10 @@ portal-extension/
 │   │   ├── components/        # AdminLayout/AdminRoute/AppHeader/ProtectedRoute
 │   │   ├── hooks/             # useAdminList/useOptimisticToggle
 │   │   └── utils/
-│   ├── tests/                # Vitest(76 tests)
+│   ├── tests/                # Vitest(89 tests)
 │   ├── vite.config.ts        # base='/portal/'
 │   └── vitest.config.ts
-├── tests/                    # 后端 pytest(415 passed + 5 skipped)
+├── tests/                    # 后端 pytest(422 passed + 5 skipped)
 │   ├── conftest.py
 │   └── test_slice*.py        # 按 slice 组织的 E2E + 单测
 └── docs/
@@ -148,6 +148,8 @@ RAGFlow 前端 `getAuthorization()` 优先读 URL `?auth=` 参数,回退读 `loc
 portal 网关 `_ragflow_bot_segment` 用于 completions(agent → "agentbots"),sessions 端点需用 `_ragflow_sessions_segment`(agent → "agents")。Slice 30 修复 agent sessions URL。
 
 ### 6.5 UI 重设计边界(2026-07-09 grilling 决策)
+
+> 这组边界描述的是 2026-07-09 的首轮视觉迁移。2026-07-13 的生产化收口 Issue 75–81 已明确追加纯前端工作，其中 Issue 77 覆盖下述第 3 项并实现移动卡片/侧栏，Issue 79 覆盖第 4–5 项并引入统一弹窗组件，Issue 78 以构建开关收口未配置的 SSO 入口。仍然有效的边界是：不新增后端接口、不实现设计稿中缺少后端能力的功能、不替换 RAGFlow 原生 chat UI。
 
 基于 `project-materials/portal-ui-redesign/` 设计稿(Open Design 产出,D1 Graphite 方向,9 屏 HTML 原型 + 完整设计系统 token)。本轮为 **纯视觉换皮**,以下决策已锁定:
 
@@ -371,8 +373,8 @@ config.py 还支持可选变量(有默认值,不配不影响运行):`T_SHORT_TTL
 
 ## 10. 测试策略
 
-- **后端**:pytest,按 slice 组织(`tests/test_slice*.py`),基线 415 passed + 5 skipped(Slice 40 后)
-- **前端**:Vitest,按页面/组件组织(`frontend/tests/*.test.tsx`),基线 76 passed(Slice 28 后)
+- **后端**:pytest,按 slice 组织(`tests/test_slice*.py`),基线 422 passed + 5 skipped(2026-07-13)
+- **前端**:Vitest,按页面/组件组织(`frontend/tests/*.test.tsx`),基线 89 passed(2026-07-13)
 - **RAGFlow web**:Jest 跑不起来(`umi/test` 缺失),靠 `npm run build` 兜底
 - **E2E**:Playwright + 浏览器手动验收结合。`test/playwright/portal_extension/` 覆盖 portal 实际使用主路径、6 个管理后台 tab、Slice 44 缓存回归、临时用户创建/禁用/启用/授权/撤销/审计/硬删除、已有用户组添加/移除临时成员、分享页管理表单;`PORTAL_E2E_RUN_CHAT=1` 时额外发送真实 RAGFlow 问题并等待回复完成;acceptance criteria 仍记录在 `docs/archive/ISSUES.md` 各 slice
 - 类型检查:前端 `tsc --noEmit`,后端 `ruff check`
@@ -404,7 +406,7 @@ uv run pytest -q test/playwright/portal_extension -s --junitxml=/tmp/playwright-
 cd ragflow/portal-extension
 uv run pytest -q
 ```
-- 基线:415 passed + 5 skipped(Slice 40 后)
+- 基线:422 passed + 5 skipped(2026-07-13)
 - 前置:无(测试用临时 SQLite,不连真实 MySQL/RAGFlow)
 - 失败处理:看 `tests/test_slice*.py` 对应 slice 的断言
 
@@ -414,7 +416,7 @@ uv run pytest -q
 cd ragflow/portal-extension/frontend
 npm run test
 ```
-- 基线:76 passed(Slice 28 后)
+- 基线:89 passed(2026-07-13)
 - 前置:已 `npm install`
 - 失败处理:看 `frontend/tests/*.test.tsx`
 

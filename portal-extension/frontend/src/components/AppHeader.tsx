@@ -17,9 +17,17 @@ interface AppHeaderProps {
   username?: string;
   onLogout: () => Promise<void>;
   isAdmin?: boolean;
+  menuOpen?: boolean;
+  onMenuToggle?: () => void;
 }
 
-export default function AppHeader({ username, onLogout, isAdmin = false }: AppHeaderProps) {
+export default function AppHeader({
+  username,
+  onLogout,
+  isAdmin = false,
+  menuOpen = false,
+  onMenuToggle,
+}: AppHeaderProps) {
   const navigate = useNavigate();
 
   async function handleLogout() {
@@ -31,13 +39,25 @@ export default function AppHeader({ username, onLogout, isAdmin = false }: AppHe
 
   return (
     <header className="topbar">
+      {onMenuToggle && (
+        <button
+          type="button"
+          className="menu-btn"
+          aria-label={menuOpen ? '关闭管理菜单' : '打开管理菜单'}
+          aria-expanded={menuOpen}
+          aria-controls="admin-sidebar"
+          onClick={onMenuToggle}
+        >
+          菜单
+        </button>
+      )}
       <div className="brand">
         <span className="dot"></span>
         <span>RAGFlow 权限门户</span>
         <small>v0.26</small>
       </div>
       <div className="topbar-right">
-        {isAdmin && (
+        {isAdmin && !onMenuToggle && (
           <Link className="btn btn-ghost btn-sm" to="/admin/users">
             管理后台
           </Link>

@@ -60,16 +60,13 @@ function renderPage() {
 
 describe('UsersAdminPage', () => {
   let originalFetch: typeof fetch;
-  let originalConfirm: typeof window.confirm;
 
   beforeEach(() => {
     originalFetch = globalThis.fetch;
-    originalConfirm = window.confirm;
   });
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
-    window.confirm = originalConfirm;
     vi.restoreAllMocks();
   });
 
@@ -81,11 +78,14 @@ describe('UsersAdminPage', () => {
 
     renderPage();
 
-    expect(await screen.findByText('admin')).toBeInTheDocument();
-    expect(screen.getByText('user1@example.com')).toBeInTheDocument();
-    expect(screen.getByText('disabled_user')).toBeInTheDocument();
+    expect(await screen.findByTestId('user-row-u_admin')).toBeInTheDocument();
+    expect(screen.getAllByText('user1@example.com')).toHaveLength(2);
+    expect(screen.getAllByText('disabled_user')).toHaveLength(2);
     // 管理员标记可见
-    expect(screen.getByText(/管理员/)).toBeInTheDocument();
+    expect(screen.getAllByText('管理员')).toHaveLength(2);
+    const mobileCard = screen.getByTestId('mobile-user-u_user1');
+    expect(within(mobileCard).getByText('user1@example.com')).toBeInTheDocument();
+    expect(within(mobileCard).getByRole('button', { name: '禁用' })).toBeInTheDocument();
   });
 
   it('创建用户 — 填表单提交后调 POST /admin/users 并刷新列表', async () => {
@@ -132,14 +132,14 @@ describe('UsersAdminPage', () => {
 
     renderPage();
 
-    await screen.findByText('admin');
+    await screen.findByTestId('user-row-u_admin');
 
     await user.type(screen.getByLabelText('用户名'), 'newuser');
     await user.type(screen.getByLabelText('邮箱'), 'new@example.com');
     await user.type(screen.getByLabelText('初始密码'), 'pass123');
     await user.click(screen.getByRole('button', { name: '创建用户' }));
 
-    expect(await screen.findByText('newuser')).toBeInTheDocument();
+    expect(await screen.findByTestId('mobile-user-u_new')).toBeInTheDocument();
   });
 
   it('禁用用户 — 点击"禁用"调 PATCH enabled=false(写 user_disable 审计)', async () => {
@@ -205,9 +205,8 @@ describe('UsersAdminPage', () => {
     expect(await within(row).findByRole('button', { name: '禁用' })).toBeInTheDocument();
   });
 
-  it('硬删除用户 — confirm 确认后调 DELETE(验收点 2:硬删除时有确认提示)', async () => {
+  it('硬删除用户 — 统一弹窗确认后调 DELETE', async () => {
     const user = userEvent.setup();
-    window.confirm = vi.fn().mockReturnValue(true);
     globalThis.fetch = mockFetch([
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
       { url: '/admin/users', status: 200, body: USERS_RESPONSE },
@@ -224,14 +223,17 @@ describe('UsersAdminPage', () => {
     const row = await screen.findByTestId('user-row-u_user1');
     await user.click(within(row).getByRole('button', { name: '硬删除' }));
 
-    expect(window.confirm).toHaveBeenCalled();
+    const dialog = screen.getByRole('dialog', { name: '硬删除用户' });
+    expect(within(dialog).getByText('会级联删除该用户的所有会话')).toBeInTheDocument();
+    expect(within(dialog).getByText('此操作不可恢复')).toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: '确认删除' }));
     // 删除后行消失(乐观移除)
+    expect(await screen.findByText('用户管理')).toBeInTheDocument();
     expect(screen.queryByTestId('user-row-u_user1')).not.toBeInTheDocument();
   });
 
-  it('硬删除用户 — confirm 取消不调 DELETE', async () => {
+  it('硬删除用户 — 弹窗取消不调 DELETE', async () => {
     const user = userEvent.setup();
-    window.confirm = vi.fn().mockReturnValue(false);
     globalThis.fetch = mockFetch([
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
       { url: '/admin/users', status: 200, body: USERS_RESPONSE },
@@ -242,9 +244,11 @@ describe('UsersAdminPage', () => {
     const row = await screen.findByTestId('user-row-u_user1');
     await user.click(within(row).getByRole('button', { name: '硬删除' }));
 
-    expect(window.confirm).toHaveBeenCalled();
+    const dialog = screen.getByRole('dialog', { name: '硬删除用户' });
+    await user.click(within(dialog).getByRole('button', { name: '取消' }));
     // 行仍存在
     expect(screen.getByTestId('user-row-u_user1')).toBeInTheDocument();
+    expect(getFetchCalls(globalThis.fetch).filter((call) => call.method === 'DELETE')).toHaveLength(0);
   });
 
   it('修改密码 — 点击"改密码"后提交新密码并调 PATCH /admin/users/:id/password', async () => {

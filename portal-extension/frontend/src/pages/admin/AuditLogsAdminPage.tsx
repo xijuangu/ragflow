@@ -22,6 +22,7 @@ import {
 } from '../../api/client';
 import { formatTime } from '../../utils/formatTime';
 import { useAdminList } from '../../hooks/useAdminList';
+import { MobileCard, MobileCardList } from '../../components/MobileCards';
 
 function formatMeta(meta: Record<string, unknown> | null): string {
   if (!meta) return '';
@@ -175,11 +176,11 @@ export default function AuditLogsAdminPage() {
           </button>
         </form>
         <div className="card-body">
+          {logs === null && !error && <div className="loading">加载中…</div>}
+          {logs !== null && logs.length === 0 && (
+            <div className="empty-state">暂无日志</div>
+          )}
           <div className="table-wrap">
-            {logs === null && !error && <div className="loading">加载中…</div>}
-            {logs !== null && logs.length === 0 && (
-              <div className="empty-state">暂无日志</div>
-            )}
             {logs !== null && logs.length > 0 && (
               <table>
                 <thead>
@@ -193,7 +194,9 @@ export default function AuditLogsAdminPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {logs.map((log) => (
+                  {logs.map((log) => {
+                    const metaText = formatMeta(log.meta);
+                    return (
                     <tr key={log.id} data-testid={`audit-row-${log.id}`}>
                       <td className="mono">{formatTime(log.at, 'seconds')}</td>
                       <td>{userMap.get(log.actor_user_id)?.username ?? log.actor_user_id}</td>
@@ -202,13 +205,34 @@ export default function AuditLogsAdminPage() {
                       </td>
                       <td>{log.target_type}</td>
                       <td className="mono">{log.target_id}</td>
-                      <td className="audit-meta">{formatMeta(log.meta)}</td>
+                      <td className="audit-meta" title={metaText}>{metaText}</td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             )}
           </div>
+          {logs !== null && logs.length > 0 && (
+            <MobileCardList label="审计日志列表">
+              {logs.map((log) => {
+                const metaText = formatMeta(log.meta);
+                return (
+                  <MobileCard
+                    key={log.id}
+                    title={log.action}
+                    testId={`mobile-audit-${log.id}`}
+                    fields={[
+                      { label: '时间', value: <span className="mono">{formatTime(log.at, 'seconds')}</span> },
+                      { label: '操作者', value: userMap.get(log.actor_user_id)?.username ?? log.actor_user_id },
+                      { label: '目标', value: `${log.target_type} / ${log.target_id}` },
+                      { label: '详情', value: <span className="audit-meta" title={metaText}>{metaText || '—'}</span> },
+                    ]}
+                  />
+                );
+              })}
+            </MobileCardList>
+          )}
         </div>
       </div>
     </section>

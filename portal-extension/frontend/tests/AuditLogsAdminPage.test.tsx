@@ -114,6 +114,9 @@ describe('AuditLogsAdminPage', () => {
     expect(within(row3).getByText('session_view_elevated')).toBeInTheDocument();
     // actor 用户名 admin(而非裸 ID)出现在每行
     expect(within(row1).getByText('admin')).toBeInTheDocument();
+    const detailsText = '{"subject_type":"user","subject_id":"u_user1"}';
+    const details = within(row2).getByText(detailsText);
+    expect(details).toHaveAttribute('title', detailsText);
   });
 
   it('按 action 筛选 — 触发带 action=xxx 的 GET /admin/audit-logs', async () => {

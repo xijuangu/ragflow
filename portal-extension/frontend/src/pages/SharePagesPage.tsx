@@ -85,7 +85,11 @@ export default function SharePagesPage() {
                   </div>
                 </div>
                 <div className="sc-foot">
-                  <Link className="btn btn-primary btn-sm" to={`/share-pages/${p.id}`}>
+                  <Link
+                    className="btn btn-primary btn-sm"
+                    to={`/share-pages/${p.id}`}
+                    state={{ sharePageName: p.name }}
+                  >
                     打开
                   </Link>
                 </div>

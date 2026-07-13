@@ -8,7 +8,7 @@
  *   - PATCH /admin/users/:id/password(修改密码,后端写 user_password_change 审计)
  *   - DELETE /admin/users/:id(硬删除,级联删会话,无孤儿)
  *
- * 硬删除前用 window.confirm 提示级联清会话(对应验收点 2:硬删除时有确认提示)。
+ * 硬删除前用统一危险操作弹窗提示级联清会话、不可恢复和审计后果。
  */
 import { useCallback, useState } from 'react';
 import type { FormEvent } from 'react';
@@ -16,6 +16,8 @@ import { ApiError, api, type AdminUser } from '../../api/client';
 import { formatTime } from '../../utils/formatTime';
 import { useAdminList } from '../../hooks/useAdminList';
 import { useOptimisticToggle } from '../../hooks/useOptimisticToggle';
+import ConfirmDialog from '../../components/ConfirmDialog';
+import { MobileCard, MobileCardList } from '../../components/MobileCards';
 
 export default function UsersAdminPage() {
   const { data: users, setData: setUsers, error, setError } = useAdminList(
@@ -33,6 +35,7 @@ export default function UsersAdminPage() {
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const [passwordSuccess, setPasswordSuccess] = useState<string | null>(null);
   const [passwordSaving, setPasswordSaving] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<AdminUser | null>(null);
 
   const handleCreate = useCallback(
     async (e: FormEvent) => {
@@ -81,23 +84,22 @@ export default function UsersAdminPage() {
     [run, setUsers],
   );
 
-  const handleDelete = useCallback(
-    async (u: AdminUser) => {
-      const confirmed = window.confirm(
-        `确定硬删除用户「${u.username}」?\n该操作会级联删除其所有会话(不可恢复)。`,
-      );
-      if (!confirmed) return;
+  const confirmDelete = useCallback(
+    async () => {
+      if (!deleteTarget) return;
+      const userId = deleteTarget.id;
       // 悲观删除:成功后才 filter 列表(API 调用 + 改列表一起放进 action)
       await run({
-        id: u.id,
+        id: userId,
         action: async () => {
-          await api.deleteAdminUser(u.id);
-          setUsers((prev) => (prev ? prev.filter((x) => x.id !== u.id) : prev));
+          await api.deleteAdminUser(userId);
+          setUsers((prev) => (prev ? prev.filter((x) => x.id !== userId) : prev));
         },
         errorMessage: '删除用户失败',
       });
+      setDeleteTarget(null);
     },
-    [run, setUsers],
+    [deleteTarget, run, setUsers],
   );
 
   const openPasswordModal = useCallback((u: AdminUser) => {
@@ -138,6 +140,37 @@ export default function UsersAdminPage() {
       }
     },
     [passwordTarget, passwordValue, passwordSaving],
+  );
+
+  const renderUserActions = (u: AdminUser) => (
+    <div className="admin-actions">
+      <button
+        type="button"
+        className="btn btn-outline btn-sm"
+        onClick={() => openPasswordModal(u)}
+        disabled={busyId === u.id}
+      >
+        改密码
+      </button>
+      <button
+        type="button"
+        className="btn btn-outline btn-sm"
+        onClick={() => handleToggleEnabled(u)}
+        disabled={busyId === u.id || u.is_admin}
+        title={u.is_admin ? '管理员不可禁用' : ''}
+      >
+        {u.enabled ? '禁用' : '启用'}
+      </button>
+      <button
+        type="button"
+        className="btn btn-danger btn-sm"
+        onClick={() => setDeleteTarget(u)}
+        disabled={busyId === u.id || u.is_admin}
+        title={u.is_admin ? '管理员不可删除' : ''}
+      >
+        硬删除
+      </button>
+    </div>
   );
 
   return (
@@ -197,12 +230,11 @@ export default function UsersAdminPage() {
       {/* 用户列表 */}
       <div className="card card-table">
         <div className="card-body">
-          <div className="table-wrap">
-            {users === null && !error && <div className="loading">加载中…</div>}
-            {users !== null && users.length === 0 && (
-              <div className="empty-state">暂无用户</div>
-            )}
-            {users !== null && users.length > 0 && (
+          {users === null && !error && <div className="loading">加载中…</div>}
+          {users !== null && users.length === 0 && <div className="empty-state">暂无用户</div>}
+          {users !== null && users.length > 0 && (
+            <>
+              <div className="table-wrap">
               <table>
                 <thead>
                   <tr>
@@ -229,41 +261,31 @@ export default function UsersAdminPage() {
                       </td>
                       <td className="mono">{formatTime(u.created_at, 'date')}</td>
                       <td>
-                        <div className="admin-actions">
-                          <button
-                            type="button"
-                            className="btn btn-outline btn-sm"
-                            onClick={() => openPasswordModal(u)}
-                            disabled={busyId === u.id}
-                          >
-                            改密码
-                          </button>
-                          <button
-                            type="button"
-                            className="btn btn-outline btn-sm"
-                            onClick={() => handleToggleEnabled(u)}
-                            disabled={busyId === u.id || u.is_admin}
-                            title={u.is_admin ? '管理员不可禁用' : ''}
-                          >
-                            {u.enabled ? '禁用' : '启用'}
-                          </button>
-                          <button
-                            type="button"
-                            className="btn btn-danger btn-sm"
-                            onClick={() => handleDelete(u)}
-                            disabled={busyId === u.id || u.is_admin}
-                            title={u.is_admin ? '管理员不可删除' : ''}
-                          >
-                            硬删除
-                          </button>
-                        </div>
+                        {renderUserActions(u)}
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
-            )}
-          </div>
+              </div>
+              <MobileCardList label="用户列表">
+                {users.map((u) => (
+                  <MobileCard
+                    key={u.id}
+                    testId={`mobile-user-${u.id}`}
+                    title={u.username}
+                    badge={<span className={`badge ${u.enabled ? 'b-active' : 'b-archived'}`}>{u.enabled ? '启用' : '禁用'}</span>}
+                    fields={[
+                      { label: '邮箱', value: u.email },
+                      { label: '角色', value: u.is_admin ? '管理员' : '普通用户' },
+                      { label: '创建时间', value: <span className="mono">{formatTime(u.created_at, 'date')}</span> },
+                    ]}
+                    actions={renderUserActions(u)}
+                  />
+                ))}
+              </MobileCardList>
+            </>
+          )}
         </div>
       </div>
 
@@ -313,6 +335,18 @@ export default function UsersAdminPage() {
           </form>
         </div>
       )}
+
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        title="硬删除用户"
+        message={`确定硬删除用户「${deleteTarget?.username ?? ''}」吗?`}
+        confirmText="确认删除"
+        variant="danger"
+        details={['会级联删除该用户的所有会话', '此操作不可恢复', '会写入审计日志']}
+        busy={deleteTarget !== null && busyId === deleteTarget.id}
+        onConfirm={confirmDelete}
+        onCancel={() => setDeleteTarget(null)}
+      />
     </section>
   );
 }

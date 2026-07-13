@@ -18,7 +18,7 @@
  * 子路由由 App.tsx 用嵌套 <Route> 配置,本组件用 <Outlet/> 渲染。
  * Slice 51 布局修复保留:`.admin-main > section { flex:1; min-height:0; overflow-y:auto }`。
  */
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Link, NavLink, Outlet } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import AppHeader from './AppHeader';
@@ -99,14 +99,26 @@ const ADMIN_NAVS: readonly NavDef[] = [
 
 export default function AdminLayout() {
   const { user, logout } = useAuth();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const closeMenu = () => setMenuOpen(false);
 
   return (
     <>
-      <AppHeader username={user?.username} onLogout={logout} isAdmin={user?.is_admin ?? false} />
+      <AppHeader
+        username={user?.username}
+        onLogout={logout}
+        isAdmin={user?.is_admin ?? false}
+        menuOpen={menuOpen}
+        onMenuToggle={() => setMenuOpen((open) => !open)}
+      />
       <div className="shell">
-        <aside className="sidebar" aria-label="管理后台导航">
+        <aside
+          id="admin-sidebar"
+          className={`sidebar${menuOpen ? ' open' : ''}`}
+          aria-label="管理后台导航"
+        >
           <div className="nav-group-label">工作区</div>
-          <Link className="nav-item" to="/share-pages">
+          <Link className="nav-item" to="/share-pages" onClick={closeMenu}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
               <path d="M4 13v7h16v-7" />
               <path d="M12 3v12" />
@@ -120,12 +132,21 @@ export default function AdminLayout() {
               key={nav.to}
               to={nav.to}
               className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
+              onClick={closeMenu}
             >
               {nav.icon}
               {nav.label}
             </NavLink>
           ))}
         </aside>
+        {menuOpen && (
+          <button
+            type="button"
+            className="sidebar-backdrop"
+            aria-label="关闭管理菜单"
+            onClick={closeMenu}
+          />
+        )}
         <main className="main admin-main">
           <Outlet />
         </main>

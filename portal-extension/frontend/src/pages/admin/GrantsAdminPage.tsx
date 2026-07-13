@@ -26,6 +26,7 @@ import {
 } from '../../api/client';
 import { useAdminList } from '../../hooks/useAdminList';
 import { useOptimisticToggle } from '../../hooks/useOptimisticToggle';
+import { MobileCard, MobileCardList } from '../../components/MobileCards';
 
 export default function GrantsAdminPage() {
   const [sharePages, setSharePages] = useState<AdminSharePage[]>([]);
@@ -161,6 +162,17 @@ export default function GrantsAdminPage() {
       ? users.map((u) => ({ value: u.id, label: `${u.username}(${u.email})` }))
       : groups.map((g) => ({ value: g.id, label: g.name }));
 
+  const renderRevokeAction = (grant: AdminGrant) => (
+    <button
+      type="button"
+      className="btn btn-danger btn-sm"
+      onClick={() => handleRevoke(grant)}
+      disabled={busyKey === `${grant.subject_type}:${grant.subject_id}`}
+    >
+      撤销
+    </button>
+  );
+
   return (
     <section>
       <div className="page-head">
@@ -234,11 +246,11 @@ export default function GrantsAdminPage() {
       {selectedPageId && (
         <div className="card card-table">
           <div className="card-body">
+            {grants === null && <div className="loading">加载中…</div>}
+            {grants !== null && grants.length === 0 && (
+              <div className="empty-state">暂无授权</div>
+            )}
             <div className="table-wrap">
-              {grants === null && <div className="loading">加载中…</div>}
-              {grants !== null && grants.length === 0 && (
-                <div className="empty-state">暂无授权</div>
-              )}
               {grants !== null && grants.length > 0 && (
                 <table>
                   <thead>
@@ -258,16 +270,7 @@ export default function GrantsAdminPage() {
                           <td>{resolveSubjectName(g)}</td>
                           <td>{g.permission}</td>
                           <td>
-                            <div className="admin-actions">
-                              <button
-                                type="button"
-                                className="btn btn-danger btn-sm"
-                                onClick={() => handleRevoke(g)}
-                                disabled={busyKey === `${g.subject_type}:${g.subject_id}`}
-                              >
-                                撤销
-                              </button>
-                            </div>
+                            <div className="admin-actions">{renderRevokeAction(g)}</div>
                           </td>
                         </tr>
                       );
@@ -276,6 +279,25 @@ export default function GrantsAdminPage() {
                 </table>
               )}
             </div>
+            {grants !== null && grants.length > 0 && (
+              <MobileCardList label="授权列表">
+                {grants.map((g) => {
+                  const key = `${g.subject_type}-${g.subject_id}`;
+                  return (
+                    <MobileCard
+                      key={key}
+                      title={resolveSubjectName(g)}
+                      testId={`mobile-grant-${key}`}
+                      fields={[
+                        { label: '主体类型', value: g.subject_type === 'user' ? '用户' : '用户组' },
+                        { label: '权限', value: g.permission },
+                      ]}
+                      actions={renderRevokeAction(g)}
+                    />
+                  );
+                })}
+              </MobileCardList>
+            )}
           </div>
         </div>
       )}

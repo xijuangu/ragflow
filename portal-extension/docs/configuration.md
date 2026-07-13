@@ -41,6 +41,24 @@
 
 启用 OIDC 时，上述 `OIDC_*` 四项必须完整，否则 `/sso/login` 返回配置错误。
 
+## 前端构建配置
+
+Vite 变量在 `npm run build` 时写入前端产物，不由 `start.sh` 运行时读取。可从 `frontend/.env.example` 复制生产配置：
+
+| 变量 | 默认值 | 说明 |
+|---|---:|---|
+| `VITE_SSO_ENABLED` | `false` | 是否在登录页展示 SSO 入口。只有后端 `OIDC_ENABLED=true` 且 `/sso/login` 可用时才设为 `true`。 |
+| `VITE_API_BASE` | 生产 `/portal`，开发空字符串 | 覆盖前端 API 前缀；同源标准部署通常无需设置。 |
+
+```bash
+cd frontend
+cp .env.example .env.production
+# 启用 OIDC 时取消下一行注释并设为 true
+# VITE_SSO_ENABLED=true
+npm ci
+npm run build
+```
+
 ## 示例 `.env`
 
 ```bash

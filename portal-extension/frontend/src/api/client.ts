@@ -456,7 +456,7 @@ export const api = {
   /** 管理员查会话详情(GET /admin/sessions/:sid)。
    *  - elevated=false(默认):只返回元数据,不写审计,不调 RAGFlow。
    *  - elevated=true:写 session_view_elevated 审计 + 调 RAGFlow 取正文,返回 {metadata, messages, reference}。
-   *  UI 层 elevated=true 前需二次确认(window.confirm)。 */
+   *  UI 层 elevated=true 前需用统一确认弹窗二次确认。 */
   getAdminSession(
     sessionId: string,
     elevated = false,

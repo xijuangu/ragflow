@@ -46,6 +46,17 @@ describe('LoginPage', () => {
     expect(await screen.findByLabelText('用户名')).toBeInTheDocument();
     expect(screen.getByLabelText('密码')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '登录' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '使用企业 SSO 登录' })).not.toBeInTheDocument();
+  });
+
+  it('显式启用 SSO 时显示企业登录入口', async () => {
+    vi.stubEnv('VITE_SSO_ENABLED', 'true');
+    globalThis.fetch = mockFetch([{ url: '/me', status: 403, body: { detail: '未登录' } }]);
+
+    renderLogin();
+
+    expect(await screen.findByRole('button', { name: '使用企业 SSO 登录' })).toBeInTheDocument();
+    vi.unstubAllEnvs();
   });
 
   it('登录成功后跳转到分享页列表', async () => {

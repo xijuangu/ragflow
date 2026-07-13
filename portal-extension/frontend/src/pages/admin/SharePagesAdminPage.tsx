@@ -15,6 +15,7 @@ import type { FormEvent } from 'react';
 import { ApiError, api, type AdminSharePage } from '../../api/client';
 import { useAdminList } from '../../hooks/useAdminList';
 import { useOptimisticToggle } from '../../hooks/useOptimisticToggle';
+import { MobileCard, MobileCardList } from '../../components/MobileCards';
 
 interface SharePageFormState {
   name: string;
@@ -91,6 +92,17 @@ export default function SharePagesAdminPage() {
     [run, setPages],
   );
 
+  const renderActions = (p: AdminSharePage) => (
+    <button
+      type="button"
+      className="btn btn-outline btn-sm"
+      onClick={() => handleToggleEnabled(p)}
+      disabled={busyId === p.id}
+    >
+      {p.enabled ? '禁用' : '启用'}
+    </button>
+  );
+
   return (
     <section>
       <div className="page-head">
@@ -165,11 +177,11 @@ export default function SharePagesAdminPage() {
       {/* 分享页列表 */}
       <div className="card card-table">
         <div className="card-body">
+          {pages === null && !error && <div className="loading">加载中…</div>}
+          {pages !== null && pages.length === 0 && (
+            <div className="empty-state">暂无分享页</div>
+          )}
           <div className="table-wrap">
-            {pages === null && !error && <div className="loading">加载中…</div>}
-            {pages !== null && pages.length === 0 && (
-              <div className="empty-state">暂无分享页</div>
-            )}
             {pages !== null && pages.length > 0 && (
               <table>
                 <thead>
@@ -197,16 +209,7 @@ export default function SharePagesAdminPage() {
                         )}
                       </td>
                       <td>
-                        <div className="admin-actions">
-                          <button
-                            type="button"
-                            className="btn btn-outline btn-sm"
-                            onClick={() => handleToggleEnabled(p)}
-                            disabled={busyId === p.id}
-                          >
-                            {p.enabled ? '禁用' : '启用'}
-                          </button>
-                        </div>
+                        <div className="admin-actions">{renderActions(p)}</div>
                       </td>
                     </tr>
                   ))}
@@ -214,6 +217,27 @@ export default function SharePagesAdminPage() {
               </table>
             )}
           </div>
+          {pages !== null && pages.length > 0 && (
+            <MobileCardList label="分享页列表">
+              {pages.map((p) => (
+                <MobileCard
+                  key={p.id}
+                  title={p.name}
+                  testId={`mobile-share-page-${p.id}`}
+                  fields={[
+                    { label: '资源 ID', value: <span className="mono">{p.ragflow_resource_id}</span> },
+                    { label: '嵌入类型', value: p.embed_type },
+                    { label: 'RAGFlow 类型', value: p.ragflow_type },
+                    {
+                      label: '状态',
+                      value: <span className={`badge ${p.enabled ? 'b-active' : 'b-archived'}`}>{p.enabled ? '启用' : '禁用'}</span>,
+                    },
+                  ]}
+                  actions={renderActions(p)}
+                />
+              ))}
+            </MobileCardList>
+          )}
         </div>
       </div>
     </section>

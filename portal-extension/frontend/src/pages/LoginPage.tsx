@@ -29,6 +29,7 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const ssoEnabled = import.meta.env.VITE_SSO_ENABLED === 'true';
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -60,15 +61,15 @@ export default function LoginPage() {
           <p>在 RAGFlow 嵌入方案之上增加权限控制层,解决租户级 Token 泄露、历史会话丢失、缺用户角色审计三大企业落地阻碍。</p>
           <div className="la-feats">
             <div className="la-feat">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
               <div><div className="feat-title">短期可撤销令牌</div><div className="feat-desc">租户级 Token 全程不离开服务端,签发 pt_ 前缀短期令牌注入 iframe</div></div>
             </div>
             <div className="la-feat">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 5h16v10H8l-4 4z"/></svg>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M4 5h16v10H8l-4 4z"/></svg>
               <div><div className="feat-title">会话归属绑定</div><div className="feat-desc">SSE 成功后解析 session_id 绑定当前用户,关页面不丢失历史</div></div>
             </div>
             <div className="la-feat">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 12a8 8 0 0 1 13.7-5.6L20 8"/><path d="M20 4v4h-4"/><path d="M20 12a8 8 0 0 1-13.7 5.6L4 16"/><path d="M4 20v-4h4"/></svg>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M4 12a8 8 0 0 1 13.7-5.6L20 8"/><path d="M20 4v4h-4"/><path d="M20 12a8 8 0 0 1-13.7 5.6L4 16"/><path d="M4 20v-4h4"/></svg>
               <div><div className="feat-title">双删与重试保障</div><div className="feat-desc">先删 RAGFlow 再删门户,失败标记 pending_deletion 由后台清理</div></div>
             </div>
           </div>
@@ -85,10 +86,9 @@ export default function LoginPage() {
           <form onSubmit={handleSubmit}>
             {error && <div className="alert-error" role="alert">{error}</div>}
 
-            <div className="form-group">
-              <label className="form-label" htmlFor="username">用户名</label>
+            <div className="form-field">
+              <label htmlFor="username">用户名</label>
               <input
-                className="form-input"
                 id="username"
                 type="text"
                 value={username}
@@ -99,10 +99,9 @@ export default function LoginPage() {
               />
             </div>
 
-            <div className="form-group">
-              <label className="form-label" htmlFor="password">密码</label>
+            <div className="form-field">
+              <label htmlFor="password">密码</label>
               <input
-                className="form-input"
                 id="password"
                 type="password"
                 value={password}
@@ -117,17 +116,18 @@ export default function LoginPage() {
             </button>
           </form>
 
-          <div className="login-sso"><span>或</span></div>
-          {/* Slice 14:SSO 登录按钮 — 跳转后端 /sso/login 由 IdP 处理回调。
-              TODO: 可通过后端 /me 或单独接口暴露 OIDC_ENABLED 状态,前端按需隐藏按钮。
-              当前简化处理:始终展示,后端未启用时 /sso/login 返回 404。 */}
-          <button
-            type="button"
-            className="btn btn-secondary btn-block"
-            onClick={() => { window.location.href = `${import.meta.env.BASE_URL}sso/login`; }}
-          >
-            使用企业 SSO 登录
-          </button>
+          {ssoEnabled && (
+            <>
+              <div className="login-sso"><span>或</span></div>
+              <button
+                type="button"
+                className="btn btn-secondary btn-block"
+                onClick={() => { window.location.href = `${import.meta.env.BASE_URL}sso/login`; }}
+              >
+                使用企业 SSO 登录
+              </button>
+            </>
+          )}
 
           <div className="login-alt">还没有账号? <span className="login-contact-note">联系管理员开通</span></div>
         </div>

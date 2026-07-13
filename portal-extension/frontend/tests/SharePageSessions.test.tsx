@@ -60,19 +60,13 @@ function renderDetail(id = 'sp_default') {
 
 describe('SharePageDetailPage — 我的会话(Slice 10)', () => {
   let originalFetch: typeof fetch;
-  let originalConfirm: typeof window.confirm;
-  let originalPrompt: typeof window.prompt;
 
   beforeEach(() => {
     originalFetch = globalThis.fetch;
-    originalConfirm = window.confirm;
-    originalPrompt = window.prompt;
   });
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
-    window.confirm = originalConfirm;
-    window.prompt = originalPrompt;
     vi.restoreAllMocks();
   });
 
@@ -90,6 +84,25 @@ describe('SharePageDetailPage — 我的会话(Slice 10)', () => {
     // 消息数可见(验收点 1;Slice 57 ci-meta 文案为「N 条」,对齐设计稿)
     expect(screen.getByText(/4\s*条/)).toBeInTheDocument();
     expect(screen.getByText(/2\s*条/)).toBeInTheDocument();
+  });
+
+  it('会话历史在小屏可展开和收起，默认优先保留对话区', async () => {
+    const user = userEvent.setup();
+    globalThis.fetch = mockFetch([
+      { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
+      { url: '/share-pages/sp_default/embed-url', status: 200, body: EMBED_RESPONSE },
+      { url: '/share-pages/sp_default/sessions', status: 200, body: SESSIONS_RESPONSE },
+    ]);
+
+    renderDetail();
+
+    const toggle = await screen.findByRole('button', { name: '展开' });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByLabelText('我的会话')).not.toHaveClass('expanded');
+
+    await user.click(toggle);
+    expect(screen.getByRole('button', { name: '收起' })).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByLabelText('我的会话')).toHaveClass('expanded');
   });
 
   it('点击历史会话重新打开 — iframe URL 追加 session_id(验收点 2)', async () => {
@@ -149,9 +162,8 @@ describe('SharePageDetailPage — 我的会话(Slice 10)', () => {
     expect(src).not.toContain('session_id=');
   });
 
-  it('重命名会话 — prompt + PATCH + 列表标题实时更新(验收点 4)', async () => {
+  it('重命名会话 — 输入弹窗 + PATCH + 列表标题实时更新(验收点 4)', async () => {
     const user = userEvent.setup();
-    window.prompt = vi.fn().mockReturnValue('新标题');
     globalThis.fetch = mockFetch([
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
       { url: '/share-pages/sp_default/embed-url', status: 200, body: EMBED_RESPONSE },
@@ -174,15 +186,17 @@ describe('SharePageDetailPage — 我的会话(Slice 10)', () => {
     });
     await user.click(renameBtn);
 
-    // 调用了 PATCH
-    expect(window.prompt).toHaveBeenCalled();
+    const dialog = screen.getByRole('dialog', { name: '重命名会话' });
+    const input = within(dialog).getByLabelText('会话名称');
+    await user.clear(input);
+    await user.type(input, '新标题');
+    await user.click(within(dialog).getByRole('button', { name: '保存' }));
     // 列表标题实时更新为「新标题」(乐观更新,原「会话一」不再以旧标题出现)
     expect(await screen.findByText('新标题')).toBeInTheDocument();
   });
 
-  it('重命名时 prompt 取消(返回空)不调 PATCH', async () => {
+  it('重命名时弹窗取消不调 PATCH', async () => {
     const user = userEvent.setup();
-    window.prompt = vi.fn().mockReturnValue('');
     globalThis.fetch = mockFetch([
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
       { url: '/share-pages/sp_default/embed-url', status: 200, body: EMBED_RESPONSE },
@@ -197,13 +211,15 @@ describe('SharePageDetailPage — 我的会话(Slice 10)', () => {
     });
     await user.click(renameBtn);
 
+    const dialog = screen.getByRole('dialog', { name: '重命名会话' });
+    await user.click(within(dialog).getByRole('button', { name: '取消' }));
+
     // 没有 PATCH mock,若误调会返回 404;标题保持原样
     expect(screen.getByText('会话一')).toBeInTheDocument();
   });
 
-  it('删除会话 — confirm + DELETE + 列表实时移除(验收点 5)', async () => {
+  it('删除会话 — 统一弹窗 + DELETE + 列表实时移除(验收点 5)', async () => {
     const user = userEvent.setup();
-    window.confirm = vi.fn().mockReturnValue(true);
     globalThis.fetch = mockFetch([
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
       { url: '/share-pages/sp_default/embed-url', status: 200, body: EMBED_RESPONSE },
@@ -224,15 +240,16 @@ describe('SharePageDetailPage — 我的会话(Slice 10)', () => {
     });
     await user.click(deleteBtn);
 
-    expect(window.confirm).toHaveBeenCalled();
+    const dialog = screen.getByRole('dialog', { name: '删除会话' });
+    expect(within(dialog).getByText('此操作不可恢复')).toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: '确认删除' }));
     // 列表实时移除(乐观更新)
     expect(screen.queryByText('会话一')).not.toBeInTheDocument();
     expect(screen.getByText('会话二')).toBeInTheDocument();
   });
 
-  it('删除时 confirm 取消不调 DELETE', async () => {
+  it('删除时弹窗取消不调 DELETE', async () => {
     const user = userEvent.setup();
-    window.confirm = vi.fn().mockReturnValue(false);
     globalThis.fetch = mockFetch([
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
       { url: '/share-pages/sp_default/embed-url', status: 200, body: EMBED_RESPONSE },
@@ -247,6 +264,9 @@ describe('SharePageDetailPage — 我的会话(Slice 10)', () => {
     });
     await user.click(deleteBtn);
 
+    const dialog = screen.getByRole('dialog', { name: '删除会话' });
+    await user.click(within(dialog).getByRole('button', { name: '取消' }));
+
     expect(screen.getByText('会话一')).toBeInTheDocument();
   });
 
@@ -259,7 +279,7 @@ describe('SharePageDetailPage — 我的会话(Slice 10)', () => {
 
     renderDetail();
 
-    expect(await screen.findByText('暂无会话')).toBeInTheDocument();
+    expect(await screen.findByText('暂无历史会话，开始新对话')).toBeInTheDocument();
   });
 
   it('会话列表加载失败显示错误提示但不阻断 iframe', async () => {

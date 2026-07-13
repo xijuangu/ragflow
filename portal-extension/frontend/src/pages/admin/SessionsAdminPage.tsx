@@ -9,7 +9,7 @@
  *
  * UI 流程:
  *   1. 默认加载全部会话元数据(分页/过滤在搜索表单)
- *   2. 每行带「查看正文」按钮 → window.confirm("以管理员身份查看 — 此操作将记录")
+ *   2. 每行带「查看正文」按钮 → 统一 warning 弹窗展示审计后果
  *      → 确认 → 调 elevated 端点 → 弹窗显示 messages
  *
  * 对应 PRD D7a:管理员默认只看元数据,查正文需二次确认 + 写审计(后端在 elevated=true 时写)。
@@ -26,6 +26,8 @@ import {
 } from '../../api/client';
 import { formatTime } from '../../utils/formatTime';
 import { useAdminList } from '../../hooks/useAdminList';
+import ConfirmDialog from '../../components/ConfirmDialog';
+import { MobileCard, MobileCardList } from '../../components/MobileCards';
 
 interface SessionMessage {
   role: string;
@@ -62,6 +64,7 @@ export default function SessionsAdminPage() {
   const [elevatedLoading, setElevatedLoading] = useState(false);
   const [elevatedData, setElevatedData] = useState<AdminSessionElevated | null>(null);
   const [elevatedError, setElevatedError] = useState<string | null>(null);
+  const [viewTarget, setViewTarget] = useState<AdminSessionMetadata | null>(null);
 
   const userMap = useMemo(() => {
     const m = new Map<string, AdminUser>();
@@ -111,17 +114,15 @@ export default function SessionsAdminPage() {
     [filterUserId, filterSharePageId, filterKeyword, loadSessions],
   );
 
-  const handleViewElevated = useCallback(
-    async (session: AdminSessionMetadata) => {
-      if (elevatedLoading) return;
-      const confirmed = window.confirm(
-        '以管理员身份查看 — 此操作将记录',
-      );
-      if (!confirmed) return;
+  const confirmViewElevated = useCallback(
+    async () => {
+      if (elevatedLoading || !viewTarget) return;
+      const sessionId = viewTarget.session_id;
       setElevatedLoading(true);
       setElevatedError(null);
+      setViewTarget(null);
       try {
-        const res = await api.getAdminSession(session.session_id, true);
+        const res = await api.getAdminSession(sessionId, true);
         setElevatedData(res as AdminSessionElevated);
       } catch (e) {
         setElevatedError(e instanceof ApiError ? e.message : '取回会话失败');
@@ -129,13 +130,24 @@ export default function SessionsAdminPage() {
         setElevatedLoading(false);
       }
     },
-    [elevatedLoading],
+    [elevatedLoading, viewTarget],
   );
 
   const closeElevated = useCallback(() => {
     setElevatedData(null);
     setElevatedError(null);
   }, []);
+
+  const renderViewAction = (session: AdminSessionMetadata) => (
+    <button
+      type="button"
+      className="btn btn-outline btn-sm"
+      onClick={() => setViewTarget(session)}
+      disabled={elevatedLoading}
+    >
+      {elevatedLoading ? '加载中…' : '查看正文'}
+    </button>
+  );
 
   return (
     <section>
@@ -197,11 +209,11 @@ export default function SessionsAdminPage() {
           </button>
         </form>
         <div className="card-body">
+          {sessions === null && !error && <div className="loading">加载中…</div>}
+          {sessions !== null && sessions.length === 0 && (
+            <div className="empty-state">暂无会话</div>
+          )}
           <div className="table-wrap">
-            {sessions === null && !error && <div className="loading">加载中…</div>}
-            {sessions !== null && sessions.length === 0 && (
-              <div className="empty-state">暂无会话</div>
-            )}
             {sessions !== null && sessions.length > 0 && (
               <table>
                 <thead>
@@ -225,16 +237,7 @@ export default function SessionsAdminPage() {
                       <td className="mono">{formatTime(s.last_active_at, 'datetime')}</td>
                       <td className="mono">{s.message_count}</td>
                       <td>
-                        <div className="admin-actions">
-                          <button
-                            type="button"
-                            className="btn btn-outline btn-sm"
-                            onClick={() => handleViewElevated(s)}
-                            disabled={elevatedLoading}
-                          >
-                            {elevatedLoading ? '加载中…' : '查看正文'}
-                          </button>
-                        </div>
+                        <div className="admin-actions">{renderViewAction(s)}</div>
                       </td>
                     </tr>
                   ))}
@@ -242,8 +245,38 @@ export default function SessionsAdminPage() {
               </table>
             )}
           </div>
+          {sessions !== null && sessions.length > 0 && (
+            <MobileCardList label="会话列表">
+              {sessions.map((s) => (
+                <MobileCard
+                  key={s.session_id}
+                  title={s.title || '(无标题)'}
+                  testId={`mobile-session-${s.session_id}`}
+                  fields={[
+                    { label: '用户', value: userMap.get(s.portal_user_id)?.username ?? s.portal_user_id },
+                    { label: '分享页', value: sharePageMap.get(s.share_page_id)?.name ?? s.share_page_id },
+                    { label: '最近活跃', value: <span className="mono">{formatTime(s.last_active_at, 'datetime')}</span> },
+                    { label: '消息数', value: <span className="mono">{s.message_count}</span> },
+                  ]}
+                  actions={renderViewAction(s)}
+                />
+              ))}
+            </MobileCardList>
+          )}
         </div>
       </div>
+
+      <ConfirmDialog
+        open={viewTarget !== null}
+        title="查看会话正文"
+        message={`将以管理员身份查看「${viewTarget?.title || '(无标题)'}」的完整正文。`}
+        confirmText="确认查看"
+        variant="warning"
+        details={['仅在业务需要时查看', '此操作将记录到审计日志']}
+        busy={elevatedLoading}
+        onConfirm={confirmViewElevated}
+        onCancel={() => setViewTarget(null)}
+      />
 
       {/* elevated 弹窗 — 显示消息正文(modal,非 drawer) */}
       {(elevatedData || elevatedError) && (

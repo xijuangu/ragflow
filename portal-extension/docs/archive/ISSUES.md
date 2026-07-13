@@ -2719,6 +2719,8 @@ Issue 关闭。
 
 ## Issue 75 — 审计日志详情列超长内容查看
 
+> 状态：✅ 已完成（2026-07-13）。采用行内截断 + `title` 完整内容方案。
+
 ## Parent
 
 UI polish 续作(Issue 66-74 后)。源:用户反馈 + UI 审查报告(2026-07-09)。
@@ -2737,10 +2739,10 @@ UI polish 续作(Issue 66-74 后)。源:用户反馈 + UI 审查报告(2026-07-0
 
 ## Acceptance criteria
 
-- [ ] 审计日志详情列超长内容可被查看(悬浮 tooltip 或点击展开 modal)
-- [ ] 表格布局不被超长 meta 撑开变形
-- [ ] 短 meta 正常显示,无视觉回归
-- [ ] tsc 0 errors,Vitest 全绿
+- [x] 审计日志详情列超长内容可被查看(悬浮 tooltip 或点击展开 modal)
+- [x] 表格布局不被超长 meta 撑开变形
+- [x] 短 meta 正常显示,无视觉回归
+- [x] tsc 0 errors,Vitest 全绿
 - [ ] (可选)Playwright 验证详情列长文本可见
 
 ## Blocked by
@@ -2750,6 +2752,8 @@ UI polish 续作(Issue 66-74 后)。源:用户反馈 + UI 审查报告(2026-07-0
 ---
 
 ## Issue 76 — 前端样式收口:统一表单 class + 清理 legacy 占位规则
+
+> 状态：✅ 已完成（2026-07-13）。统一为 `.form-field`，删除无引用 drawer/stats 规则，`.mobile-cards` 已由 Issue 77 接入真实内容。
 
 ## Parent
 
@@ -2771,12 +2775,12 @@ UI 审查报告第 1 批「样式收口,先稳住一致性」。源:2026-07-09 U
 
 ## Acceptance criteria
 
-- [ ] styles.css 中表单 class 只保留一套(`.form-field` 或 `.form-group`),另一套删除或合并
-- [ ] 所有 admin 页表单使用统一的 label + input/select 结构
-- [ ] 无 JSX 引用的 legacy CSS 规则(drawer/stats/mobile-cards 占位)已删除
-- [ ] grep 确认删除的 class 无 JSX 引用
-- [ ] tsc 0 errors,Vitest 全绿,Playwright 全绿
-- [ ] 无视觉回归(表单外观不变)
+- [x] styles.css 中表单 class 只保留一套(`.form-field` 或 `.form-group`),另一套删除或合并
+- [x] 所有 admin 页表单使用统一的 label + input/select 结构
+- [x] 无 JSX 引用的 legacy CSS 规则(drawer/stats/mobile-cards 占位)已删除
+- [x] grep 确认删除的 class 无 JSX 引用
+- [x] tsc 0 errors,Vitest 全绿,Playwright 全绿
+- [x] 无视觉回归(表单外观不变)
 
 ## Blocked by
 
@@ -2785,6 +2789,8 @@ UI 审查报告第 1 批「样式收口,先稳住一致性」。源:2026-07-09 U
 ---
 
 ## Issue 77 — 移动端 admin 表格真实可用性:补 .mobile-cards 内容 + 侧栏开关接状态
+
+> 状态：✅ 已完成（2026-07-13）。5 个表格页使用共享移动卡片，用户组页复用原生卡片，侧栏与会话栏均已接入开关状态。
 
 ## Parent
 
@@ -2808,12 +2814,12 @@ UI 审查报告第 2 批「修移动端真实可用性」。源:2026-07-09 UI �
 
 ## Acceptance criteria
 
-- [ ] 6 个 admin 页在 768px 以下显示 `.mobile-cards` 卡片列表,数据与 table 一致
-- [ ] 移动端卡片含操作按钮(启用/禁用/删除/查看正文/撤销),功能与桌面端一致
-- [ ] AdminLayout 侧栏 menu-btn 可切换 .open 状态,移动端侧栏可打开关闭
-- [ ] SharePageDetailPage 小屏会话列表折叠,iframe 优先展示
-- [ ] 桌面端(>768px)无视觉回归,table 仍正常显示
-- [ ] tsc 0 errors,Vitest 全绿,Playwright 移动端视口验证
+- [x] 6 个 admin 页在 768px 以下显示 `.mobile-cards` 卡片列表,数据与 table 一致
+- [x] 移动端卡片含操作按钮(启用/禁用/删除/查看正文/撤销),功能与桌面端一致
+- [x] AdminLayout 侧栏 menu-btn 可切换 .open 状态,移动端侧栏可打开关闭
+- [x] SharePageDetailPage 小屏会话列表折叠,iframe 优先展示
+- [x] 桌面端(>768px)无视觉回归,table 仍正常显示
+- [x] tsc 0 errors,Vitest 全绿,Playwright 移动端视口验证
 
 ## Blocked by
 
@@ -2822,6 +2828,8 @@ UI 审查报告第 2 批「修移动端真实可用性」。源:2026-07-09 UI �
 ---
 
 ## Issue 78 — 登录页 SSO 按钮降级:未配置时隐藏或标注"未配置"
+
+> 状态：✅ 已完成（2026-07-13）。`VITE_SSO_ENABLED` 默认关闭并已写入构建配置文档。
 
 ## Parent
 
@@ -2845,11 +2853,11 @@ LoginPage 的 SSO 按钮当前始终展示,代码注释明确"后端未启用时
 
 ## Acceptance criteria
 
-- [ ] SSO 按钮根据 `VITE_SSO_ENABLED` 环境变量决定是否渲染
-- [ ] 未配置/设为 false 时按钮不显示,登录页布局不破
-- [ ] 设为 true 时按钮正常显示,点击跳转 `/sso/login`
-- [ ] `.env.example` 文档化该变量
-- [ ] tsc 0 errors,Vitest 全绿
+- [x] SSO 按钮根据 `VITE_SSO_ENABLED` 环境变量决定是否渲染
+- [x] 未配置/设为 false 时按钮不显示,登录页布局不破
+- [x] 设为 true 时按钮正常显示,点击跳转 `/sso/login`
+- [x] `.env.example` 文档化该变量
+- [x] tsc 0 errors,Vitest 全绿
 
 ## Blocked by
 
@@ -2858,6 +2866,8 @@ LoginPage 的 SSO 按钮当前始终展示,代码注释明确"后端未启用时
 ---
 
 ## Issue 79 — 高风险操作统一确认弹窗:替代 window.confirm/prompt
+
+> 状态：✅ 已完成（2026-07-13）。新增受控 `ConfirmDialog` / `InputDialog`，4 处原生弹窗均已替换。
 
 ## Parent
 
@@ -2890,13 +2900,13 @@ UI 审查报告第 3 批「把高风险操作做成同一套确认体验」。�
 
 ## Acceptance criteria
 
-- [ ] 新建 `<ConfirmDialog>` 组件,基于 D1 Graphite,支持 title/message/variant/details
-- [ ] 新建 `<InputDialog>` 组件(或 ConfirmDialog 带 input),支持预填 + 键盘确认/取消
-- [ ] 4 处 window.confirm/window.prompt 全部替换为统一弹窗
-- [ ] 确认弹窗展示业务后果(danger/warning variant + details 列表)
-- [ ] 弹窗键盘可达(Enter 确认/Esc 取消/焦点管理)
-- [ ] tsc 0 errors,Vitest 全绿,Playwright 验证弹窗交互
-- [ ] 原生 confirm/prompt 不再被调用(grep window.confirm/window.prompt 无匹配)
+- [x] 新建 `<ConfirmDialog>` 组件,基于 D1 Graphite,支持 title/message/variant/details
+- [x] 新建 `<InputDialog>` 组件(或 ConfirmDialog 带 input),支持预填 + 键盘确认/取消
+- [x] 4 处 window.confirm/window.prompt 全部替换为统一弹窗
+- [x] 确认弹窗展示业务后果(danger/warning variant + details 列表)
+- [x] 弹窗键盘可达(Enter 确认/Esc 取消/焦点管理)
+- [x] tsc 0 errors,Vitest 全绿,Playwright 验证弹窗交互
+- [x] 原生 confirm/prompt 不再被调用(grep window.confirm/window.prompt 无匹配)
 
 ## Blocked by
 
@@ -2905,6 +2915,8 @@ UI 审查报告第 3 批「把高风险操作做成同一套确认体验」。�
 ---
 
 ## Issue 80 — 分享页详情页门户外壳与 RAGFlow iframe 视觉衔接
+
+> 状态：✅ 已完成（2026-07-13）。精简顶部上下文、增加当前/最近会话层级、补空状态并保持 iframe 原生能力不变。
 
 ## Parent
 
@@ -2926,12 +2938,12 @@ SharePageDetailPage 的外层会话栏、顶部详情条、iframe 容器之间�
 
 ## Acceptance criteria
 
-- [ ] 详情页顶部不与 iframe 内 RAGFlow 标题重复
-- [ ] 历史会话栏有当前/最近/无标题的视觉层级
-- [ ] 会话栏与 iframe 容器边界清晰(分隔线或留白)
-- [ ] 空会话列表有空状态引导
-- [ ] RAGFlow 原生 chat UI(引用/文档片段/PDF 预览)不受影响
-- [ ] tsc 0 errors,Vitest 全绿,Playwright 全绿
+- [x] 详情页顶部不与 iframe 内 RAGFlow 标题重复
+- [x] 历史会话栏有当前/最近/无标题的视觉层级
+- [x] 会话栏与 iframe 容器边界清晰(分隔线或留白)
+- [x] 空会话列表有空状态引导
+- [x] RAGFlow 原生 chat UI(引用/文档片段/PDF 预览)不受影响
+- [x] tsc 0 errors,Vitest 全绿,Playwright 全绿
 
 ## Blocked by
 
@@ -2940,6 +2952,8 @@ SharePageDetailPage 的外层会话栏、顶部详情条、iframe 容器之间�
 ---
 
 ## Issue 81 — 强调色(accent)使用预算统一:活跃条 + 主按钮 + badge + 权限 + 头像
+
+> 状态：✅ 已完成（2026-07-13）。信息 badge 与机器人头像改中性，chat 权限改 success 语义色。
 
 ## Parent
 
@@ -2962,12 +2976,12 @@ D1 Graphite 的蓝紫色 accent 适合作为"当前状态 + 主动作",但当前
 
 ## Acceptance criteria
 
-- [ ] `.badge-info` 不使用 accent 色(改 muted/中性)
-- [ ] `.perm-chat` 用独立语义色(非 accent)
-- [ ] `.msg.bot .avatar-sm` 用非 accent 色
-- [ ] accent 只用于 .btn-primary(主动作)+ .nav-item.active(当前状态)
-- [ ] admin 页同屏 accent 元素数量减少,视觉不繁忙
-- [ ] tsc 0 errors,Vitest 全绿,无视觉回归(badge/权限/头像仍可辨识)
+- [x] `.badge-info` 不使用 accent 色(改 muted/中性)
+- [x] `.perm-chat` 用独立语义色(非 accent)
+- [x] `.msg.bot .avatar-sm` 用非 accent 色
+- [x] accent 只用于 .btn-primary(主动作)+ .nav-item.active(当前状态)
+- [x] admin 页同屏 accent 元素数量减少,视觉不繁忙
+- [x] tsc 0 errors,Vitest 全绿,无视觉回归(badge/权限/头像仍可辨识)
 
 ## Blocked by
 

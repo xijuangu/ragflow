@@ -72,6 +72,33 @@ describe('SharePageDetailPage', () => {
     expect(iframe).toHaveAttribute('src', FULLSCREEN_EMBED_RESPONSE.iframe_url);
   });
 
+  it('直接打开详情页时从可访问列表补齐分享页名称', async () => {
+    globalThis.fetch = mockFetch([
+      { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
+      { url: '/share-pages/sp_default/embed-url', status: 200, body: FULLSCREEN_EMBED_RESPONSE },
+      { url: '/share-pages/sp_default/sessions', method: 'GET', status: 200, body: { sessions: [] } },
+      {
+        url: '/share-pages',
+        status: 200,
+        body: {
+          share_pages: [{
+            id: 'sp_default',
+            name: '财务知识库',
+            ragflow_type: 'chat',
+            ragflow_resource_id: 'dialog-123',
+            embed_type: 'fullscreen',
+            enabled: true,
+            created_at: 1700000000,
+          }],
+        },
+      },
+    ]);
+
+    renderDetail();
+
+    expect(await screen.findByRole('heading', { name: '财务知识库' })).toBeInTheDocument();
+  });
+
   it('iframe URL 不含真实 beta Token(仅含 T_short 的 auth 参数)', async () => {
     globalThis.fetch = mockFetch([
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },

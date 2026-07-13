@@ -184,7 +184,7 @@ export default function GroupsAdminPage() {
       </form>
 
       {/* 用户组列表(卡片网格,每卡含内联成员管理) */}
-      <div className="admin-groups">
+      <div className="admin-groups mobile-cards" aria-label="用户组列表">
         {groups === null && !error && <div className="loading">加载中…</div>}
         {groups !== null && groups.length === 0 && (
           <div className="empty-state card">暂无用户组</div>

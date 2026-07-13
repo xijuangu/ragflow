@@ -4,10 +4,10 @@
  * 对应 Issue 11 验收点 6:
  *   - 管理员能按多维度搜索会话(用户/分享页/关键词)
  *   - 默认只看元数据
- *   - 查正文需 window.confirm 二次确认,确认后调 elevated 端点(写审计)
+ *   - 查正文需统一 warning 弹窗二次确认,确认后调 elevated 端点(写审计)
  *   - 弹窗显示消息正文
  */
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -112,16 +112,13 @@ function renderPage() {
 
 describe('SessionsAdminPage', () => {
   let originalFetch: typeof fetch;
-  let originalConfirm: typeof window.confirm;
 
   beforeEach(() => {
     originalFetch = globalThis.fetch;
-    originalConfirm = window.confirm;
   });
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
-    window.confirm = originalConfirm;
     vi.restoreAllMocks();
   });
 
@@ -135,8 +132,8 @@ describe('SessionsAdminPage', () => {
 
     renderPage();
 
-    expect(await screen.findByText('如何使用 RAGFlow?')).toBeInTheDocument();
-    expect(screen.getByText('退款流程咨询')).toBeInTheDocument();
+    expect(await screen.findByTestId('session-row-sess_a')).toBeInTheDocument();
+    expect(screen.getByTestId('session-row-sess_b')).toBeInTheDocument();
   });
 
   it('按关键词搜索 — 触发带 keyword 的 GET /admin/sessions', async () => {
@@ -153,7 +150,7 @@ describe('SessionsAdminPage', () => {
 
     renderPage();
 
-    await screen.findByText('如何使用 RAGFlow?');
+    await screen.findByTestId('session-row-sess_a');
 
     await user.type(screen.getByLabelText('关键词'), 'RAGFlow');
     await user.click(screen.getByRole('button', { name: '搜索' }));
@@ -187,7 +184,7 @@ describe('SessionsAdminPage', () => {
 
     renderPage();
 
-    await screen.findByText('如何使用 RAGFlow?');
+    await screen.findByTestId('session-row-sess_a');
 
     await user.selectOptions(screen.getByLabelText('用户'), 'u_user1');
     await user.click(screen.getByRole('button', { name: '搜索' }));
@@ -203,7 +200,7 @@ describe('SessionsAdminPage', () => {
     expect(lastCall.url).toContain('user_id=u_user1');
   });
 
-  it('点击"查看正文" → 二次确认取消 → 不调 elevated 端点', async () => {
+  it('点击"查看正文" → 统一确认弹窗取消 → 不调 elevated 端点', async () => {
     const user = userEvent.setup();
     globalThis.fetch = mockFetch([
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
@@ -211,8 +208,6 @@ describe('SessionsAdminPage', () => {
       { url: '/admin/share-pages', status: 200, body: SHARE_PAGES_RESPONSE },
       { url: '/admin/sessions', status: 200, body: SESSIONS_RESPONSE },
     ]);
-    window.confirm = vi.fn().mockReturnValue(false);
-
     renderPage();
 
     const row = await screen.findByTestId('session-row-sess_a');
@@ -221,7 +216,9 @@ describe('SessionsAdminPage', () => {
       row.querySelector('button') as HTMLButtonElement,
     );
 
-    expect(window.confirm).toHaveBeenCalled();
+    const dialog = screen.getByRole('dialog', { name: '查看会话正文' });
+    expect(within(dialog).getByText('此操作将记录到审计日志')).toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: '取消' }));
     // 取消 → 不应有 elevated 请求
     const calls = getFetchCalls(globalThis.fetch);
     const elevatedCalls = calls.filter((c) => c.url.includes('elevated=true'));
@@ -230,7 +227,7 @@ describe('SessionsAdminPage', () => {
     expect(screen.queryByText('以管理员身份查看')).not.toBeInTheDocument();
   });
 
-  it('点击"查看正文" → 二次确认确认 → 调 elevated 端点 + 弹窗显示消息', async () => {
+  it('点击"查看正文" → 统一确认弹窗确认 → 调 elevated 端点 + 弹窗显示消息', async () => {
     const user = userEvent.setup();
     globalThis.fetch = mockFetch([
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
@@ -239,8 +236,6 @@ describe('SessionsAdminPage', () => {
       { url: '/admin/sessions', status: 200, body: SESSIONS_RESPONSE },
       { url: '/admin/sessions/sess_a?elevated=true', status: 200, body: ELEVATED_RESPONSE },
     ]);
-    window.confirm = vi.fn().mockReturnValue(true);
-
     renderPage();
 
     const row = await screen.findByTestId('session-row-sess_a');
@@ -248,8 +243,8 @@ describe('SessionsAdminPage', () => {
       row.querySelector('button') as HTMLButtonElement,
     );
 
-    // 确认弹窗被调用
-    expect(window.confirm).toHaveBeenCalled();
+    const dialog = screen.getByRole('dialog', { name: '查看会话正文' });
+    await user.click(within(dialog).getByRole('button', { name: '确认查看' }));
     // 弹窗显示消息正文 — assistant 消息"请参考官方文档。"只出现在弹窗,可唯一定位
     expect(await screen.findByText('请参考官方文档。')).toBeInTheDocument();
     // 弹窗标题"以管理员身份查看"出现
@@ -283,14 +278,15 @@ describe('SessionsAdminPage', () => {
       { url: '/admin/sessions', status: 200, body: SESSIONS_RESPONSE },
       { url: '/admin/sessions/sess_a?elevated=true', status: 500, body: { detail: 'RAGFlow 不可用' } },
     ]);
-    window.confirm = vi.fn().mockReturnValue(true);
-
     renderPage();
 
     const row = await screen.findByTestId('session-row-sess_a');
     await user.click(
       row.querySelector('button') as HTMLButtonElement,
     );
+
+    const dialog = screen.getByRole('dialog', { name: '查看会话正文' });
+    await user.click(within(dialog).getByRole('button', { name: '确认查看' }));
 
     expect(await screen.findByText('RAGFlow 不可用')).toBeInTheDocument();
   });

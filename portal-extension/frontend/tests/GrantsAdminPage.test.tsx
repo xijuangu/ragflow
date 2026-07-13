@@ -124,8 +124,9 @@ describe('GrantsAdminPage', () => {
     renderPage();
 
     // 授权列表显示(用户名 admin 与组名 开发组 可见,而非裸 ID)
-    expect(await screen.findByText('admin')).toBeInTheDocument();
-    expect(screen.getByText('开发组')).toBeInTheDocument();
+    const adminRow = await screen.findByTestId('grant-row-user-u_admin');
+    expect(within(adminRow).getByText('admin')).toBeInTheDocument();
+    expect(within(screen.getByTestId('grant-row-group-g_dev')).getByText('开发组')).toBeInTheDocument();
   });
 
   it('切换分享页 — 调对应 grants 端点', async () => {
@@ -141,7 +142,7 @@ describe('GrantsAdminPage', () => {
 
     renderPage();
 
-    await screen.findByText('admin');
+    await screen.findByTestId('grant-row-user-u_admin');
 
     // 切换到"其他分享页"
     await user.selectOptions(screen.getByLabelText('分享页'), 'sp_other');

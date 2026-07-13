@@ -38,16 +38,13 @@ function renderDetail(id = 'sp_default') {
 
 describe('Slice 23 — 新建会话防抖 + 会话列表轮询', () => {
   let originalFetch: typeof fetch;
-  let originalConfirm: typeof window.confirm;
 
   beforeEach(() => {
     originalFetch = globalThis.fetch;
-    originalConfirm = window.confirm;
   });
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
-    window.confirm = originalConfirm;
     vi.restoreAllMocks();
   });
 
@@ -105,7 +102,7 @@ describe('Slice 23 — 新建会话防抖 + 会话列表轮询', () => {
     renderDetail();
 
     // 初始列表为空
-    expect(await screen.findByText('暂无会话')).toBeInTheDocument();
+    expect(await screen.findByText('暂无历史会话，开始新对话')).toBeInTheDocument();
 
     // 等待轮询触发:断言 GET /sessions 被调用 > 1 次(初始 + 至少 1 次轮询)
     // mockFetch 对同 URL+method 总匹配第一个响应(空列表),这里只验证轮询发生,

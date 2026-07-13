@@ -46,10 +46,15 @@ Vite 开发服务器通过 `vite.config.ts` 将 `/login`、`/logout`、`/me`、`
 ## 构建
 
 ```bash
+cp .env.example .env.production
+# 仅当后端 OIDC_ENABLED=true 且 /sso/login 可用时改为 true
+# VITE_SSO_ENABLED=true
 npm run build
 ```
 
 构建执行 `tsc --noEmit && vite build`，产物输出到 `frontend/dist/`。后端启动时如果检测到该目录，会通过 `StaticFiles(html=True)` 托管 SPA。
+
+`VITE_SSO_ENABLED` 是编译时开关，默认 `false`。未启用 OIDC 时登录页不会展示不可用的 SSO 入口；启用后必须在构建前设为 `true`。
 
 ## 测试
 
@@ -59,7 +64,7 @@ npm run typecheck
 npm run lint
 ```
 
-测试覆盖登录、路由守卫、分享页列表、分享页详情、会话列表/恢复、管理员用户/用户组/分享页/授权/会话/审计页面，以及 widget/agent 入口的前端行为。用户管理页覆盖创建、启停、改密码和硬删除。
+测试覆盖登录、路由守卫、分享页列表、分享页详情、会话列表/恢复、管理员用户/用户组/分享页/授权/会话/审计页面，以及 widget/agent 入口的前端行为。用户管理页覆盖创建、启停、改密码和硬删除；移动端覆盖管理菜单、卡片列表与会话栏折叠。
 
 ## API 客户端约定
 
@@ -73,6 +78,7 @@ npm run lint
 
 ## 设计边界
 
-- 当前前端保留已有交互模型：内联表单、`window.prompt`、`window.confirm`。
+- 当前前端保留内联表单等已有交互模型；高风险操作统一使用站内确认/输入弹窗，明确展示审计、级联删除和不可恢复等后果。
 - 管理后台使用 topbar + 左侧栏布局；普通用户分享页和登录页不套管理员布局。
+- 768px 以下，表格型管理页自动切换为卡片列表，用户组保持原生卡片；管理侧栏和历史会话栏均可折叠。
 - 视觉样式以 `portal-ui-redesign` 的 D1 Graphite 方向为基础，但不引入新的统计卡、全局搜索、通知铃铛或批量导入等未落地功能。
