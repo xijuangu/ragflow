@@ -45,15 +45,11 @@ export const buildMessageUuidWithRole = (
 // Preprocess LaTeX equations to be rendered by KaTeX
 // ref: https://github.com/remarkjs/react-markdown/issues/785
 //
-// Delimiter matching: we only treat \] and \) as block/inline endings when they
-// are not part of a LaTeX command (e.g. \right], \big), \left)). Use a negative
-// lookbehind (?<![a-zA-Z]) so that \] or \) preceded by a letter (command name)
-// is not considered the closing delimiter. Use greedy matching so we match up to
-// the last valid delimiter and avoid cutting at the first \] or \) inside the
-// equation (e.g. \frac{1}{|y|} or \right]).
+// Commands such as \right] and \big) do not contain the literal delimiter
+// sequences \] or \), so matching those sequences directly is sufficient.
 
-const BLOCK_MATH_RE = /\\\[([\s\S]*?)(?<![a-zA-Z])\\\]/g;
-const INLINE_MATH_RE = /\\\(([\s\S]*?)(?<![a-zA-Z])\\\)/g;
+const BLOCK_MATH_RE = /\\\[([\s\S]*?)\\\]/g;
+const INLINE_MATH_RE = /\\\(([\s\S]*?)\\\)/g;
 
 export const preprocessLaTeX = (content: string) => {
   const normalizedContent = content
@@ -61,18 +57,19 @@ export const preprocessLaTeX = (content: string) => {
     .replace(/\\\\\(/g, '\\(')
     .replace(/\\\\\]/g, '\\]')
     .replace(/\\\\\)/g, '\\)')
+    .replace(/\\\\(?=[A-Za-z])/g, '\\')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&amp;/g, '&');
 
   const blockProcessedContent = normalizedContent.replace(
     BLOCK_MATH_RE,
-    (_, equation) => `$$${equation}$$`,
+    (_, equation) => `$$${equation.trim()}$$`,
   );
 
   const inlineProcessedContent = blockProcessedContent.replace(
     INLINE_MATH_RE,
-    (_, equation) => `$${equation}$`,
+    (_, equation) => `$${equation.trim()}$`,
   );
 
   return inlineProcessedContent;
@@ -81,7 +78,10 @@ export const preprocessLaTeX = (content: string) => {
 export function replaceThinkToSection(text: string = '') {
   const pattern = /<think>([\s\S]*?)<\/think>/g;
 
-  const result = text.replace(pattern, '<details class="think"><summary>Thinking...</summary>$1</details>');
+  const result = text.replace(
+    pattern,
+    '<details class="think"><summary>Thinking...</summary>$1</details>',
+  );
 
   return result;
 }
@@ -89,7 +89,10 @@ export function replaceThinkToSection(text: string = '') {
 export function replaceRetrievingToSection(text: string = '') {
   const pattern = /<retrieving>([\s\S]*?)<\/retrieving>/g;
 
-  const result = text.replace(pattern, '<details class="retrieving"><summary>Retrieving...</summary>$1</details>');
+  const result = text.replace(
+    pattern,
+    '<details class="retrieving"><summary>Retrieving...</summary>$1</details>',
+  );
 
   return result;
 }

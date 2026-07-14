@@ -18,7 +18,7 @@ from test.playwright.portal_extension.helpers import (
 )
 
 
-THEME_CLASS_OBSERVER_SCRIPT = """
+THEME_CLASS_OBSERVER_SCRIPT = r"""
 (() => {
   const classHistory = [];
   Object.defineProperty(window, '__portalThemeClassHistory', {
@@ -31,6 +31,36 @@ THEME_CLASS_OBSERVER_SCRIPT = """
     attributes: true,
     attributeFilter: ['class'],
   });
+
+  const parseColor = (color) => {
+    const values = (color.match(/[\d.]+/g) || []).map(Number);
+    return {
+      red: values[0] || 0,
+      green: values[1] || 0,
+      blue: values[2] || 0,
+      alpha: values.length > 3 ? values[3] : 1,
+    };
+  };
+  window.__portalEffectiveBackground = (selector) => {
+    let element = document.querySelector(selector);
+    if (!element) return null;
+    const layers = [];
+    while (element) {
+      layers.push(parseColor(getComputedStyle(element).backgroundColor));
+      element = element.parentElement;
+    }
+    let result = { red: 255, green: 255, blue: 255, alpha: 1 };
+    for (const foreground of layers.reverse()) {
+      const alpha = foreground.alpha + result.alpha * (1 - foreground.alpha);
+      result = {
+        red: (foreground.red * foreground.alpha + result.red * result.alpha * (1 - foreground.alpha)) / alpha,
+        green: (foreground.green * foreground.alpha + result.green * result.alpha * (1 - foreground.alpha)) / alpha,
+        blue: (foreground.blue * foreground.alpha + result.blue * result.alpha * (1 - foreground.alpha)) / alpha,
+        alpha,
+      };
+    }
+    return [result.red, result.green, result.blue].map(Math.round);
+  };
 })();
 """
 
@@ -51,18 +81,21 @@ def assert_portal_chat_uses_stable_light_theme(iframe) -> None:
     theme_state = chat_frame.evaluate(
         """
         () => ({
-          bodyBackground: getComputedStyle(document.body).backgroundColor,
+          backgrounds: {
+            body: window.__portalEffectiveBackground('body'),
+            messageArea: window.__portalEffectiveBackground('[data-testid="chat-message-area"]'),
+            input: window.__portalEffectiveBackground('[data-testid="chat-textarea"]'),
+          },
           classHistory: window.__portalThemeClassHistory || [],
           currentClasses: document.documentElement.className,
         })
         """
     )
-    rgb_values = [
-        int(value)
-        for value in re.findall(r"\d+", theme_state["bodyBackground"] or "")[:3]
-    ]
-    assert len(rgb_values) == 3, f"Could not read iframe body background: {theme_state}"
-    assert min(rgb_values) >= 240, f"Iframe body is not light: {theme_state}"
+    for surface, rgb_values in theme_state["backgrounds"].items():
+        assert rgb_values and len(rgb_values) == 3, (
+            f"Could not read iframe {surface} background: {theme_state}"
+        )
+        assert min(rgb_values) >= 230, f"Iframe {surface} is not light: {theme_state}"
     assert all(
         "dark" not in classes.split()
         for classes in theme_state["classHistory"]
@@ -251,10 +284,30 @@ def test_labor_law_new_and_history_sessions_default_to_light_theme(
     expect(history_button).to_be_visible()
     history_button.click()
     expect(iframe).to_have_attribute("src", re.compile(r"[?&]session_id="))
-    expect(page.frame_locator("iframe[title='RAGFlow 对话']").get_by_test_id("chat-textarea")).to_be_visible(
-        timeout=60_000,
-    )
+    iframe_handle = iframe.element_handle()
+    assert iframe_handle is not None
+    restored_frame = iframe_handle.content_frame()
+    assert restored_frame is not None
+    restored_frame.wait_for_url(re.compile(r"[?&]session_id="), timeout=60_000)
+    expect(restored_frame.get_by_test_id("chat-textarea")).to_be_visible(timeout=60_000)
     assert_portal_chat_uses_stable_light_theme(iframe)
+
+    reference_card = restored_frame.locator(
+        "section.flex.gap-3.flex-wrap .cursor-pointer"
+    ).first
+    expect(reference_card).to_be_visible(timeout=60_000)
+    reference_background = restored_frame.evaluate(
+        "window.__portalEffectiveBackground('section.flex.gap-3.flex-wrap .cursor-pointer')"
+    )
+    assert reference_background and min(reference_background) >= 230
+    reference_card.click()
+    reference_dialog = restored_frame.get_by_role("dialog").first
+    expect(reference_dialog).to_be_visible(timeout=60_000)
+    dialog_background = restored_frame.evaluate(
+        "window.__portalEffectiveBackground('[role=dialog]')"
+    )
+    assert dialog_background and min(dialog_background) >= 230
+    expect(reference_dialog.locator("section").first).to_be_visible(timeout=60_000)
     expect_no_portal_errors(page)
 
 

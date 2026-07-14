@@ -1,4 +1,4 @@
-import { Operator } from '../../constant';
+import { Operator } from '@/constants/agent';
 import { CodeOutputContract } from '../../form/code-form/utils';
 
 const SYSTEM_OUTPUT_NAMES = new Set([

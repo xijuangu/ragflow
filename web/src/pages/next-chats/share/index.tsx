@@ -59,6 +59,7 @@ const ChatContainer = () => {
       <EmbedContainer title={chatInfo.title} avatar={chatInfo.avatar}>
         <div className="flex flex-1 flex-col p-2.5 h-[90vh] m-3">
           <div
+            data-testid="chat-message-area"
             className={
               'flex flex-1 flex-col overflow-auto scrollbar-auto m-auto w-full md:w-5/6 min-h-0'
             }

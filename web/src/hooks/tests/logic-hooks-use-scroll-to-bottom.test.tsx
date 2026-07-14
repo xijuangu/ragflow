@@ -1,3 +1,4 @@
+// The hook tests only scroll behavior; the event stream dependency is unrelated.
 jest.mock('eventsource-parser/stream', () => ({}));
 
 import { act, renderHook } from '@testing-library/react';
@@ -13,6 +14,7 @@ function createMockContainer({ atBottom = true } = {}) {
       scrollTop,
       clientHeight,
       scrollHeight,
+      scrollTo: jest.fn(),
       addEventListener: jest.fn((event, cb) => {
         listeners[event] = cb;
       }),
@@ -54,6 +56,23 @@ describe('useScrollToBottom', () => {
 
   it('should scroll to bottom when isAtBottom is true and messages change', async () => {
     const containerRef = createMockContainer({ atBottom: true });
+
+    const { rerender } = renderHook(
+      ({ messages }) => useScrollToBottom(messages, containerRef),
+      { initialProps: { messages: [] } },
+    );
+
+    rerender({ messages: ['msg1'] });
+    await flushAll();
+
+    expect(containerRef.current.scrollTo).toHaveBeenCalledWith({
+      top: 100,
+      behavior: 'auto',
+    });
+  });
+
+  it('should NOT scroll to bottom when isAtBottom is false and messages change', async () => {
+    const containerRef = createMockContainer({ atBottom: false });
     const mockScroll = jest.fn();
 
     function useTestScrollToBottom(messages: any, containerRef: any) {
@@ -67,28 +86,6 @@ describe('useScrollToBottom', () => {
       { initialProps: { messages: [] } },
     );
 
-    rerender({ messages: ['msg1'] });
-    await flushAll();
-
-    expect(mockScroll).toHaveBeenCalled();
-  });
-
-  it('should NOT scroll to bottom when isAtBottom is false and messages change', async () => {
-    const containerRef = createMockContainer({ atBottom: false });
-    const mockScroll = jest.fn();
-
-    function useTestScrollToBottom(messages: any, containerRef: any) {
-      const hook = useScrollToBottom(messages, containerRef);
-      hook.scrollRef.current = { scrollIntoView: mockScroll } as any;
-      console.log('HOOK: isAtBottom:', hook.isAtBottom);
-      return hook;
-    }
-
-    const { result, rerender } = renderHook(
-      ({ messages }) => useTestScrollToBottom(messages, containerRef),
-      { initialProps: { messages: [] } },
-    );
-
     // Simulate user scrolls up before messages change
     await act(async () => {
       containerRef.current.scrollTop = 0;
@@ -96,13 +93,10 @@ describe('useScrollToBottom', () => {
       await flushAll();
       // Advance fake timers by 10ms instead of real setTimeout
       jest.advanceTimersByTime(10);
-      console.log('AFTER SCROLL: isAtBottom:', result.current.isAtBottom);
     });
 
     rerender({ messages: ['msg1'] });
     await flushAll();
-
-    console.log('AFTER RERENDER: isAtBottom:', result.current.isAtBottom);
 
     expect(mockScroll).not.toHaveBeenCalled();
 

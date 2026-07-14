@@ -1,5 +1,11 @@
 import { ThemeEnum } from '@/constants/common';
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useState,
+} from 'react';
 
 type ThemeProviderProps = {
   children: React.ReactNode;
@@ -29,7 +35,7 @@ export function ThemeProvider({
     () => (localStorage.getItem(storageKey) as ThemeEnum) || defaultTheme,
   );
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const root = window.document.documentElement;
     root.classList.remove(ThemeEnum.Light, ThemeEnum.Dark);
     localStorage.setItem(storageKey, theme);

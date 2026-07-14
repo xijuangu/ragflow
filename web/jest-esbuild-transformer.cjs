@@ -10,6 +10,7 @@ module.exports = {
       format: 'cjs',
       jsx: 'automatic',
       loader,
+      sourcefile: filename,
       sourcemap: 'inline',
       target: 'es2022',
     });

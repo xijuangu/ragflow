@@ -1,4 +1,4 @@
-import { Operator } from '../../constant';
+import { Operator } from '@/constants/agent';
 import { shouldUseCodeExecDebugLayout } from './utils';
 
 describe('shouldUseCodeExecDebugLayout', () => {

@@ -1,6 +1,6 @@
 import { ThemeProvider, useTheme } from '@/components/theme-provider';
 import { ThemeEnum } from '@/constants/common';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import {
   PORTAL_EMBED_THEME_STORAGE_KEY,
   RAGFLOW_THEME_STORAGE_KEY,
@@ -18,7 +18,7 @@ describe('Portal embed theme initialization', () => {
     document.documentElement.className = '';
   });
 
-  it('preserves an explicit Portal theme without changing the global RAGFlow preference', async () => {
+  it('preserves an explicit Portal theme without changing the global RAGFlow preference', () => {
     localStorage.setItem(PORTAL_EMBED_THEME_STORAGE_KEY, ThemeEnum.Dark);
     localStorage.setItem(RAGFLOW_THEME_STORAGE_KEY, ThemeEnum.Light);
 
@@ -29,9 +29,7 @@ describe('Portal embed theme initialization', () => {
     );
 
     expect(screen.getByText(ThemeEnum.Dark)).toBeInTheDocument();
-    await waitFor(() =>
-      expect(document.documentElement).toHaveClass(ThemeEnum.Dark),
-    );
+    expect(document.documentElement).toHaveClass(ThemeEnum.Dark);
     expect(localStorage.getItem(RAGFLOW_THEME_STORAGE_KEY)).toBe(
       ThemeEnum.Light,
     );
