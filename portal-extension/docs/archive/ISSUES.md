@@ -3014,7 +3014,7 @@ Portal 在代理引用资源请求时必须校验短期门户令牌、Portal 登
 
 ## Verification
 
-- 后端：`431 passed, 5 skipped`；Issue 82 定向测试 `9 passed`；相关 history/agent 回归 `38 passed`。
+- 后端：`433 passed, 5 skipped`；Issue 82 定向测试 `11 passed`；相关 history/agent 回归 `40 passed`。
 - 前端：Vitest `89 passed`，TypeScript、ESLint、生产构建通过。
 - 生产：Portal 部署健康检查 200；nginx 配置检查通过并 reload，原配置备份为 `~/portal-nginx/conf.d/default.conf.bak.issue82-20260714`。
 - Playwright：Issue 82 精确用例 `1 passed`；Portal 默认生产套件 `6 passed, 1 skipped`（仅跳过主动发送真实聊天问题的慢用例）。

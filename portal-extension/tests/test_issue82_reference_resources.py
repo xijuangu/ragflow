@@ -6,6 +6,8 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 
+from portal.gateway import TokenStore
+
 
 async def _login_and_get_token(client):
     login = await client.post("/login", json={"username": "admin", "password": "testpass123"})
@@ -200,6 +202,34 @@ async def test_foreign_session_cannot_authorize_its_reference_documents(client, 
     assert captured == []
 
 
+async def test_session_from_another_share_page_cannot_authorize_documents(
+    client, app, monkeypatch
+):
+    """同一用户/同一 resource 也不能跨分享页复用 grant 与 pt_。"""
+    token, dialog_id = await _login_and_get_token(client)
+    other_page = app.state.seed.create_share_page(
+        name="same-resource-other-page",
+        ragflow_resource_id=dialog_id,
+    )
+    session_id = "issue82-other-share-page"
+    app.state.session_store.bind(
+        session_id=session_id,
+        share_page_id=other_page.id,
+        portal_user_id="u_admin",
+        ragflow_resource_id=dialog_id,
+    )
+    captured = []
+    _mock_history_and_thumbnails(monkeypatch, session_id=session_id, dialog_id=dialog_id, captured=captured)
+
+    response = await client.get(
+        f"/api/v1/chatbots/{dialog_id}/sessions/{session_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 403
+    assert captured == []
+
+
 async def test_history_rejects_portal_token_owned_by_another_logged_in_user(client, app, monkeypatch):
     token, dialog_id = await _login_and_get_token(client)
     session_id = "issue82-current-user-mismatch"
@@ -313,7 +343,10 @@ async def test_thumbnail_image_url_gets_scoped_ticket_and_loads_without_authoriz
     assert image.headers["content-type"] == "image/png"
     assert captured[-1]["authorization"] == f"Bearer {os.environ['RAGFLOW_BETA_TOKEN']}"
 
+    ticket_value = parse_qs(urlparse(image_url).query)["portal_ticket"][0]
+    assert ticket_value in app.state.token_store._reference_image_tickets
     app.state.token_store.revoke(token)
+    assert ticket_value not in app.state.token_store._reference_image_tickets
     revoked = await client.get(image_url)
     assert revoked.status_code == 401
 
@@ -340,3 +373,19 @@ async def test_native_ragflow_document_image_request_is_passed_through(client, m
     assert response.content == b"native-image"
     assert response.headers["content-type"] == "image/webp"
     assert captured == ["Bearer native-ragflow-token"]
+
+
+def test_issuing_image_ticket_prunes_expired_ticket(monkeypatch):
+    store = TokenStore()
+    now = 1_000.0
+    monkeypatch.setattr("portal.gateway.time.time", lambda: now)
+    expired_token = store.issue("user", "share", ttl_seconds=10)
+    store.authorize_documents(expired_token, {"doc-old"})
+    expired_ticket = store.issue_reference_image_ticket(expired_token, "doc-old", "image-old")
+
+    now = 2_000.0
+    active_token = store.issue("user", "share", ttl_seconds=10)
+    store.authorize_documents(active_token, {"doc-new"})
+    store.issue_reference_image_ticket(active_token, "doc-new", "image-new")
+
+    assert expired_ticket not in store._reference_image_tickets

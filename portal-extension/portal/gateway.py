@@ -165,6 +165,7 @@ class TokenStore:
         if record is None:
             return False
         record.revoked = True
+        self._remove_reference_image_tickets_for_token(token)
         return True
 
     def revoke_tokens_for_user_share_page(self, portal_user_id: str, share_page_id: str) -> int:
@@ -178,6 +179,7 @@ class TokenStore:
         for record in self._tokens.values():
             if record.portal_user_id == portal_user_id and record.share_page_id == share_page_id and not record.revoked:
                 record.revoked = True
+                self._remove_reference_image_tickets_for_token(record.token)
                 count += 1
         return count
 
@@ -194,6 +196,7 @@ class TokenStore:
 
     def issue_reference_image_ticket(self, token: str, document_id: str, image_id: str) -> str:
         """为已授权文档对应的单个图片签发不超过 T_short 寿命的票据。"""
+        self._prune_reference_image_tickets()
         record = self.validate(token)
         if record is None or document_id not in record.authorized_document_ids:
             raise ValueError("document is not authorized")
@@ -210,9 +213,33 @@ class TokenStore:
     def get_reference_image_ticket(self, ticket: str) -> ReferenceImageTicket | None:
         """读取未过期图片票据;基础令牌的撤销/授权在请求校验链中实时复核。"""
         record = self._reference_image_tickets.get(ticket)
-        if record is None or time.time() > record.expires_at:
+        if record is None:
+            return None
+        if time.time() > record.expires_at or self.validate(record.portal_token) is None:
+            self._reference_image_tickets.pop(ticket, None)
             return None
         return record
+
+    def _prune_reference_image_tickets(self) -> None:
+        """移除已过期、基础令牌失效的图片票据,避免长期进程内存增长。"""
+        now = time.time()
+        stale = [
+            ticket
+            for ticket, record in self._reference_image_tickets.items()
+            if now > record.expires_at or self.validate(record.portal_token) is None
+        ]
+        for ticket in stale:
+            self._reference_image_tickets.pop(ticket, None)
+
+    def _remove_reference_image_tickets_for_token(self, token: str) -> None:
+        """基础令牌撤销时同步清除其派生图片票据。"""
+        stale = [
+            ticket
+            for ticket, record in self._reference_image_tickets.items()
+            if record.portal_token == token
+        ]
+        for ticket in stale:
+            self._reference_image_tickets.pop(ticket, None)
 
 
 class IPRateLimiter:
@@ -447,13 +474,20 @@ def _ragflow_http_error(resp, action: str) -> HTTPException:
     return HTTPException(status_code=502, detail=f"{action}: HTTP {resp.status_code}")
 
 
-def _assert_session_ownership(session_store, session_id: str, portal_user_id: str, dialog_id: str) -> None:
+def _assert_session_ownership(
+    session_store,
+    session_id: str,
+    portal_user_id: str,
+    dialog_id: str,
+    share_page_id: str | None = None,
+) -> None:
     """校验 session_id 归属当前用户且 dialog_id 一致(Slice 2 验收点 7:基础归属隔离)。
 
     校验链(任一失败 → 403):
       1. session_id 在 chat_session_owner 中存在;
       2. owner.portal_user_id == 当前 T_short 持有用户;
-      3. owner.ragflow_resource_id == 请求 dialog_id(session 与 dialog 一致)。
+      3. owner.ragflow_resource_id == 请求 dialog_id(session 与 dialog 一致);
+      4. 提供 share_page_id 时,owner.share_page_id 也必须一致。
 
     这是 Slice 3 完整校验链的归属隔离部分(步骤 3+4),提前在 Slice 2 落地以堵住
     「任意用户带他人 session_id 调 SSE 即可代理到 RAGFlow」的安全漏洞。
@@ -465,6 +499,8 @@ def _assert_session_ownership(session_store, session_id: str, portal_user_id: st
         raise HTTPException(status_code=403, detail="无权访问该会话")
     if owner.ragflow_resource_id != dialog_id:
         raise HTTPException(status_code=403, detail="会话与目标资源不匹配")
+    if share_page_id is not None and owner.share_page_id != share_page_id:
+        raise HTTPException(status_code=403, detail="会话不属于当前分享页")
 
 
 def _assert_or_allow_first_real_message(
@@ -474,6 +510,7 @@ def _assert_or_allow_first_real_message(
     dialog_id: str,
     request_question: str | None,
     pending_greeting_session_ids: set[str],
+    share_page_id: str | None = None,
 ) -> None:
     """校验已绑定 session;真实首问允许未绑定 session 通过。
 
@@ -484,7 +521,13 @@ def _assert_or_allow_first_real_message(
     owner = session_store.get(session_id)
     if owner is None and request_question not in (None, "") and session_id in pending_greeting_session_ids:
         return
-    _assert_session_ownership(session_store, session_id, portal_user_id, dialog_id)
+    _assert_session_ownership(
+        session_store,
+        session_id,
+        portal_user_id,
+        dialog_id,
+        share_page_id,
+    )
 
 
 def _assert_grant_exists(seed, portal_user_id: str, share_page_id: str) -> None:
@@ -769,6 +812,7 @@ async def proxy_sse_to_ragflow(request: Request, dialog_id: str, ragflow_type: s
             dialog_id,
             request_question,
             record.pending_greeting_session_ids,
+            record.share_page_id,
         )
     # Slice 22:传 portal_user_id + share_page_id + org_id,供网关在请求体无 session_id 时
     # 从 SSE 响应解析 session_id 并绑定(fetchSessionId 场景)
@@ -841,7 +885,13 @@ async def _proxy_sse_public_core(
     session_store = getattr(request.app.state, "session_store", None)
     # 步骤 4:session 归属 u_anonymous(公开会话锚点)
     if request_session_id and session_store is not None:
-        _assert_session_ownership(session_store, request_session_id, record.portal_user_id, dialog_id)
+        _assert_session_ownership(
+            session_store,
+            request_session_id,
+            record.portal_user_id,
+            dialog_id,
+            record.share_page_id,
+        )
     # 公开分享页当前仅 chat 类型,ragflow_type 固定为 'chat'
     return _build_sse_streaming_response(
         settings, body, dialog_id, request_session_id, request_question, session_store, ragflow_type="chat"
@@ -1054,6 +1104,43 @@ def _rewrite_thumbnail_image_urls(response_body: bytes, token_store: TokenStore,
     return json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
 
+async def _validate_reference_access(
+    request: Request,
+    t_short: str,
+    record: TokenRecord,
+    *,
+    resource_id: str | None = None,
+) -> TokenRecord:
+    """统一验证 history/thumbnail/image 的 Portal 引用资源访问上下文。"""
+    token_store = request.app.state.token_store
+    seed = request.app.state.seed
+
+    if record.scope == "public":
+        validated = token_store.validate(t_short)
+        if validated is None:
+            raise HTTPException(status_code=401, detail="令牌无效或已过期")
+    else:
+        user = await get_current_user(request)
+        if user.id != record.portal_user_id:
+            raise HTTPException(status_code=403, detail="令牌与当前用户不匹配")
+        # 保持既有撤权语义:grant 删除与 token 吊销同时发生时优先返回 403。
+        _assert_grant_exists(seed, record.portal_user_id, record.share_page_id)
+        validated = token_store.validate(t_short)
+        if validated is None:
+            raise HTTPException(status_code=401, detail="令牌无效或已过期")
+
+    share_page = seed.get_share_page(validated.share_page_id)
+    if not share_page:
+        raise HTTPException(status_code=403, detail="分享页不存在")
+    if not share_page.enabled:
+        raise HTTPException(status_code=403, detail="分享页已禁用")
+    if validated.scope == "public" and not share_page.is_public:
+        raise HTTPException(status_code=403, detail="公开分享已关闭")
+    if resource_id is not None and share_page.ragflow_resource_id != resource_id:
+        raise HTTPException(status_code=401, detail="令牌与目标资源不匹配")
+    return validated
+
+
 async def proxy_document_thumbnails_to_ragflow(request: Request):
     """Issue 82:按已验证历史引用范围代理 RAGFlow 文档缩略图。"""
     from fastapi.responses import Response
@@ -1082,21 +1169,7 @@ async def proxy_document_thumbnails_to_ragflow(request: Request):
         except httpx.RequestError:
             raise HTTPException(status_code=502, detail="上游服务不可用")
 
-    seed = request.app.state.seed
-    if record.scope == "public":
-        validated = token_store.validate(t_short)
-        if validated is None:
-            raise HTTPException(status_code=401, detail="令牌无效或已过期")
-        share_page = seed.get_share_page(validated.share_page_id)
-        if not share_page or not share_page.is_public or not share_page.enabled:
-            raise HTTPException(status_code=403, detail="公开分享不可用")
-    else:
-        user = await get_current_user(request)
-        if user.id != record.portal_user_id:
-            raise HTTPException(status_code=403, detail="令牌与当前用户不匹配")
-        _assert_grant_exists(seed, record.portal_user_id, record.share_page_id)
-        if token_store.validate(t_short) is None:
-            raise HTTPException(status_code=401, detail="令牌无效或已过期")
+    await _validate_reference_access(request, t_short, record)
 
     document_ids = _requested_document_ids(request)
     if not document_ids:
@@ -1152,18 +1225,7 @@ async def proxy_document_image_to_ragflow(request: Request, image_id: str):
     record = token_store.get_record(ticket.portal_token)
     if record is None:
         raise HTTPException(status_code=401, detail="令牌无效或已过期")
-    seed = request.app.state.seed
-    if record.scope == "public":
-        share_page = seed.get_share_page(record.share_page_id)
-        if not share_page or not share_page.is_public or not share_page.enabled:
-            raise HTTPException(status_code=403, detail="公开分享不可用")
-    else:
-        user = await get_current_user(request)
-        if user.id != record.portal_user_id:
-            raise HTTPException(status_code=403, detail="令牌与当前用户不匹配")
-        _assert_grant_exists(seed, record.portal_user_id, record.share_page_id)
-    if token_store.validate(ticket.portal_token) is None:
-        raise HTTPException(status_code=401, detail="令牌无效或已过期")
+    record = await _validate_reference_access(request, ticket.portal_token, record)
     if ticket.document_id not in record.authorized_document_ids:
         raise HTTPException(status_code=403, detail="图片不在当前会话引用范围内")
 
@@ -1348,36 +1410,21 @@ async def proxy_session_history_to_ragflow(
         except httpx.RequestError:
             raise HTTPException(status_code=502, detail="上游服务不可用")
 
-    seed = request.app.state.seed
     session_store = getattr(request.app.state, "session_store", None)
-    if record.scope == "public":
-        validated = token_store.validate(t_short)
-        if validated is None:
-            raise HTTPException(status_code=401, detail="令牌无效或已过期")
-        share_page = seed.get_share_page(validated.share_page_id)
-        if not share_page:
-            raise HTTPException(status_code=403, detail="分享页不存在")
-        if not share_page.is_public:
-            raise HTTPException(status_code=403, detail="公开分享已关闭")
-        if not share_page.enabled:
-            raise HTTPException(status_code=403, detail="分享页已禁用")
-        if share_page.ragflow_resource_id != resource_id:
-            raise HTTPException(status_code=401, detail="令牌与目标资源不匹配")
-        if session_store is not None:
-            _assert_session_ownership(session_store, session_id, record.portal_user_id, resource_id)
-    else:
-        user = await get_current_user(request)
-        if user.id != record.portal_user_id:
-            raise HTTPException(status_code=403, detail="令牌与当前用户不匹配")
-        _assert_grant_exists(seed, record.portal_user_id, record.share_page_id)
-        validated = token_store.validate(t_short)
-        if validated is None:
-            raise HTTPException(status_code=401, detail="令牌无效或已过期")
-        share_page = seed.get_share_page(validated.share_page_id)
-        if not share_page or share_page.ragflow_resource_id != resource_id:
-            raise HTTPException(status_code=401, detail="令牌与目标资源不匹配")
-        if session_store is not None:
-            _assert_session_ownership(session_store, session_id, record.portal_user_id, resource_id)
+    validated = await _validate_reference_access(
+        request,
+        t_short,
+        record,
+        resource_id=resource_id,
+    )
+    if session_store is not None:
+        _assert_session_ownership(
+            session_store,
+            session_id,
+            validated.portal_user_id,
+            resource_id,
+            validated.share_page_id,
+        )
 
     try:
         async with _build_upstream_client() as client:

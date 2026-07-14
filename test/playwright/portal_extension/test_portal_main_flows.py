@@ -134,6 +134,26 @@ def test_labor_law_reference_history_loads_without_ragflow_login(page: Page, bas
     assert thumbnail_response.status == 200, (
         f"thumbnail request failed: {thumbnail_response.status} {thumbnail_response.url}"
     )
+    thumbnail_payload = thumbnail_response.json()
+    thumbnail_data = thumbnail_payload.get("data", {}) if isinstance(thumbnail_payload, dict) else {}
+    image_urls = [
+        value
+        for value in thumbnail_data.values()
+        if isinstance(value, str) and value.startswith("/api/v1/documents/images/")
+    ]
+    for image_url in image_urls:
+        observed_status = next(
+            (status for url, status in relevant_responses if image_url in url),
+            None,
+        )
+        if observed_status is None:
+            image_response = page.wait_for_event(
+                "response",
+                predicate=lambda response, expected=image_url: expected in response.url,
+                timeout=60_000,
+            )
+            observed_status = image_response.status
+        assert observed_status == 200, f"document image request failed: {observed_status} {image_url}"
     iframe = page.locator("iframe[title='RAGFlow 对话']")
     expect(iframe).to_be_visible(timeout=60_000)
     expect(iframe).to_have_attribute("src", re.compile(r"[?&]session_id="))

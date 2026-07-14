@@ -377,7 +377,7 @@ config.py 还支持可选变量(有默认值,不配不影响运行):`T_SHORT_TTL
 
 ## 10. 测试策略
 
-- **后端**:pytest,按 slice/issue 组织(`tests/test_slice*.py`、`tests/test_issue*.py`),基线 431 passed + 5 skipped(2026-07-14)
+- **后端**:pytest,按 slice/issue 组织(`tests/test_slice*.py`、`tests/test_issue*.py`),基线 433 passed + 5 skipped(2026-07-14)
 - **前端**:Vitest,按页面/组件组织(`frontend/tests/*.test.tsx`),基线 89 passed(2026-07-13)
 - **RAGFlow web**:Jest 跑不起来(`umi/test` 缺失),靠 `npm run build` 兜底
 - **E2E**:Playwright + 浏览器手动验收结合。`test/playwright/portal_extension/` 覆盖 portal 实际使用主路径、6 个管理后台 tab、Slice 44 缓存回归、Issue 82 全新浏览器恢复“劳动法”含引用历史会话、临时用户 CRUD、用户组成员和分享页表单;`PORTAL_E2E_RUN_CHAT=1` 时额外发送真实 RAGFlow 问题并等待回复完成;acceptance criteria 记录在 `docs/archive/ISSUES.md`
@@ -410,7 +410,7 @@ uv run pytest -q test/playwright/portal_extension -s --junitxml=/tmp/playwright-
 cd ragflow/portal-extension
 uv run pytest -q
 ```
-- 基线:431 passed + 5 skipped(2026-07-14)
+- 基线:433 passed + 5 skipped(2026-07-14)
 - 前置:无(测试用临时 SQLite,不连真实 MySQL/RAGFlow)
 - 失败处理:看 `tests/test_slice*.py` 对应 slice 的断言
 
