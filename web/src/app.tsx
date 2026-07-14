@@ -17,8 +17,8 @@ import React, { useEffect } from 'react';
 import { RouterProvider } from 'react-router';
 import { ThemeProvider } from './components/theme-provider';
 import { TooltipProvider } from './components/ui/tooltip';
-import { ThemeEnum } from './constants/common';
 import { routers } from './routes';
+import { getThemeProviderConfig } from './theme-initialization';
 import storage from './utils/authorization-util';
 
 import 'react-photo-view/dist/react-photo-view.css';
@@ -76,6 +76,8 @@ function Root({ children }: React.PropsWithChildren) {
 }
 
 const RootProvider = ({ children }: React.PropsWithChildren) => {
+  const themeProviderConfig = getThemeProviderConfig(window.location.search);
+
   useEffect(() => {
     const lng = storage.getLanguage();
     if (lng) {
@@ -86,10 +88,7 @@ const RootProvider = ({ children }: React.PropsWithChildren) => {
   return (
     <TooltipProvider>
       <QueryClientProvider client={queryClient}>
-        <ThemeProvider
-          defaultTheme={ThemeEnum.Dark}
-          storageKey="ragflow-ui-theme"
-        >
+        <ThemeProvider {...themeProviderConfig}>
           <Root>{children}</Root>
         </ThemeProvider>
       </QueryClientProvider>

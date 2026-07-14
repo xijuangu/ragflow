@@ -90,6 +90,7 @@ class ReferenceImageTicket:
 # Slice 19:portal 签发的 T_short 前缀,网关据此区分「portal T_short」与「原生 beta Token」。
 # 定义在 TokenStore 旁(前缀知识与签发/判定共处,避免散落)。
 PORTAL_TOKEN_PREFIX = "pt_"
+PORTAL_EMBED_DEFAULT_THEME = "light"
 
 
 class TokenStore:
@@ -305,7 +306,12 @@ def build_iframe_url(ragflow_browser_origin: str, dialog_id: str, t_short: str, 
     关键:iframe URL 必须走浏览器可访问的 origin(经 nginx),不能直连 RAGFlow 后端
     (如 :8080),否则 iframe 内 API 请求绕过 portal,RAGFlow 不认 pt_ T_short → 102 错误。
     """
-    params = {"shared_id": dialog_id, "auth": t_short, "from": "chat"}
+    params = {
+        "shared_id": dialog_id,
+        "auth": t_short,
+        "from": "chat",
+        "default_theme": PORTAL_EMBED_DEFAULT_THEME,
+    }
     if session_id:
         params["session_id"] = session_id
     base = ragflow_browser_origin.rstrip("/") if ragflow_browser_origin else ""
@@ -323,7 +329,12 @@ def build_agent_iframe_url(ragflow_browser_origin: str, agent_id: str, t_short: 
 
     Slice 19:ragflow_browser_origin 参数(非 ragflow_host)。空 = 同源相对路径。
     """
-    params = {"shared_id": agent_id, "auth": t_short, "from": "agent"}
+    params = {
+        "shared_id": agent_id,
+        "auth": t_short,
+        "from": "agent",
+        "default_theme": PORTAL_EMBED_DEFAULT_THEME,
+    }
     if session_id:
         params["session_id"] = session_id
     base = ragflow_browser_origin.rstrip("/") if ragflow_browser_origin else ""

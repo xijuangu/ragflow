@@ -123,6 +123,8 @@ portal-extension/
 - 消息数语义:`message_count = len(RAGFlow history.messages)`(Slice 26 改动,非 Q&A 轮次)
 - Session 归属:网关在 SSE 成功后从响应绑定 `session_id` 到当前用户(Slice 22),不依赖 iframe URL 预带 `session_id`
 - iframe URL 不预带 `session_id`(Slice 22 根因:RAGFlow 前端不读 URL session_id,预创建产生孤儿 session + 后续 403)
+- Portal chat/agent iframe URL 统一带 `default_theme=light`;该参数是默认值而非强制值,不得改成会覆盖显式选择的 `theme=light`
+- Portal 嵌入主题使用 RAGFlow 独立 localStorage key `ragflow-portal-embed-ui-theme`;无 `default_theme` 的独立 RAGFlow 页面继续使用 `ragflow-ui-theme`
 - 部署 rsync 必须排除 `--exclude='*.db'` 与 `--exclude='.env'`(数据文件与配置不得被 `--delete` 清掉)
 - CSS flex column 容器内的滚动子元素需显式 `flex-shrink: 0`,否则会话增多时被压缩而非触发滚动条(Slice 31 修复)
 
@@ -131,6 +133,10 @@ portal-extension/
 ### 6.1 令牌注入机制
 
 RAGFlow 前端 `getAuthorization()` 优先读 URL `?auth=` 参数,回退读 `localStorage`。网关签发短期 portal token(`pt_` 前缀),通过 iframe URL `auth` 参数注入,租户级 beta Token 全程不离开网关。
+
+### 6.1.1 Portal 嵌入主题初始化
+
+网关构造 chat/agent iframe URL 时附加 `default_theme=light`。RAGFlow `RootProvider` 只在参数值为 `light`/`dark` 时使用该默认值和独立的 `ragflow-portal-embed-ui-theme` 存储 key；无参数或非法值保持原有深色默认值与 `ragflow-ui-theme`。因此 Portal 新会话与历史 iframe 重载均默认为浅色，同时不会读取、覆盖独立 RAGFlow 应用或管理后台的主题偏好。独立 key 中已有明确值时仍优先于默认值。
 
 ### 6.2 会话归属映射
 
@@ -278,6 +284,8 @@ docker exec docker-ragflow-cpu-1 bash -c "cp /ragflow/api/apps/restful_apis/bot_
 ### 9.3 RAGFlow web 前端 dist 替换
 
 修改 RAGFlow `web/` 源码后,需 build + tar + scp + docker cp 替换容器内 `/ragflow/web/dist`,并 reload 容器内 nginx。容器重建同样会丢失。
+
+Issue 83 的浅色主题由 Portal URL 参数与 RAGFlow web 初始化共同完成,部署/回滚必须同时覆盖 Portal 和 RAGFlow web dist。生产验证使用全新浏览器上下文清空 localStorage/cookie,并分别检查新会话和历史会话。
 
 ```bash
 # 1. 本地 build

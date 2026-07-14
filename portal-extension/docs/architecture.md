@@ -38,8 +38,15 @@ RAGFlow
 2. 前端调用 `GET /share-pages` 获取当前用户有权访问的分享页。
 3. 前端进入详情页后调用 `GET /share-pages/{id}/embed-url`。
 4. 网关检查登录态、分享页状态、用户/组授权。
-5. 网关签发 `pt_...` 短期令牌，返回 RAGFlow iframe URL。
+5. 网关签发 `pt_...` 短期令牌，返回带 `default_theme=light` 的 RAGFlow iframe URL。
 6. RAGFlow 前端从 URL `auth` 参数读取令牌，后续 `/api/v1/...` 请求走同源网关。
+
+### Portal 嵌入主题
+
+- `default_theme=light` 只表达 Portal iframe 的默认值，不使用会覆盖明确选择的 `theme=light`。
+- RAGFlow 入口在检测到合法 `default_theme` 时，改用独立的 `ragflow-portal-embed-ui-theme` localStorage key；没有该参数时仍使用原有 `ragflow-ui-theme` 和深色默认值。
+- 因此全新 Portal iframe 首帧沿用 CSS 的白色根变量并初始化为浅色；历史会话 iframe 重载时规则相同。Portal 内若已有明确主题选择，独立 key 的值优先于默认值。
+- 独立访问 RAGFlow、管理后台或其他不带 `default_theme` 的入口不会读取或写入 Portal 嵌入主题 key。
 
 ### iframe 流式问答
 
@@ -102,4 +109,4 @@ RAGFlow
 
 ## 与 RAGFlow 的关系
 
-`portal-extension` 不维护 RAGFlow 上游源码。它依赖 RAGFlow 已有的 iframe、bot API 和 sessions 能力。生产环境中如对 RAGFlow 容器通过 `docker cp` 增加 chatbot sessions GET/PATCH/DELETE 端点，该改动属于运行时补丁，容器重建后需要重新应用。
+`portal-extension` 主要依赖 RAGFlow 已有的 iframe、bot API 和 sessions 能力；本仓库 fork 另维护 Portal 嵌入主题初始化和历史会话恢复所需的最小前端接缝。生产环境需要部署本 fork 的 `web/dist`。如对 RAGFlow 容器通过 `docker cp` 增加 chatbot sessions GET/PATCH/DELETE 端点，该改动同样属于运行时补丁；容器重建后两类补丁都需要重新应用。

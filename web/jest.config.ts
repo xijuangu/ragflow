@@ -1,33 +1,28 @@
-import { Config, configUmiAlias, createConfig } from 'umi/test';
+import type { Config } from 'jest';
 
-export default async () => {
-  return (await configUmiAlias({
-    ...createConfig({
-      target: 'browser',
-      jsTransformer: 'esbuild',
-      // config opts for esbuild , it will pass to esbuild directly
-      jsTransformerOpts: { jsx: 'automatic' },
-    }),
-    setupFilesAfterEnv: ['<rootDir>/jest-setup.ts'],
-    collectCoverageFrom: [
-      '**/*.{ts,tsx,js,jsx}',
-      '!.umi/**',
-      '!.umi-test/**',
-      '!.umi-production/**',
-      '!.umirc.{js,ts}',
-      '!.umirc.*.{js,ts}',
-      '!jest.config.{js,ts}',
-      '!coverage/**',
-      '!dist/**',
-      '!config/**',
-      '!mock/**',
-    ],
-    // if you require some es-module npm package, please uncomment below line and insert your package name
-    // transformIgnorePatterns: ['node_modules/(?!.*(lodash-es|your-es-pkg-name)/)']
-    coverageThreshold: {
-      global: {
-        lines: 1,
-      },
+const config: Config = {
+  testEnvironment: 'jsdom',
+  setupFilesAfterEnv: ['<rootDir>/jest-setup.ts'],
+  transform: {
+    '^.+\\.[jt]sx?$': '<rootDir>/jest-esbuild-transformer.cjs',
+  },
+  moduleNameMapper: {
+    '^@/(.*)$': '<rootDir>/src/$1',
+    '^@parent/(.*)$': '<rootDir>/../src/$1',
+    '\\.(css|less)$': '<rootDir>/jest-style-mock.cjs',
+    '\\.(gif|jpg|jpeg|png|svg|webp)$': '<rootDir>/jest-file-mock.cjs',
+  },
+  collectCoverageFrom: [
+    'src/**/*.{ts,tsx,js,jsx}',
+    '!src/**/*.d.ts',
+    '!coverage/**',
+    '!dist/**',
+  ],
+  coverageThreshold: {
+    global: {
+      lines: 1,
     },
-  })) as Config.InitialOptions;
+  },
 };
+
+export default config;

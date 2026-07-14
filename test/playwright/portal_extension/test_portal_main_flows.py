@@ -18,6 +18,57 @@ from test.playwright.portal_extension.helpers import (
 )
 
 
+THEME_CLASS_OBSERVER_SCRIPT = """
+(() => {
+  const classHistory = [];
+  Object.defineProperty(window, '__portalThemeClassHistory', {
+    value: classHistory,
+    configurable: false,
+  });
+  const record = () => classHistory.push(document.documentElement.className);
+  record();
+  new MutationObserver(record).observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ['class'],
+  });
+})();
+"""
+
+
+def assert_portal_chat_uses_stable_light_theme(iframe) -> None:
+    src = iframe.get_attribute("src") or ""
+    assert "default_theme=light" in src
+    assert not re.search(r"[?&]theme=", src), f"iframe must not force an explicit theme: {src}"
+
+    iframe_handle = iframe.element_handle()
+    assert iframe_handle is not None
+    chat_frame = iframe_handle.content_frame()
+    assert chat_frame is not None
+    chat_frame.wait_for_function(
+        "document.documentElement.classList.contains('light')",
+        timeout=60_000,
+    )
+    theme_state = chat_frame.evaluate(
+        """
+        () => ({
+          bodyBackground: getComputedStyle(document.body).backgroundColor,
+          classHistory: window.__portalThemeClassHistory || [],
+          currentClasses: document.documentElement.className,
+        })
+        """
+    )
+    rgb_values = [
+        int(value)
+        for value in re.findall(r"\d+", theme_state["bodyBackground"] or "")[:3]
+    ]
+    assert len(rgb_values) == 3, f"Could not read iframe body background: {theme_state}"
+    assert min(rgb_values) >= 240, f"Iframe body is not light: {theme_state}"
+    assert all(
+        "dark" not in classes.split()
+        for classes in theme_state["classHistory"]
+    ), f"Iframe switched through dark theme during initialization: {theme_state}"
+
+
 def test_portal_login_share_page_and_token_shell(page: Page, base_url: str):
     """Covers the normal operator path without sending a real RAGFlow question."""
     login_as_admin(page, base_url)
@@ -163,6 +214,47 @@ def test_labor_law_reference_history_loads_without_ragflow_login(page: Page, bas
 
     unauthorized = [(url, status) for url, status in relevant_responses if status == 401]
     assert not unauthorized, f"Referenced history emitted 401 responses: {unauthorized}"
+    expect_no_portal_errors(page)
+
+
+def test_labor_law_new_and_history_sessions_default_to_light_theme(
+    page: Page,
+    base_url: str,
+):
+    """Issue 83: fresh Portal embeds stay light for new and restored sessions."""
+    share_name = os.getenv("PORTAL_E2E_REFERENCE_SHARE_NAME", "劳动法")
+    session_title_query = os.getenv(
+        "PORTAL_E2E_REFERENCE_SESSION_TITLE",
+        "劳动合同到期不续约",
+    )
+
+    page.add_init_script("window.localStorage.clear()")
+    page.add_init_script(THEME_CLASS_OBSERVER_SCRIPT)
+    login_as_admin(page, base_url)
+
+    share_card = page.locator(".share-card", has_text=share_name)
+    expect(share_card).to_have_count(1)
+    share_card.get_by_role("link", name="打开").click()
+    expect(page.get_by_role("heading", name=share_name)).to_be_visible()
+
+    iframe = page.locator("iframe[title='RAGFlow 对话']")
+    expect(iframe).to_be_visible(timeout=60_000)
+    expect(page.frame_locator("iframe[title='RAGFlow 对话']").get_by_test_id("chat-textarea")).to_be_visible(
+        timeout=60_000,
+    )
+    assert_portal_chat_uses_stable_light_theme(iframe)
+
+    history_button = page.locator(
+        "[data-session-item] .ci-trigger",
+        has_text=session_title_query,
+    )
+    expect(history_button).to_be_visible()
+    history_button.click()
+    expect(iframe).to_have_attribute("src", re.compile(r"[?&]session_id="))
+    expect(page.frame_locator("iframe[title='RAGFlow 对话']").get_by_test_id("chat-textarea")).to_be_visible(
+        timeout=60_000,
+    )
+    assert_portal_chat_uses_stable_light_theme(iframe)
     expect_no_portal_errors(page)
 
 

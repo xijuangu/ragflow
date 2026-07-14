@@ -201,6 +201,20 @@ DELETE /api/v1/chatbots/{dialog_id}/sessions/{session_id}
 
 备份、替换、重启 RAGFlow API server 的历史命令记录在 `CONTEXT.md`。执行前应重新核对当前容器名、文件路径和备份点。
 
+### RAGFlow Web 主题补丁
+
+Issue 83 的 Portal 浅色默认值同时依赖 Portal iframe URL 中的 `default_theme=light` 和本仓库 RAGFlow `web/` 对该参数的初始化支持。仅部署 Portal 会使 URL 参数存在，但旧 RAGFlow dist 不会识别它。
+
+部署步骤：
+
+1. 在 `ragflow/web` 执行 `npm run build`。
+2. 将 `web/dist` 打包并传到 RAGFlow 主机。
+3. 备份容器内 `/ragflow/web/dist` 为带时间戳的 `dist.bak.*`。
+4. 替换 dist 后在容器内执行 `nginx -s reload`。
+5. 用全新浏览器上下文只登录 Portal，验证“劳动法”的新会话和历史会话背景均为白色，且初始化 class 记录不经过 `dark`。
+
+该补丁不增加环境变量。回滚时需同时回滚 Portal 代码和 RAGFlow web dist；只回滚一侧会留下无效参数或恢复黑色默认界面。
+
 ## 回滚
 
 Portal 代码回滚：
@@ -239,6 +253,8 @@ RAGFlow 容器补丁回滚：
 ### 修改前端后生产没变化
 
 确认已经运行 `npm run build`，且 `deploy.sh` 同步了 `frontend/dist`。
+
+如果变化位于 RAGFlow `web/`（例如 Portal 嵌入主题），还要替换 RAGFlow 容器内 `/ragflow/web/dist` 并 reload 容器 nginx；Portal 的 `deploy.sh` 不会同步这份产物。
 
 ### API 偶发返回 HTML 导致前端 JSON 解析失败
 
