@@ -1225,13 +1225,12 @@ def _portal_reference_context(request: Request) -> PortalReferenceContext | None
 
 async def _validate_reference_document_ids(
     request: Request,
-    t_short: str,
-    record: TokenRecord,
+    context: PortalReferenceContext,
     document_ids: set[str],
 ) -> None:
     """验证 Portal 上下文和已经由 history/SSE 建立的文档范围。"""
-    await _validate_reference_access(request, t_short, record)
-    if not request.app.state.token_store.documents_are_authorized(t_short, document_ids):
+    await _validate_reference_access(request, context.token, context.record)
+    if not request.app.state.token_store.documents_are_authorized(context.token, document_ids):
         raise HTTPException(status_code=403, detail="文档不在当前会话引用范围内")
 
 
@@ -1264,8 +1263,7 @@ async def proxy_document_thumbnails_to_ragflow(request: Request):
         raise HTTPException(status_code=400, detail="缺少文档 ID")
     await _validate_reference_document_ids(
         request,
-        portal_context.token,
-        portal_context.record,
+        portal_context,
         document_ids,
     )
 
@@ -1301,8 +1299,7 @@ async def proxy_document_preview_to_ragflow(request: Request, document_id: str):
     else:
         await _validate_reference_document_ids(
             request,
-            portal_context.token,
-            portal_context.record,
+            portal_context,
             {document_id},
         )
         upstream_headers = _build_upstream_headers(settings.ragflow_beta_token)
