@@ -437,3 +437,51 @@ uv run --python 3.13 pytest -q test/playwright/portal_extension -s --junitxml=/t
 - 失败处理:看 `FAILURES` 段 + `test/playwright/artifacts/` 截图;CRUD 用例失败时 finally 会用管理员 API 清理临时用户(`pw-user-*` / `pw-group-user-*`)
 
 **回归不通过的处置**:任一套件失败即阻塞该次部署 / 合并;先定位失败用例对应的 Slice,看 `docs/archive/ISSUES.md` 该 Slice 的验收记录与 AC,判断是代码回归还是测试本身需更新。基线数字更新时机:新增 Slice 测试用例后,在对应 Slice 验收记录里更新基线并在本节同步。
+
+## 11. 用户文档计划(grill-with-docs 2026-07-09 确定)
+
+三份独立文档,放 `docs/manual/`,Markdown 格式,纯文字 + Mermaid 流程图(不配截图,避免 UI 改动后过期)。中文撰写,技术术语保留英文。
+
+### 11.1 文档清单与定位
+
+| 文档 | 文件名 | 受众 | 定位 |
+|---|---|---|---|
+| 产品白皮书 | `docs/manual/whitepaper.md` | 技术决策者 / 运维 / 深入理解的管理员 | 产品定位 + 技术架构,自含原理,引用 architecture.md/api.md 做技术参考 |
+| 管理员操作手册 | `docs/manual/admin-manual.md` | 管理员 | 概念 + 操作,快速入门章 + 按功能模块分章 |
+| 普通用户使用指南 | `docs/manual/user-guide.md` | 普通用户(通过分享页对话) | 操作步骤,极简 |
+
+### 11.2 白皮书范围(whitepaper.md)
+
+自含原理层(用文字 + Mermaid 讲透),不重复技术参考细节:
+- **产品定位**:解决 RAGFlow iframe 三大企业落地阻碍(租户 Token 泄露 / 会话丢失 / 缺用户审计)
+- **设计理念**:同源架构(门户 + 网关 + RAGFlow 原生 iframe)、令牌不离开网关、短期可撤销令牌
+- **技术原理**:网关签发 T_SHORT 令牌 → iframe `?auth=` 注入 → `getAuthorization()` 优先读 URL → SSE 代理校验 session_id 归属 → 会话双删(门户 + RAGFlow)
+- **底部延伸阅读**:链接到 `architecture.md`(容器/路由)、`api.md`(API 签名)、`data-model.md`(表结构)
+
+### 11.3 管理员手册结构(admin-manual.md)
+
+快速入门章 + 按功能模块分章(与 admin sidebar 一致):
+1. 快速入门:走一遍典型工作流(建用户 → 建分享页 → 授权 → 登录验证)
+2. 登录与登出
+3. 用户管理:创建用户(含初始密码)、启用/禁用、重置密码(`PATCH /admin/users/:id/password`)
+4. 用户组管理:创建组、添加/移除成员
+5. 分享页管理:CRUD 分享页(含 RAGFlow 资源 ID 配置)
+6. 授权管理:把分享页授权给用户或用户组、撤销授权
+7. 会话管理:查看用户会话
+8. 审计日志:按操作者/类型/时间筛选敏感操作记录
+
+每章结构:概念(2-3 段,引用白皮书深入)→ 操作步骤(文字描述 UI 路径)→ 注意事项。
+
+### 11.4 用户指南范围(user-guide.md)
+
+登录 → 分享页列表 → 打开对话 → 新建会话 → 对话 → 查看历史会话 → 重命名/删除会话 → 登出。
+
+### 11.5 写作顺序
+
+白皮书 → 管理员手册 → 用户指南。白皮书先确立概念术语,手册概念章节引用白皮书,用户指南最后写(内容最少)。
+
+### 11.6 维护约束
+
+- 手册不配截图(UI 改动后截图过期,维护成本高);用文字描述 UI 路径("sidebar 用户管理 → 创建用户按钮")
+- 白皮书与 architecture.md 的边界:白皮书讲"原理"(为什么、怎么工作),architecture.md 讲"技术参考"(容器清单、路由表、代码结构);两者不重复,白皮书链接到 architecture.md
+- 新功能上线后需同步更新对应手册章节
