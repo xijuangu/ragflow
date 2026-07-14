@@ -72,6 +72,19 @@ class TokenRecord:
     revoked: bool = False
     scope: str = "standard"  # Slice 15:'standard'(默认)或 'public'(公开分享页)
     pending_greeting_session_ids: set[str] = field(default_factory=set)
+    # Issue 82:仅允许读取已通过归属校验的历史会话所引用的文档资源。
+    authorized_document_ids: set[str] = field(default_factory=set)
+
+
+@dataclass
+class ReferenceImageTicket:
+    """浏览器图片请求使用的短期不透明票据,不暴露 Portal 或 RAGFlow 令牌。"""
+
+    ticket: str
+    portal_token: str
+    document_id: str
+    image_id: str
+    expires_at: float
 
 
 # Slice 19:portal 签发的 T_short 前缀,网关据此区分「portal T_short」与「原生 beta Token」。
@@ -98,6 +111,7 @@ class TokenStore:
 
     def __init__(self):
         self._tokens: dict = {}
+        self._reference_image_tickets: dict[str, ReferenceImageTicket] = {}
 
     def issue(self, portal_user_id: str, share_page_id: str, ttl_seconds: int, scope: str = "standard") -> str:
         """签发短期 T_short:随机字符串,绑定用户与分享页,设过期时间。
@@ -166,6 +180,39 @@ class TokenStore:
                 record.revoked = True
                 count += 1
         return count
+
+    def authorize_documents(self, token: str, document_ids: set[str]) -> None:
+        """把已验证历史响应中的文档 ID 绑定到对应短期令牌。"""
+        record = self.validate(token)
+        if record is not None:
+            record.authorized_document_ids.update(document_ids)
+
+    def documents_are_authorized(self, token: str, document_ids: set[str]) -> bool:
+        """请求的文档 ID 必须全部来自该令牌已验证过的历史引用。"""
+        record = self.validate(token)
+        return record is not None and document_ids.issubset(record.authorized_document_ids)
+
+    def issue_reference_image_ticket(self, token: str, document_id: str, image_id: str) -> str:
+        """为已授权文档对应的单个图片签发不超过 T_short 寿命的票据。"""
+        record = self.validate(token)
+        if record is None or document_id not in record.authorized_document_ids:
+            raise ValueError("document is not authorized")
+        ticket = "pit_" + secrets.token_urlsafe(24)
+        self._reference_image_tickets[ticket] = ReferenceImageTicket(
+            ticket=ticket,
+            portal_token=token,
+            document_id=document_id,
+            image_id=image_id,
+            expires_at=record.expires_at,
+        )
+        return ticket
+
+    def get_reference_image_ticket(self, ticket: str) -> ReferenceImageTicket | None:
+        """读取未过期图片票据;基础令牌的撤销/授权在请求校验链中实时复核。"""
+        record = self._reference_image_tickets.get(ticket)
+        if record is None or time.time() > record.expires_at:
+            return None
+        return record
 
 
 class IPRateLimiter:
@@ -953,6 +1000,185 @@ def _build_passthrough_headers(request: Request) -> dict:
     return headers
 
 
+def _reference_document_ids(response_body: bytes) -> set[str]:
+    """从 RAGFlow history 响应中提取引用文档 ID。"""
+    try:
+        payload = json.loads(response_body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return set()
+    data = payload.get("data", payload) if isinstance(payload, dict) else {}
+    references = data.get("reference", []) if isinstance(data, dict) else []
+    document_ids: set[str] = set()
+    for reference in references if isinstance(references, list) else []:
+        if not isinstance(reference, dict):
+            continue
+        for aggregate in reference.get("doc_aggs", []) or []:
+            if isinstance(aggregate, dict) and aggregate.get("doc_id"):
+                document_ids.add(str(aggregate["doc_id"]))
+        for chunk in reference.get("chunks", []) or []:
+            if isinstance(chunk, dict) and chunk.get("document_id"):
+                document_ids.add(str(chunk["document_id"]))
+    return document_ids
+
+
+def _requested_document_ids(request: Request) -> set[str]:
+    """解析前端以逗号分隔或重复 query 参数传入的 doc_ids。"""
+    document_ids: set[str] = set()
+    for raw_value in request.query_params.getlist("doc_ids"):
+        document_ids.update(value.strip() for value in raw_value.split(",") if value.strip())
+    return document_ids
+
+
+def _rewrite_thumbnail_image_urls(response_body: bytes, token_store: TokenStore, t_short: str) -> bytes:
+    """把上游图片路径改写为带单资源短期票据的同源 Portal 路径。"""
+    try:
+        payload = json.loads(response_body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return response_body
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        return response_body
+    prefix = "/api/v1/documents/images/"
+    for document_id, image_url in data.items():
+        if not isinstance(image_url, str) or not image_url.startswith(prefix):
+            continue
+        image_id = image_url[len(prefix) :].split("?", 1)[0]
+        if not image_id:
+            continue
+        try:
+            ticket = token_store.issue_reference_image_ticket(t_short, str(document_id), image_id)
+        except ValueError:
+            continue
+        separator = "&" if "?" in image_url else "?"
+        data[document_id] = f"{image_url}{separator}portal_ticket={ticket}"
+    return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+
+async def proxy_document_thumbnails_to_ragflow(request: Request):
+    """Issue 82:按已验证历史引用范围代理 RAGFlow 文档缩略图。"""
+    from fastapi.responses import Response
+
+    settings = request.app.state.settings
+    token_store = request.app.state.token_store
+    upstream_url = f"{settings.ragflow_host.rstrip('/')}/api/v1/thumbnails"
+    t_short = extract_t_short(request)
+    record = token_store.get_record(t_short) if t_short else None
+
+    if record is None and _is_portal_token(t_short):
+        raise HTTPException(status_code=401, detail="令牌无效或已过期")
+    if record is None:
+        try:
+            async with _build_upstream_client() as client:
+                resp = await client.get(
+                    upstream_url,
+                    params=request.query_params.multi_items(),
+                    headers=_build_passthrough_headers(request),
+                )
+            return Response(
+                content=resp.content,
+                status_code=resp.status_code,
+                media_type=resp.headers.get("content-type", "application/json"),
+            )
+        except httpx.RequestError:
+            raise HTTPException(status_code=502, detail="上游服务不可用")
+
+    seed = request.app.state.seed
+    if record.scope == "public":
+        validated = token_store.validate(t_short)
+        if validated is None:
+            raise HTTPException(status_code=401, detail="令牌无效或已过期")
+        share_page = seed.get_share_page(validated.share_page_id)
+        if not share_page or not share_page.is_public or not share_page.enabled:
+            raise HTTPException(status_code=403, detail="公开分享不可用")
+    else:
+        user = await get_current_user(request)
+        if user.id != record.portal_user_id:
+            raise HTTPException(status_code=403, detail="令牌与当前用户不匹配")
+        _assert_grant_exists(seed, record.portal_user_id, record.share_page_id)
+        if token_store.validate(t_short) is None:
+            raise HTTPException(status_code=401, detail="令牌无效或已过期")
+
+    document_ids = _requested_document_ids(request)
+    if not document_ids:
+        raise HTTPException(status_code=400, detail="缺少文档 ID")
+    if not token_store.documents_are_authorized(t_short, document_ids):
+        raise HTTPException(status_code=403, detail="文档不在当前会话引用范围内")
+
+    try:
+        async with _build_upstream_client() as client:
+            resp = await client.get(
+                upstream_url,
+                params=request.query_params.multi_items(),
+                headers=_build_upstream_headers(settings.ragflow_beta_token),
+            )
+        body = resp.content
+        if resp.status_code == 200:
+            body = _rewrite_thumbnail_image_urls(body, token_store, t_short)
+        return Response(
+            content=body,
+            status_code=resp.status_code,
+            media_type=resp.headers.get("content-type", "application/json"),
+        )
+    except httpx.RequestError:
+        raise HTTPException(status_code=502, detail="上游服务不可用")
+
+
+async def proxy_document_image_to_ragflow(request: Request, image_id: str):
+    """Issue 82:用缩略图响应签发的单图片票据代理二进制图片资源。"""
+    from fastapi.responses import Response
+
+    settings = request.app.state.settings
+    token_store = request.app.state.token_store
+    upstream_url = f"{settings.ragflow_host.rstrip('/')}/api/v1/documents/images/{image_id}"
+    ticket_value = request.query_params.get("portal_ticket", "")
+    ticket = token_store.get_reference_image_ticket(ticket_value) if ticket_value else None
+
+    if ticket is None:
+        if ticket_value:
+            raise HTTPException(status_code=401, detail="图片票据无效或已过期")
+        try:
+            async with _build_upstream_client() as client:
+                resp = await client.get(upstream_url, headers=_build_passthrough_headers(request))
+            return Response(
+                content=resp.content,
+                status_code=resp.status_code,
+                media_type=resp.headers.get("content-type", "application/octet-stream"),
+            )
+        except httpx.RequestError:
+            raise HTTPException(status_code=502, detail="上游服务不可用")
+
+    if ticket.image_id != image_id:
+        raise HTTPException(status_code=403, detail="图片票据与资源不匹配")
+    record = token_store.get_record(ticket.portal_token)
+    if record is None:
+        raise HTTPException(status_code=401, detail="令牌无效或已过期")
+    seed = request.app.state.seed
+    if record.scope == "public":
+        share_page = seed.get_share_page(record.share_page_id)
+        if not share_page or not share_page.is_public or not share_page.enabled:
+            raise HTTPException(status_code=403, detail="公开分享不可用")
+    else:
+        user = await get_current_user(request)
+        if user.id != record.portal_user_id:
+            raise HTTPException(status_code=403, detail="令牌与当前用户不匹配")
+        _assert_grant_exists(seed, record.portal_user_id, record.share_page_id)
+    if token_store.validate(ticket.portal_token) is None:
+        raise HTTPException(status_code=401, detail="令牌无效或已过期")
+    if ticket.document_id not in record.authorized_document_ids:
+        raise HTTPException(status_code=403, detail="图片不在当前会话引用范围内")
+
+    try:
+        async with _build_upstream_client() as client:
+            resp = await client.get(upstream_url, headers=_build_upstream_headers(settings.ragflow_beta_token))
+        return Response(
+            content=resp.content,
+            status_code=resp.status_code,
+            media_type=resp.headers.get("content-type", "application/octet-stream"),
+        )
+    except httpx.RequestError:
+        raise HTTPException(status_code=502, detail="上游服务不可用")
+
+
 def _build_sse_passthrough_response(
     settings,
     request: Request,
@@ -1140,7 +1366,9 @@ async def proxy_session_history_to_ragflow(
         if session_store is not None:
             _assert_session_ownership(session_store, session_id, record.portal_user_id, resource_id)
     else:
-        await get_current_user(request)
+        user = await get_current_user(request)
+        if user.id != record.portal_user_id:
+            raise HTTPException(status_code=403, detail="令牌与当前用户不匹配")
         _assert_grant_exists(seed, record.portal_user_id, record.share_page_id)
         validated = token_store.validate(t_short)
         if validated is None:
@@ -1154,6 +1382,8 @@ async def proxy_session_history_to_ragflow(
     try:
         async with _build_upstream_client() as client:
             resp = await client.get(upstream_url, headers=_build_upstream_headers(settings.ragflow_beta_token))
+        if resp.status_code == 200:
+            token_store.authorize_documents(t_short, _reference_document_ids(resp.content))
         return Response(
             content=resp.content,
             status_code=resp.status_code,

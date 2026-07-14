@@ -82,8 +82,9 @@ def test_admin_create_grant_revoke_and_delete_user(page: Page, base_url: str):
         page.goto(portal_url(base_url, "/admin/users"), wait_until="domcontentloaded")
         row = page.get_by_role("row").filter(has_text=username)
         expect(row).to_be_visible()
-        page.once("dialog", lambda dialog: dialog.accept())
         row.get_by_role("button", name="硬删除").click()
+        expect(page.get_by_role("heading", name="硬删除用户")).to_be_visible()
+        page.get_by_role("button", name="确认删除").click()
         expect(page.get_by_role("row").filter(has_text=username)).to_have_count(0)
 
         assert find_admin_user(page, base_url, username) is None

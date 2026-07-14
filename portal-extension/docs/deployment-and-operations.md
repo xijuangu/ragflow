@@ -9,6 +9,8 @@
   /portal/                         -> portal uvicorn :8000
   /portal/assets/                  -> portal uvicorn :8000
   /api/v1/chatbots|agentbots/...   -> portal uvicorn :8000
+  /api/v1/thumbnails               -> portal uvicorn :8000
+  /api/v1/documents/images/...     -> portal uvicorn :8000
   /                                -> RAGFlow web :8080
 ```
 
@@ -25,6 +27,37 @@
 | `docker-redis-1` | Redis。 |
 
 Portal 上游访问 RAGFlow 使用 `RAGFLOW_HOST`，浏览器 iframe 地址使用 `RAGFLOW_BROWSER_ORIGIN`。同源部署时 `RAGFLOW_BROWSER_ORIGIN` 留空。
+
+## nginx 引用资源分流
+
+Issue 82 增加的两个入口必须先到 Portal；如果仍落到 RAGFlow :8080，`pt_` 会被 RAGFlow 当作无效 token 返回 401，前端随后跳到 `/login`。在 `~/portal-nginx/conf.d/default.conf` 中保留现有 chat/agent 规则，并增加：
+
+```nginx
+location = /api/v1/thumbnails {
+    proxy_pass http://172.17.0.1:8000;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+
+location ^~ /api/v1/documents/images/ {
+    proxy_pass http://172.17.0.1:8000;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+`proxy_pass` 不带 URI 尾部，原始路径和 `portal_ticket` query 会完整保留。修改后先检查再 reload：
+
+```bash
+ssh 172.16.10.180 'docker exec portal-nginx nginx -t'
+ssh 172.16.10.180 'docker exec portal-nginx nginx -s reload'
+```
+
+2026-07-14 的 Issue 82 生产变更已应用；变更前配置备份为 `~/portal-nginx/conf.d/default.conf.bak.issue82-20260714`。
 
 ## 一键部署
 
@@ -89,6 +122,10 @@ ssh 172.16.10.180 'ss -tlnp 2>/dev/null | grep :8000'
 
 # nginx 可访问
 ssh 172.16.10.180 'curl -s -o /dev/null -w "nginx /portal/ -> %{http_code}\n" http://localhost:80/portal/'
+
+# 引用资源路径必须由 Portal 接管；无登录/令牌时 401/403 是预期，404 表示路由未部署
+ssh 172.16.10.180 'curl -s -o /dev/null -w "thumbnails -> %{http_code}\n" "http://localhost:80/api/v1/thumbnails?doc_ids=probe"'
+ssh 172.16.10.180 'curl -s -o /dev/null -w "document image -> %{http_code}\n" http://localhost:80/api/v1/documents/images/probe'
 
 # 后端健康，未登录可能返回 401/403，能连通即可进一步看日志
 ssh 172.16.10.180 'curl -s -o /dev/null -w "portal -> %{http_code}\n" http://localhost:8000/me'
@@ -192,6 +229,8 @@ RAGFlow 容器补丁回滚：
 ### 分享页 iframe 闪一下后进入 RAGFlow 登录页
 
 通常是 iframe URL 绕过门户代理，直接打到 RAGFlow，导致 RAGFlow 不认识 `pt_` 门户令牌。检查 `RAGFLOW_BROWSER_ORIGIN` 和 nginx `/api/v1/...` 代理。
+
+如果只有“打开含引用的历史会话”才跳登录页，检查 nginx 是否同时把 `/api/v1/thumbnails` 和 `/api/v1/documents/images/` 分流到 Portal，并在浏览器 Network 中确认 sessions、thumbnails、images 均无 401。
 
 ### 历史会话重启后消失
 

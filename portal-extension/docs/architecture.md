@@ -21,6 +21,7 @@ FastAPI Portal/Gateway
   - 账号、组、分享页、授权、会话归属、审计
   - 签发 pt_ 短期令牌
   - 代理 RAGFlow bot_api / agentbot_api
+  - 按已验证会话引用范围代理缩略图和文档图片
   - 托管 frontend/dist
 
 RAGFlow
@@ -52,8 +53,11 @@ RAGFlow
 
 1. 前端调用 `GET /share-pages/{id}/sessions` 获取当前用户自己的会话列表。
 2. 用户选择会话后，前端调用 `GET /share-pages/{id}/sessions/{sid}`。
-3. 网关校验会话归属，再调用 RAGFlow sessions 端点读取消息和引用。
-4. 前端用返回数据恢复 iframe/会话状态。
+3. iframe 用新的 `pt_` 调同源 sessions 端点；网关校验 Portal cookie、grant、resource id 和会话归属，再使用服务端 beta token 读取消息与引用。
+4. 网关只把成功 history 响应中的 `doc_aggs[].doc_id` / `chunks[].document_id` 加入该 `pt_` 的内存文档范围。
+5. iframe 请求 `GET /api/v1/thumbnails?doc_ids=...` 时，所有文档 ID 都必须属于该范围；校验通过后才换 beta token 请求 RAGFlow。
+6. 如果缩略图值是 `/api/v1/documents/images/{image_id}`，网关把它改写为带 `portal_ticket` 的同源 URL。票据绑定基础 `pt_`、文档 ID、图片 ID，且寿命不超过基础令牌。
+7. 浏览器 `<img>` 不带 Authorization；图片端点用票据和 Portal cookie 重新检查用户、grant、令牌及资源绑定，再代理二进制内容。因此恢复引用不依赖 RAGFlow cookie 或 localStorage。
 
 ## 安全模型
 
@@ -61,6 +65,8 @@ RAGFlow
 - 门户令牌统一使用 `pt_` 前缀，默认 5 分钟过期，重启后全部失效。
 - 授权撤销后，网关每次请求都会重新检查 grant；即使旧 `pt_` 未过期也会被拒绝。
 - 用户会话隔离依赖 `chat_session_owner`，任何带 `session_id` 的请求都必须匹配当前用户和分享页 resource。
+- 引用资源使用“先验证 history，再授权文档”的能力收窄模型；`doc_ids` 不能凭 `pt_` 自行扩展。图片票据是单图片、不透明、短期凭据，基础令牌撤销或 grant 移除后立即不可用。
+- 无 `pt_` 前缀且无 `portal_ticket` 的缩略图/图片请求保留 Authorization 与 Cookie 透传，兼容 RAGFlow 原生访问。
 - 管理员 elevated 查看正文必须显式传 `elevated=true`，并写入 `session_view_elevated` 审计。
 - 普通页面默认 `X-Frame-Options: SAMEORIGIN`；widget 页面使用 CSP `frame-ancestors`。
 
@@ -72,6 +78,7 @@ RAGFlow
 | 会话归属、门户显示标题、消息数缓存 | Portal DB |
 | 消息正文、引用、文档预览信息 | RAGFlow `API4Conversation` |
 | 短期门户令牌 | Portal 进程内存 |
+| 引用文档授权范围、图片票据 | Portal 进程内存（绑定短期门户令牌） |
 | 公开分享 IP 限流 | Portal 进程内存 |
 
 ## 功能边界

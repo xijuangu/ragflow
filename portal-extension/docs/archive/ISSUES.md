@@ -2989,6 +2989,42 @@ D1 Graphite 的蓝紫色 accent 适合作为"当前状态 + 主动作",但当前
 
 ---
 
+## Issue 82 — 历史会话引用资源代理：未登录 RAGFlow 时不再跳登录页
+
+> 状态：✅ 已完成（2026-07-14）。Portal 对已验证历史引用建立文档范围，代理缩略图和后续图片资源；生产 nginx 已分流并通过全新浏览器回归。
+
+## What to build
+
+修复 Portal 用户恢复包含文档引用的历史会话时，被 RAGFlow 缩略图接口的 401 响应重定向到 RAGFlow 登录页的问题。
+
+交付一个完整的同源访问路径：用户在全新浏览器中只登录 Portal，进入有权访问的分享页并打开自己的历史会话后，消息、引用、文档缩略图及必要的后续图片资源都通过 Portal 的资源受限授权访问，不要求用户预先建立 RAGFlow 登录态。
+
+Portal 在代理引用资源请求时必须校验短期门户令牌、Portal 登录态、分享页授权、会话归属及引用文档范围，校验通过后才可使用服务端 RAGFlow beta token 请求上游。不能仅按路径无条件替换 token，否则资源受限的 Portal token 可能获得租户级文档读取能力。
+
+## Acceptance criteria
+
+- [x] 在没有 RAGFlow cookie、localStorage 或登录态的全新浏览器中，只登录 Portal 后进入“劳动法”分享页并打开包含文档引用的历史会话，iframe 不跳转到 `/login`。
+- [x] 历史消息、引用列表、文档缩略图以及缩略图返回的必要图片资源均可正常加载，相关请求不再返回 401。
+- [x] Portal 对引用资源请求校验有效 `pt_` 令牌、当前 Portal 会话、分享页授权和会话归属；无效、过期或已撤销的令牌被拒绝。
+- [x] 请求的文档 ID 必须属于当前用户有权恢复的会话引用范围；伪造或越权 `doc_ids` 不能借服务端 beta token 读取其他文档。
+- [x] RAGFlow 原生 token 访问路径保持兼容，不因新增 Portal 代理而回归。
+- [x] 后端回归测试覆盖成功代理、无效令牌、授权撤销、会话归属不匹配和越权文档 ID。
+- [x] Playwright 回归覆盖“全新浏览器 → 只登录 Portal → 劳动法 → 打开含引用历史会话”，并断言聊天界面保持可用、无 RAGFlow 登录页、无相关 401。
+- [x] 当前架构、API、部署运维和 nginx 分流文档同步更新；部署后完成受影响测试、前端构建和生产 Playwright 验证。
+
+## Verification
+
+- 后端：`431 passed, 5 skipped`；Issue 82 定向测试 `9 passed`；相关 history/agent 回归 `38 passed`。
+- 前端：Vitest `89 passed`，TypeScript、ESLint、生产构建通过。
+- 生产：Portal 部署健康检查 200；nginx 配置检查通过并 reload，原配置备份为 `~/portal-nginx/conf.d/default.conf.bak.issue82-20260714`。
+- Playwright：Issue 82 精确用例 `1 passed`；Portal 默认生产套件 `6 passed, 1 skipped`（仅跳过主动发送真实聊天问题的慢用例）。
+
+## Blocked by
+
+None.
+
+---
+
 ## 后续待办(Issue 16 AC2 遗留)
 
 > Issue 16 AC2「悬浮组件在任意页面右下角加载,点击展开对话窗,能正常对话」— Slice 16 实现了 `/widget/<id>` 骨架 HTML + 可嵌入 snippet + CSP frame-ancestors 放行,但 **悬浮组件实际 UI 渲染(右下角悬浮按钮 + 点击展开对话窗 + iframe 加载 + SSE 对话)尚未实现**。`/widget/<id>` 当前仅返回含 `<div id="widget-root">` 的占位 HTML,需前端构建产物挂载 React 组件。

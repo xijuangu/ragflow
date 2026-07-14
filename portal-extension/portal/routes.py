@@ -44,6 +44,8 @@ from portal.gateway import (
     precreate_agent_session_via_ragflow,
     precreate_session_via_ragflow,
     proxy_bot_json_to_ragflow,
+    proxy_document_image_to_ragflow,
+    proxy_document_thumbnails_to_ragflow,
     proxy_session_history_to_ragflow,
     proxy_sse_public_to_ragflow,
     proxy_sse_to_ragflow,
@@ -926,6 +928,18 @@ async def proxy_chatbot_session_history(dialog_id: str, session_id: str, request
 async def proxy_agentbot_session_history(agent_id: str, session_id: str, request: Request):
     """Agentbot session history 代理(Slice 24)— shared iframe 按 URL session_id 恢复历史。"""
     return await proxy_session_history_to_ragflow(request, agent_id, session_id, ragflow_type="agent")
+
+
+@router.get("/api/v1/thumbnails")
+async def proxy_document_thumbnails(request: Request):
+    """按当前已验证历史引用范围代理文档缩略图。"""
+    return await proxy_document_thumbnails_to_ragflow(request)
+
+
+@router.get("/api/v1/documents/images/{image_id}")
+async def proxy_document_image(image_id: str, request: Request):
+    """用缩略图响应中的短期票据代理引用图片。"""
+    return await proxy_document_image_to_ragflow(request, image_id)
 
 
 # ---------------------------------------------------------------------------

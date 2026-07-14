@@ -27,7 +27,7 @@ def test_portal_login_share_page_and_token_shell(page: Page, base_url: str):
     expect(first_open).to_be_visible()
     first_open.click()
 
-    expect(page.get_by_role("heading", name=re.compile("分享页对话|悬浮组件嵌入"))).to_be_visible()
+    expect(page.get_by_role("link", name="返回列表")).to_be_visible()
     expect(page.get_by_role("complementary", name="我的会话")).to_be_visible()
     expect(page.get_by_role("button", name="新建会话")).to_be_visible()
 
@@ -77,6 +77,73 @@ def test_portal_admin_tabs_load_without_cache_regression(page: Page, base_url: s
     content_type = json_response.headers.get("content-type", "")
     assert "application/json" in content_type.lower()
     assert isinstance(json_response.json().get("users"), list)
+
+
+def test_labor_law_reference_history_loads_without_ragflow_login(page: Page, base_url: str):
+    """Issue 82: fresh Portal-only login can restore referenced history and its resources."""
+    share_name = os.getenv("PORTAL_E2E_REFERENCE_SHARE_NAME", "劳动法")
+    session_title_query = os.getenv(
+        "PORTAL_E2E_REFERENCE_SESSION_TITLE",
+        "劳动合同到期不续约",
+    )
+    relevant_responses: list[tuple[str, int]] = []
+
+    page.add_init_script("window.localStorage.clear()")
+    page.on(
+        "response",
+        lambda response: relevant_responses.append((response.url, response.status))
+        if any(
+            marker in response.url
+            for marker in ("/sessions/", "/api/v1/thumbnails", "/api/v1/documents/images/")
+        )
+        else None,
+    )
+    login_as_admin(page, base_url)
+
+    share_pages = api_get_json(page, base_url, "/share-pages").get("share_pages", [])
+    share_page = next((item for item in share_pages if item.get("name") == share_name), None)
+    assert share_page is not None, f"Accessible share page {share_name!r} was not found"
+    sessions = api_get_json(
+        page,
+        base_url,
+        f"/share-pages/{quote_path(share_page['id'])}/sessions",
+    ).get("sessions", [])
+    target = next(
+        (item for item in sessions if session_title_query in (item.get("title") or "")),
+        None,
+    )
+    assert target is not None, f"Reference history containing {session_title_query!r} was not found"
+
+    share_card = page.locator(".share-card", has_text=share_name)
+    expect(share_card).to_have_count(1)
+    share_card.get_by_role("link", name="打开").click()
+    expect(page.get_by_role("heading", name=share_name)).to_be_visible()
+
+    history_button = page.locator(
+        "[data-session-item] .ci-trigger",
+        has_text=session_title_query,
+    )
+    expect(history_button).to_be_visible()
+    with page.expect_response(
+        lambda response: "/api/v1/thumbnails" in response.url,
+        timeout=60_000,
+    ) as thumbnail_info:
+        history_button.click()
+
+    thumbnail_response = thumbnail_info.value
+    assert thumbnail_response.status == 200, (
+        f"thumbnail request failed: {thumbnail_response.status} {thumbnail_response.url}"
+    )
+    iframe = page.locator("iframe[title='RAGFlow 对话']")
+    expect(iframe).to_be_visible(timeout=60_000)
+    expect(iframe).to_have_attribute("src", re.compile(r"[?&]session_id="))
+    chat_frame = page.frame_locator("iframe[title='RAGFlow 对话']")
+    expect(chat_frame.get_by_test_id("chat-textarea")).to_be_visible(timeout=60_000)
+    assert all(not frame.url.rstrip("/").endswith("/login") for frame in page.frames)
+
+    unauthorized = [(url, status) for url, status in relevant_responses if status == 401]
+    assert not unauthorized, f"Referenced history emitted 401 responses: {unauthorized}"
+    expect_no_portal_errors(page)
 
 
 def test_portal_share_page_chat_roundtrip_waits_for_reply(page: Page, base_url: str):
