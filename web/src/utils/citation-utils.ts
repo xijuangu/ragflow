@@ -13,12 +13,12 @@ export const normalizeCitationDigits = (text: string) => {
 };
 
 export const parseCitationIndex = (value: string) => {
-  const normalized = normalizeCitationDigits(value);
-  const markerMatch = normalized.match(/\[(?:ID:)?(\d+)\]/);
+  const normalized = normalizeCitationDigits(value.normalize('NFKC'));
+  const markerMatch = normalized.match(/\[\s*(?:ID\s*:\s*)?(\d+)\s*\]/i);
   if (markerMatch) return Number(markerMatch[1]);
   if (/^\d+$/.test(normalized)) return Number(normalized);
   return Number.NaN;
 };
 
 export const citationMarkerReg =
-  /\[(?:ID:)?([0-9\u0660-\u0669\u06F0-\u06F9]+)\]/g;
+  /(?:\[|［)\s*(?:ID\s*(?::|：)\s*)?([0-9\u0660-\u0669\u06F0-\u06F9]+)\s*(?:\]|］)/gi;

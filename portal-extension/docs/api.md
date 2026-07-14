@@ -85,7 +85,7 @@ widget 响应：
 | `GET` | `/api/v1/agentbots/{agent_id}/inputs` | Agent 输入配置代理。 |
 | `GET` | `/api/v1/chatbots/{dialog_id}/sessions/{sid}` | Chat session history 代理。 |
 | `GET` | `/api/v1/agentbots/{agent_id}/sessions/{sid}` | Agent session history 代理。 |
-| `GET` | `/api/v1/thumbnails?doc_ids={id1,id2}` | 当前已验证历史引用范围内的文档缩略图代理。 |
+| `GET` | `/api/v1/thumbnails?doc_ids={id1,id2}` | 当前已验证 history/SSE 引用范围内的文档缩略图代理。 |
 | `GET` | `/api/v1/documents/images/{image_id}?portal_ticket={ticket}` | 缩略图返回的后续图片资源代理。 |
 
 标准校验链：
@@ -99,9 +99,10 @@ widget 响应：
 引用资源增加两层范围校验：
 
 1. sessions history 成功响应后，网关从 `reference.doc_aggs[].doc_id` 和 `reference.chunks[].document_id` 提取文档 ID，并绑定到本次 `pt_`。
-2. `/thumbnails` 请求中的全部 `doc_ids` 必须属于该集合；任意未引用 ID 返回 403，不请求上游。
-3. 非 base64 缩略图路径会附加不透明 `portal_ticket`。该票据只对应一个文档和一个图片 ID，过期时间不晚于基础 `pt_`。
-4. `/documents/images/{image_id}` 不依赖 Authorization header，但要求有效图片票据和同源 Portal cookie，并实时复查 grant 与基础令牌状态。
+2. completions SSE 的完整事件含 `reference` 时，网关在向浏览器转发该事件前执行相同提取与绑定；解析支持事件跨网络 chunk 分段及单 chunk 多事件。
+3. `/thumbnails` 请求中的全部 `doc_ids` 必须属于 history/SSE 形成的集合；任意未引用 ID 返回 403，不请求上游。
+4. 非 base64 缩略图路径会附加不透明 `portal_ticket`。该票据只对应一个文档和一个图片 ID，过期时间不晚于基础 `pt_`。
+5. `/documents/images/{image_id}` 不依赖 Authorization header，但要求有效图片票据和同源 Portal cookie，并实时复查 grant 与基础令牌状态。
 
 无 `pt_` 前缀的 token 会按原生 RAGFlow token 透传路径处理；不带 `portal_ticket` 的图片请求也保留原始 Authorization/Cookie 透传，用于兼容原生分享页场景。
 

@@ -322,6 +322,106 @@ def test_labor_law_new_and_history_sessions_default_to_light_theme(
     expect_no_portal_errors(page)
 
 
+def test_labor_law_new_answer_reference_resources_are_immediately_available(
+    page: Page,
+    base_url: str,
+):
+    """Issue 84: a new referenced answer loads resources and renders interactive citations."""
+    if not env_flag("PORTAL_E2E_RUN_REFERENCE_CHAT"):
+        pytest.skip(
+            "Set PORTAL_E2E_RUN_REFERENCE_CHAT=1 to send a real Labor Law reference question."
+        )
+
+    share_name = os.getenv("PORTAL_E2E_REFERENCE_SHARE_NAME", "劳动法")
+    question = os.getenv(
+        "PORTAL_E2E_REFERENCE_CHAT_QUESTION",
+        "法定节假日、带薪年休假和限制延长工作时间分别有哪些规定？请引用知识库依据。",
+    )
+    chat_timeout_ms = int(os.getenv("PORTAL_E2E_CHAT_TIMEOUT_MS", "180000"))
+    created_session_id = None
+    capture_thumbnails = {"enabled": False}
+    thumbnail_responses: list[tuple[str, int]] = []
+
+    page.on(
+        "response",
+        lambda response: thumbnail_responses.append((response.url, response.status))
+        if capture_thumbnails["enabled"] and "/api/v1/thumbnails" in response.url
+        else None,
+    )
+    login_as_admin(page, base_url)
+    share_pages = api_get_json(page, base_url, "/share-pages").get("share_pages", [])
+    share_page = next((item for item in share_pages if item.get("name") == share_name), None)
+    assert share_page is not None, f"Accessible share page {share_name!r} was not found"
+    share_page_id = share_page["id"]
+    before = api_get_json(
+        page,
+        base_url,
+        f"/share-pages/{quote_path(share_page_id)}/sessions",
+    )
+    previous_session_ids = {session["session_id"] for session in before.get("sessions", [])}
+
+    try:
+        share_card = page.locator(".share-card", has_text=share_name)
+        expect(share_card).to_have_count(1)
+        share_card.get_by_role("link", name="打开").click()
+        expect(page.get_by_role("heading", name=share_name)).to_be_visible()
+
+        chat_frame = page.frame_locator("iframe[title='RAGFlow 对话']")
+        textarea = chat_frame.get_by_test_id("chat-textarea")
+        expect(textarea).to_be_visible(timeout=60_000)
+        textarea.fill(question)
+
+        capture_thumbnails["enabled"] = True
+        send = chat_frame.get_by_test_id("chat-detail-send")
+        expect(send).to_be_enabled()
+        send.click()
+
+        stream_status = chat_frame.get_by_test_id("chat-stream-status")
+        try:
+            expect(stream_status).to_be_visible(timeout=15_000)
+            expect(stream_status).to_have_count(0, timeout=chat_timeout_ms)
+        except PlaywrightTimeoutError:
+            # Very short answers can finish before the status button is observable.
+            pass
+
+        wait_until(
+            lambda: thumbnail_responses or None,
+            timeout_ms=chat_timeout_ms,
+            interval_ms=500,
+            description="thumbnail request from the new referenced answer",
+        )
+        assert all(status == 200 for _, status in thumbnail_responses), (
+            f"New referenced answer emitted failing thumbnail responses: {thumbnail_responses}"
+        )
+
+        citation = chat_frame.get_by_text(re.compile(r"Fig\.\s+\d+")).last
+        expect(citation).to_be_visible(timeout=chat_timeout_ms)
+        expect(
+            chat_frame.get_by_text(re.compile(r"[\[［]\s*ID\s*[:：]"))
+        ).to_have_count(0)
+        citation.hover()
+        expect(
+            chat_frame.locator("[data-radix-popper-content-wrapper]").last
+        ).to_be_visible(timeout=15_000)
+
+        created = _wait_for_new_session_with_reply(
+            page,
+            base_url,
+            share_page_id,
+            previous_session_ids,
+            timeout_ms=chat_timeout_ms,
+        )
+        created_session_id = created["session_id"]
+        expect_no_portal_errors(page)
+    finally:
+        if created_session_id:
+            api_delete(
+                page,
+                base_url,
+                f"/share-pages/{quote_path(share_page_id)}/sessions/{quote_path(created_session_id)}",
+            )
+
+
 def test_portal_share_page_chat_roundtrip_waits_for_reply(page: Page, base_url: str):
     """Optional slow test: sends a real RAGFlow question and waits for the reply to finish."""
     if not env_flag("PORTAL_E2E_RUN_CHAT"):

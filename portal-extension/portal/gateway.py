@@ -839,6 +839,8 @@ async def proxy_sse_to_ragflow(request: Request, dialog_id: str, ragflow_type: s
         portal_user_id=record.portal_user_id,
         share_page_id=record.share_page_id,
         org_id=share_page.org_id,
+        token_store=token_store,
+        t_short=t_short,
     )
 
 
@@ -905,7 +907,15 @@ async def _proxy_sse_public_core(
         )
     # 公开分享页当前仅 chat 类型,ragflow_type 固定为 'chat'
     return _build_sse_streaming_response(
-        settings, body, dialog_id, request_session_id, request_question, session_store, ragflow_type="chat"
+        settings,
+        body,
+        dialog_id,
+        request_session_id,
+        request_question,
+        session_store,
+        ragflow_type="chat",
+        token_store=token_store,
+        t_short=t_short,
     )
 
 
@@ -935,6 +945,8 @@ def _build_sse_streaming_response(
     portal_user_id: str = "",
     share_page_id: str = "",
     org_id: str = "default",
+    token_store: TokenStore | None = None,
+    t_short: str = "",
 ) -> StreamingResponse:
     """构造 SSE 流式响应(标准路径与公开路径共用)。
 
@@ -965,10 +977,13 @@ def _build_sse_streaming_response(
         success = False
         # Slice 22:累积解析 SSE 响应的 session_id(RAGFlow fetchSessionId 新建的 session)
         parsed_session_id = ""
+        reference_parser = SSEReferenceDocumentParser()
         try:
             async with _build_upstream_client(timeout=None) as client:
                 async with client.stream("POST", upstream_url, content=body, headers=upstream_headers) as upstream:
                     async for chunk in upstream.aiter_bytes():
+                        if token_store is not None and t_short:
+                            token_store.authorize_documents(t_short, reference_parser.feed(chunk))
                         yield chunk
                         # Slice 22:未解析到 session_id 时,尝试从当前 chunk 解析(首帧即含)
                         if not parsed_session_id:
@@ -1061,16 +1076,11 @@ def _build_passthrough_headers(request: Request) -> dict:
     return headers
 
 
-def _reference_document_ids(response_body: bytes) -> set[str]:
-    """从 RAGFlow history 响应中提取引用文档 ID。"""
-    try:
-        payload = json.loads(response_body)
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return set()
-    data = payload.get("data", payload) if isinstance(payload, dict) else {}
-    references = data.get("reference", []) if isinstance(data, dict) else []
+def _document_ids_from_references(references) -> set[str]:
+    """从单个或多个 RAGFlow reference 对象中提取文档 ID。"""
     document_ids: set[str] = set()
-    for reference in references if isinstance(references, list) else []:
+    reference_items = references if isinstance(references, list) else [references]
+    for reference in reference_items:
         if not isinstance(reference, dict):
             continue
         for aggregate in reference.get("doc_aggs", []) or []:
@@ -1080,6 +1090,63 @@ def _reference_document_ids(response_body: bytes) -> set[str]:
             if isinstance(chunk, dict) and chunk.get("document_id"):
                 document_ids.add(str(chunk["document_id"]))
     return document_ids
+
+
+def _reference_document_ids_from_payload(payload) -> set[str]:
+    data = payload.get("data", payload) if isinstance(payload, dict) else {}
+    references = data.get("reference", []) if isinstance(data, dict) else []
+    return _document_ids_from_references(references)
+
+
+def _reference_document_ids(response_body: bytes) -> set[str]:
+    """从 RAGFlow history 响应中提取引用文档 ID。"""
+    try:
+        payload = json.loads(response_body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return set()
+    return _reference_document_ids_from_payload(payload)
+
+
+class SSEReferenceDocumentParser:
+    """增量解析 SSE 事件，并返回已完整事件中的引用文档 ID。"""
+
+    def __init__(self):
+        self._buffer = b""
+
+    @staticmethod
+    def _event_boundary(buffer: bytes) -> tuple[int, int] | None:
+        boundaries = [
+            (index, len(delimiter))
+            for delimiter in (b"\r\n\r\n", b"\n\n")
+            if (index := buffer.find(delimiter)) >= 0
+        ]
+        return min(boundaries, default=None)
+
+    @staticmethod
+    def _document_ids_from_event(event: bytes) -> set[str]:
+        data_lines = []
+        for line in event.splitlines():
+            if not line.startswith(b"data:"):
+                continue
+            value = line[len(b"data:") :]
+            data_lines.append(value[1:] if value.startswith(b" ") else value)
+        if not data_lines:
+            return set()
+        try:
+            payload = json.loads(b"\n".join(data_lines))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return set()
+        return _reference_document_ids_from_payload(payload)
+
+    def feed(self, chunk: bytes) -> set[str]:
+        self._buffer += chunk
+        document_ids: set[str] = set()
+        while (boundary := self._event_boundary(self._buffer)) is not None:
+            index, delimiter_length = boundary
+            event = self._buffer[:index]
+            self._buffer = self._buffer[index + delimiter_length :]
+            document_ids.update(self._document_ids_from_event(event))
+        return document_ids
 
 
 def _requested_document_ids(request: Request) -> set[str]:

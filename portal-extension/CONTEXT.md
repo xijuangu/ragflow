@@ -155,7 +155,7 @@ RAGFlow 前端 `getAuthorization()` 优先读 URL `?auth=` 参数,回退读 `loc
 
 portal 网关 `_ragflow_bot_segment` 用于 completions(agent → "agentbots"),sessions 端点需用 `_ragflow_sessions_segment`(agent → "agents")。Slice 30 修复 agent sessions URL。
 
-Issue 82 的引用资源链：成功恢复且通过归属校验的 history 响应把引用 `doc_id` 绑定到当前 `pt_`；`/api/v1/thumbnails` 只能查询该集合。非 base64 缩略图路径会附加绑定 token/doc/image 的 `pit_` 票据，`<img>` 请求凭同源 Portal cookie + 票据取图，不需要 RAGFlow 登录态。无 Portal token/票据的原生 RAGFlow 请求保持透传。
+Issue 82/84 的引用资源链：成功恢复且通过归属校验的 history 响应，以及新回答中已完整解析的 SSE 引用事件，都会把引用 `doc_id` 绑定到当前 `pt_`；SSE 授权发生在对应事件转发给浏览器之前，解析不依赖网络 chunk 边界。`/api/v1/thumbnails` 只能查询 history/SSE 形成的集合。非 base64 缩略图路径会附加绑定 token/doc/image 的 `pit_` 票据，`<img>` 请求凭同源 Portal cookie + 票据取图，不需要 RAGFlow 登录态。无 Portal token/票据的原生 RAGFlow 请求保持透传。
 
 ### 6.5 UI 重设计边界(2026-07-09 grilling 决策)
 
@@ -385,10 +385,10 @@ config.py 还支持可选变量(有默认值,不配不影响运行):`T_SHORT_TTL
 
 ## 10. 测试策略
 
-- **后端**:pytest,按 slice/issue 组织(`tests/test_slice*.py`、`tests/test_issue*.py`),基线 435 passed + 5 skipped(2026-07-14)
+- **后端**:pytest,按 slice/issue 组织(`tests/test_slice*.py`、`tests/test_issue*.py`),基线 439 passed + 5 skipped(2026-07-14)
 - **前端**:Vitest,按页面/组件组织(`frontend/tests/*.test.tsx`),基线 89 passed(2026-07-13)
-- **RAGFlow web**:Jest + esbuild transformer,基线 25 passed(2026-07-14);生产构建使用 `npm run build`
-- **E2E**:Playwright + 浏览器手动验收结合。`test/playwright/portal_extension/` 覆盖 portal 实际使用主路径、6 个管理后台 tab、Slice 44 缓存回归、Issue 82 全新浏览器恢复“劳动法”含引用历史会话、Issue 83 新/历史会话浅色及引用预览、临时用户 CRUD、用户组成员和分享页表单;`PORTAL_E2E_RUN_CHAT=1` 时额外发送真实 RAGFlow 问题并等待回复完成;acceptance criteria 记录在 `docs/archive/ISSUES.md`
+- **RAGFlow web**:Jest + esbuild transformer,基线 27 passed(2026-07-14);生产构建使用 `npm run build`
+- **E2E**:Playwright + 浏览器手动验收结合。`test/playwright/portal_extension/` 覆盖 portal 实际使用主路径、6 个管理后台 tab、Slice 44 缓存回归、Issue 82 全新浏览器恢复“劳动法”含引用历史会话、Issue 83 新/历史会话浅色及引用预览、临时用户 CRUD、用户组成员和分享页表单;`PORTAL_E2E_RUN_CHAT=1` 时额外发送真实 RAGFlow 问题并等待回复完成;`PORTAL_E2E_RUN_REFERENCE_CHAT=1` 时验证 Issue 84“劳动法”新回答的缩略图与交互引用;acceptance criteria 记录在 `docs/archive/ISSUES.md`
 - 类型检查:前端 `tsc --noEmit`,后端 `ruff check`
 
 Portal Playwright 运行命令(需真实已部署环境,本地 agent 不默认执行):
@@ -445,7 +445,7 @@ uv run --python 3.13 pytest -q test/playwright/portal_extension -s --junitxml=/t
 - 基线:6 passed + 1 skipped(2026-07-14 验收；跳过项为真实聊天慢用例)
 - 前置:172.16.10.180 已部署最新代码 + `.venv-playwright` 已装 playwright 依赖 + admin 密码与服务器 `.env` 一致
 - 默认覆盖:登录、分享页列表、iframe shell、token 不泄露、6 个 admin tab 加载、Slice 44 缓存回归、Issue 82 含引用历史恢复、临时用户 CRUD + 审计 + 用户组成员 + 分享页表单
-- **不纳入默认回归**:`PORTAL_E2E_RUN_CHAT=1` 真实聊天慢用例(每次跑会产生不可控对话内容 + ~20s 耗时),仅在验收聊天相关 Slice 或发版前手动追加
+- **不纳入默认回归**:`PORTAL_E2E_RUN_CHAT=1` 和 `PORTAL_E2E_RUN_REFERENCE_CHAT=1` 真实聊天慢用例(每次跑会产生不可控对话内容并在结束后清理会话),仅在验收聊天相关 Issue 或发版前手动追加
 - 失败处理:看 `FAILURES` 段 + `test/playwright/artifacts/` 截图;CRUD 用例失败时 finally 会用管理员 API 清理临时用户(`pw-user-*` / `pw-group-user-*`)
 
 **回归不通过的处置**:任一套件失败即阻塞该次部署 / 合并;先定位失败用例对应的 Slice,看 `docs/archive/ISSUES.md` 该 Slice 的验收记录与 AC,判断是代码回归还是测试本身需更新。基线数字更新时机:新增 Slice 测试用例后,在对应 Slice 验收记录里更新基线并在本节同步。

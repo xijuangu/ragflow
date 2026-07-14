@@ -54,7 +54,8 @@ RAGFlow
 2. 网关读取 `Authorization: Bearer pt_...`。
 3. 网关校验短期令牌、cookie 登录态、分享页授权、会话归属和 resource id。
 4. 网关把 Authorization 替换成服务端保存的 `RAGFLOW_BETA_TOKEN`，转发给 RAGFlow。
-5. 网关流式回传 SSE，并在成功后绑定新 `session_id` 或更新会话活跃时间/消息数。
+5. 网关增量解析完整 SSE 事件；事件含 `reference.doc_aggs` / `reference.chunks` 时，先把文档 ID 加入当前 `pt_` 的最小引用范围，再把原始事件回传浏览器。
+6. 流成功后，网关绑定新 `session_id` 或更新会话活跃时间/消息数。
 
 ### 恢复历史会话
 
@@ -72,7 +73,7 @@ RAGFlow
 - 门户令牌统一使用 `pt_` 前缀，默认 5 分钟过期，重启后全部失效。
 - 授权撤销后，网关每次请求都会重新检查 grant；即使旧 `pt_` 未过期也会被拒绝。
 - 用户会话隔离依赖 `chat_session_owner`，任何带 `session_id` 的请求都必须匹配当前用户和分享页 resource。
-- 引用资源使用“先验证 history，再授权文档”的能力收窄模型；`doc_ids` 不能凭 `pt_` 自行扩展。图片票据是单图片、不透明、短期凭据，基础令牌撤销或 grant 移除后立即不可用。
+- 引用资源使用“先验证 history 或完整 SSE 引用事件，再授权文档”的能力收窄模型；`doc_ids` 不能凭 `pt_` 自行扩展。SSE 解析不依赖网络 chunk 边界，标准和公开 `pt_` 遵守同一范围规则。图片票据是单图片、不透明、短期凭据，基础令牌撤销或 grant 移除后立即不可用。
 - 无 `pt_` 前缀且无 `portal_ticket` 的缩略图/图片请求保留 Authorization 与 Cookie 透传，兼容 RAGFlow 原生访问。
 - 管理员 elevated 查看正文必须显式传 `elevated=true`，并写入 `session_view_elevated` 审计。
 - 普通页面默认 `X-Frame-Options: SAMEORIGIN`；widget 页面使用 CSP `frame-ancestors`。
