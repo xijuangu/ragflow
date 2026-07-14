@@ -1202,6 +1202,28 @@ async def _validate_reference_access(
     return validated
 
 
+def _reference_token_context(request: Request) -> tuple[str, TokenRecord | None]:
+    """区分 Portal 引用令牌与需要原样透传的 RAGFlow 鉴权。"""
+    token_store = request.app.state.token_store
+    t_short = extract_t_short(request)
+    record = token_store.get_record(t_short) if t_short else None
+    if record is None and _is_portal_token(t_short):
+        raise HTTPException(status_code=401, detail="令牌无效或已过期")
+    return t_short, record
+
+
+async def _validate_reference_document_ids(
+    request: Request,
+    t_short: str,
+    record: TokenRecord,
+    document_ids: set[str],
+) -> None:
+    """验证 Portal 上下文和已经由 history/SSE 建立的文档范围。"""
+    await _validate_reference_access(request, t_short, record)
+    if not request.app.state.token_store.documents_are_authorized(t_short, document_ids):
+        raise HTTPException(status_code=403, detail="文档不在当前会话引用范围内")
+
+
 async def proxy_document_thumbnails_to_ragflow(request: Request):
     """Issue 82:按已验证历史引用范围代理 RAGFlow 文档缩略图。"""
     from fastapi.responses import Response
@@ -1209,11 +1231,7 @@ async def proxy_document_thumbnails_to_ragflow(request: Request):
     settings = request.app.state.settings
     token_store = request.app.state.token_store
     upstream_url = f"{settings.ragflow_host.rstrip('/')}/api/v1/thumbnails"
-    t_short = extract_t_short(request)
-    record = token_store.get_record(t_short) if t_short else None
-
-    if record is None and _is_portal_token(t_short):
-        raise HTTPException(status_code=401, detail="令牌无效或已过期")
+    t_short, record = _reference_token_context(request)
     if record is None:
         try:
             async with _build_upstream_client() as client:
@@ -1230,13 +1248,10 @@ async def proxy_document_thumbnails_to_ragflow(request: Request):
         except httpx.RequestError:
             raise HTTPException(status_code=502, detail="上游服务不可用")
 
-    await _validate_reference_access(request, t_short, record)
-
     document_ids = _requested_document_ids(request)
     if not document_ids:
         raise HTTPException(status_code=400, detail="缺少文档 ID")
-    if not token_store.documents_are_authorized(t_short, document_ids):
-        raise HTTPException(status_code=403, detail="文档不在当前会话引用范围内")
+    await _validate_reference_document_ids(request, t_short, record, document_ids)
 
     try:
         async with _build_upstream_client() as client:
@@ -1252,6 +1267,36 @@ async def proxy_document_thumbnails_to_ragflow(request: Request):
             content=body,
             status_code=resp.status_code,
             media_type=resp.headers.get("content-type", "application/json"),
+        )
+    except httpx.RequestError:
+        raise HTTPException(status_code=502, detail="上游服务不可用")
+
+
+async def proxy_document_preview_to_ragflow(request: Request, document_id: str):
+    """Issue 85:按已验证引用范围代理 RAGFlow 完整文档预览。"""
+    from fastapi.responses import Response
+
+    settings = request.app.state.settings
+    upstream_url = f"{settings.ragflow_host.rstrip('/')}/api/v1/documents/{document_id}/preview"
+    t_short, record = _reference_token_context(request)
+
+    if record is None:
+        upstream_headers = _build_passthrough_headers(request)
+    else:
+        await _validate_reference_document_ids(request, t_short, record, {document_id})
+        upstream_headers = _build_upstream_headers(settings.ragflow_beta_token)
+
+    try:
+        async with _build_upstream_client() as client:
+            resp = await client.get(upstream_url, headers=upstream_headers)
+        response_headers = {}
+        if content_disposition := resp.headers.get("content-disposition"):
+            response_headers["content-disposition"] = content_disposition
+        return Response(
+            content=resp.content,
+            status_code=resp.status_code,
+            media_type=resp.headers.get("content-type", "application/octet-stream"),
+            headers=response_headers,
         )
     except httpx.RequestError:
         raise HTTPException(status_code=502, detail="上游服务不可用")

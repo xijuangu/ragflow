@@ -45,6 +45,7 @@ from portal.gateway import (
     precreate_session_via_ragflow,
     proxy_bot_json_to_ragflow,
     proxy_document_image_to_ragflow,
+    proxy_document_preview_to_ragflow,
     proxy_document_thumbnails_to_ragflow,
     proxy_session_history_to_ragflow,
     proxy_sse_public_to_ragflow,
@@ -940,6 +941,12 @@ async def proxy_document_thumbnails(request: Request):
 async def proxy_document_image(image_id: str, request: Request):
     """用缩略图响应中的短期票据代理引用图片。"""
     return await proxy_document_image_to_ragflow(request, image_id)
+
+
+@router.get("/api/v1/documents/{document_id}/preview")
+async def proxy_document_preview(document_id: str, request: Request):
+    """按当前已验证引用范围代理完整文档预览。"""
+    return await proxy_document_preview_to_ragflow(request, document_id)
 
 
 # ---------------------------------------------------------------------------

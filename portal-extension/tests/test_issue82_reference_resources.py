@@ -67,6 +67,15 @@ def _mock_history_and_thumbnails(monkeypatch, *, session_id, dialog_id, captured
                 content=json.dumps(thumbnails).encode(),
                 headers={"content-type": "application/json"},
             )
+        if request.url.path.endswith("/api/v1/documents/doc-allowed/preview"):
+            return httpx.Response(
+                200,
+                content=b"docx-preview-bytes",
+                headers={
+                    "content-type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    "content-disposition": 'inline; filename="labor-law.docx"',
+                },
+            )
         return httpx.Response(404, json={"code": 404})
 
     class MockAsyncClient(httpx.AsyncClient):
@@ -151,6 +160,29 @@ def _mock_sse_reference_and_thumbnails(
     monkeypatch.setattr("portal.gateway.httpx.AsyncClient", MockAsyncClient)
 
 
+async def _authorize_owned_history_document(client, app, monkeypatch, *, session_id):
+    token, dialog_id = await _login_and_get_token(client)
+    app.state.session_store.bind(
+        session_id=session_id,
+        share_page_id="sp_default",
+        portal_user_id="u_admin",
+        ragflow_resource_id=dialog_id,
+    )
+    captured = []
+    _mock_history_and_thumbnails(
+        monkeypatch,
+        session_id=session_id,
+        dialog_id=dialog_id,
+        captured=captured,
+    )
+    history = await client.get(
+        f"/api/v1/chatbots/{dialog_id}/sessions/{session_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert history.status_code == 200
+    return token, captured
+
+
 async def test_owned_history_authorizes_its_document_thumbnails(client, app, monkeypatch):
     """Owned history references become the only document IDs available to its pt_ token."""
     token, dialog_id = await _login_and_get_token(client)
@@ -187,6 +219,80 @@ async def test_owned_history_authorizes_its_document_thumbnails(client, app, mon
         "data": {"doc-allowed": "data:image/png;base64,dGVzdA=="},
     }
     assert captured[-1]["authorization"] == f"Bearer {os.environ['RAGFLOW_BETA_TOKEN']}"
+
+
+async def test_owned_history_authorizes_its_document_preview(client, app, monkeypatch):
+    """Issue 85: a referenced document opens through Portal without a RAGFlow login."""
+    token, captured = await _authorize_owned_history_document(
+        client,
+        app,
+        monkeypatch,
+        session_id="issue85-owned-history-preview",
+    )
+
+    preview = await client.get(
+        "/api/v1/documents/doc-allowed/preview",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert preview.status_code == 200
+    assert preview.content == b"docx-preview-bytes"
+    assert preview.headers["content-type"].startswith(
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
+    assert preview.headers["content-disposition"] == 'inline; filename="labor-law.docx"'
+    assert captured[-1]["authorization"] == f"Bearer {os.environ['RAGFLOW_BETA_TOKEN']}"
+
+
+async def test_preview_rejects_document_not_referenced_by_owned_history(client, app, monkeypatch):
+    token, captured = await _authorize_owned_history_document(
+        client,
+        app,
+        monkeypatch,
+        session_id="issue85-preview-document-scope",
+    )
+
+    response = await client.get(
+        "/api/v1/documents/doc-not-referenced/preview",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 403
+    assert len(captured) == 1, "越权 preview 不得发往 RAGFlow"
+
+
+async def test_preview_rechecks_share_page_grant(client, app, monkeypatch):
+    token, captured = await _authorize_owned_history_document(
+        client,
+        app,
+        monkeypatch,
+        session_id="issue85-preview-revoked-grant",
+    )
+    assert app.state.seed.revoke_grant("sp_default", "user", "u_admin") is True
+
+    response = await client.get(
+        "/api/v1/documents/doc-allowed/preview",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 403
+    assert len(captured) == 1
+
+
+async def test_preview_rejects_unknown_or_revoked_portal_token(client, app):
+    unknown = await client.get(
+        "/api/v1/documents/doc-allowed/preview",
+        headers={"Authorization": "Bearer pt_unknown"},
+    )
+    assert unknown.status_code == 401
+
+    token, _ = await _login_and_get_token(client)
+    app.state.token_store.revoke(token)
+    revoked = await client.get(
+        "/api/v1/documents/doc-allowed/preview",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert revoked.status_code == 401
 
 
 async def test_sse_answer_authorizes_its_document_thumbnails(client, app, monkeypatch):
@@ -554,6 +660,25 @@ async def test_native_ragflow_token_thumbnail_request_is_passed_through(client, 
     )
 
     assert response.status_code == 200
+    assert captured[-1]["authorization"] == "Bearer native-ragflow-token"
+
+
+async def test_native_ragflow_token_document_preview_is_passed_through(client, monkeypatch):
+    captured = []
+    _mock_history_and_thumbnails(
+        monkeypatch,
+        session_id="unused",
+        dialog_id="unused",
+        captured=captured,
+    )
+
+    response = await client.get(
+        "/api/v1/documents/doc-allowed/preview",
+        headers={"Authorization": "Bearer native-ragflow-token"},
+    )
+
+    assert response.status_code == 200
+    assert response.content == b"docx-preview-bytes"
     assert captured[-1]["authorization"] == "Bearer native-ragflow-token"
 
 

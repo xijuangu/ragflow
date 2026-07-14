@@ -175,7 +175,7 @@ def test_portal_admin_tabs_load_without_cache_regression(page: Page, base_url: s
 
 
 def test_labor_law_reference_history_loads_without_ragflow_login(page: Page, base_url: str):
-    """Issue 82: fresh Portal-only login can restore referenced history and its resources."""
+    """Issues 82/85: Portal-only login restores references and opens their documents."""
     share_name = os.getenv("PORTAL_E2E_REFERENCE_SHARE_NAME", "劳动法")
     session_title_query = os.getenv(
         "PORTAL_E2E_REFERENCE_SESSION_TITLE",
@@ -189,7 +189,12 @@ def test_labor_law_reference_history_loads_without_ragflow_login(page: Page, bas
         lambda response: relevant_responses.append((response.url, response.status))
         if any(
             marker in response.url
-            for marker in ("/sessions/", "/api/v1/thumbnails", "/api/v1/documents/images/")
+            for marker in (
+                "/sessions/",
+                "/api/v1/thumbnails",
+                "/api/v1/documents/images/",
+                "/api/v1/documents/",
+            )
         )
         else None,
     )
@@ -254,6 +259,20 @@ def test_labor_law_reference_history_loads_without_ragflow_login(page: Page, bas
     expect(iframe).to_have_attribute("src", re.compile(r"[?&]session_id="))
     chat_frame = page.frame_locator("iframe[title='RAGFlow 对话']")
     expect(chat_frame.get_by_test_id("chat-textarea")).to_be_visible(timeout=60_000)
+    assert all(not frame.url.rstrip("/").endswith("/login") for frame in page.frames)
+
+    document_card = chat_frame.locator("section.flex.gap-3.flex-wrap .cursor-pointer").first
+    expect(document_card).to_be_visible(timeout=60_000)
+    with page.expect_response(
+        lambda response: re.search(r"/api/v1/documents/[^/]+/preview", response.url) is not None,
+        timeout=60_000,
+    ) as preview_info:
+        document_card.click()
+    preview_response = preview_info.value
+    assert preview_response.status == 200, (
+        f"document preview failed: {preview_response.status} {preview_response.url}"
+    )
+    expect(chat_frame.get_by_role("dialog").first).to_be_visible(timeout=60_000)
     assert all(not frame.url.rstrip("/").endswith("/login") for frame in page.frames)
 
     unauthorized = [(url, status) for url, status in relevant_responses if status == 401]
