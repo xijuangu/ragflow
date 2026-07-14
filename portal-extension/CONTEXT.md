@@ -108,7 +108,7 @@ portal-extension/
 - **内部 RAGFlow 调用用 `RAGFLOW_HOST=:8080`**(直连,不经 nginx)
 - **浏览器 RAGFlow 访问用 `RAGFLOW_BROWSER_ORIGIN=`**(相对路径,经 nginx + portal 代理)
 - **Portal token 必须用 `pt_` 前缀**,与 RAGFlow beta token 区分(集中用 `PORTAL_TOKEN_PREFIX` 常量)
-- **路由文件 `routes.py` 在 middleware 重构期间不得修改**
+- **`routes.py` 只注册路由和薄适配,权限业务留在 `gateway.py`** —— middleware 重构阶段已结束;新增受控资源入口可以注册路由,但不得在路由层复制鉴权链
 - **RAGFlow 容器是官方 v0.26.0 镜像**,不含本地 fork 改动。`api/apps/restful_apis/bot_api.py` 的 chatbot sessions 端点(GET/PATCH/DELETE)通过 docker cp 部署,容器重建会丢失
 - **Portal 重启必须先 pkill 旧进程** —— `start.sh` 用 `exec` 不自动 pkill,否则端口被占用,新进程不启动,旧代码继续跑
 - **数据文件必须与代码分离** —— `portal.db` 等运行时数据文件不能放在项目目录内,否则 `rsync --delete` 会删掉(Slice 34 已修复:portal.db 现位于 `~/portal-data/portal.db`)

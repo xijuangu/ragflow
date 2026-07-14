@@ -261,7 +261,7 @@ def test_labor_law_reference_history_loads_without_ragflow_login(page: Page, bas
     expect(chat_frame.get_by_test_id("chat-textarea")).to_be_visible(timeout=60_000)
     assert all(not frame.url.rstrip("/").endswith("/login") for frame in page.frames)
 
-    document_card = chat_frame.locator("section.flex.gap-3.flex-wrap .cursor-pointer").first
+    document_card = chat_frame.get_by_text(re.compile(r"\.docx$"), exact=False).first
     expect(document_card).to_be_visible(timeout=60_000)
     with page.expect_response(
         lambda response: re.search(r"/api/v1/documents/[^/]+/preview", response.url) is not None,

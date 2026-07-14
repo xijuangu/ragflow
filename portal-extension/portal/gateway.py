@@ -78,6 +78,14 @@ class TokenRecord:
     authorized_document_ids: set[str] = field(default_factory=set)
 
 
+@dataclass(frozen=True)
+class PortalReferenceContext:
+    """已由 TokenStore 识别、需要 Portal 范围校验的引用访问上下文。"""
+
+    token: str
+    record: TokenRecord
+
+
 @dataclass
 class ReferenceImageTicket:
     """浏览器图片请求使用的短期不透明票据,不暴露 Portal 或 RAGFlow 令牌。"""
@@ -372,7 +380,7 @@ def build_widget_snippet(widget_url: str) -> str:
     )
 
 
-def extract_t_short(request: Request):
+def extract_t_short(request: Request) -> str | None:
     """从请求 Authorization header 提取 T_short。
 
     iframe 内 RAGFlow 前端用 getAuthorization() 生成 'Bearer {T_short}'。
@@ -1202,14 +1210,17 @@ async def _validate_reference_access(
     return validated
 
 
-def _reference_token_context(request: Request) -> tuple[str, TokenRecord | None]:
-    """区分 Portal 引用令牌与需要原样透传的 RAGFlow 鉴权。"""
+def _portal_reference_context(request: Request) -> PortalReferenceContext | None:
+    """返回 Portal 引用上下文；原生 RAGFlow 鉴权返回 ``None`` 以便透传。"""
     token_store = request.app.state.token_store
     t_short = extract_t_short(request)
     record = token_store.get_record(t_short) if t_short else None
     if record is None and _is_portal_token(t_short):
         raise HTTPException(status_code=401, detail="令牌无效或已过期")
-    return t_short, record
+    if record is None:
+        return None
+    assert t_short is not None  # record 只能由非空 token 查得
+    return PortalReferenceContext(token=t_short, record=record)
 
 
 async def _validate_reference_document_ids(
@@ -1231,8 +1242,8 @@ async def proxy_document_thumbnails_to_ragflow(request: Request):
     settings = request.app.state.settings
     token_store = request.app.state.token_store
     upstream_url = f"{settings.ragflow_host.rstrip('/')}/api/v1/thumbnails"
-    t_short, record = _reference_token_context(request)
-    if record is None:
+    portal_context = _portal_reference_context(request)
+    if portal_context is None:
         try:
             async with _build_upstream_client() as client:
                 resp = await client.get(
@@ -1251,7 +1262,12 @@ async def proxy_document_thumbnails_to_ragflow(request: Request):
     document_ids = _requested_document_ids(request)
     if not document_ids:
         raise HTTPException(status_code=400, detail="缺少文档 ID")
-    await _validate_reference_document_ids(request, t_short, record, document_ids)
+    await _validate_reference_document_ids(
+        request,
+        portal_context.token,
+        portal_context.record,
+        document_ids,
+    )
 
     try:
         async with _build_upstream_client() as client:
@@ -1262,7 +1278,7 @@ async def proxy_document_thumbnails_to_ragflow(request: Request):
             )
         body = resp.content
         if resp.status_code == 200:
-            body = _rewrite_thumbnail_image_urls(body, token_store, t_short)
+            body = _rewrite_thumbnail_image_urls(body, token_store, portal_context.token)
         return Response(
             content=body,
             status_code=resp.status_code,
@@ -1278,12 +1294,17 @@ async def proxy_document_preview_to_ragflow(request: Request, document_id: str):
 
     settings = request.app.state.settings
     upstream_url = f"{settings.ragflow_host.rstrip('/')}/api/v1/documents/{document_id}/preview"
-    t_short, record = _reference_token_context(request)
+    portal_context = _portal_reference_context(request)
 
-    if record is None:
+    if portal_context is None:
         upstream_headers = _build_passthrough_headers(request)
     else:
-        await _validate_reference_document_ids(request, t_short, record, {document_id})
+        await _validate_reference_document_ids(
+            request,
+            portal_context.token,
+            portal_context.record,
+            {document_id},
+        )
         upstream_headers = _build_upstream_headers(settings.ragflow_beta_token)
 
     try:

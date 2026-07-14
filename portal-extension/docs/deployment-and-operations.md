@@ -42,14 +42,6 @@ location = /api/v1/thumbnails {
     proxy_set_header X-Forwarded-Proto $scheme;
 }
 
-location ~ ^/api/v1/documents/[^/]+/preview$ {
-    proxy_pass http://172.17.0.1:8000;
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-}
-
 location ^~ /api/v1/documents/images/ {
     proxy_pass http://172.17.0.1:8000;
     proxy_set_header Host $host;
@@ -58,6 +50,11 @@ location ^~ /api/v1/documents/images/ {
     proxy_set_header X-Forwarded-Proto $scheme;
 }
 ```
+
+Issue 85 的 preview 精确 location 以版本库中的
+[`deployment/nginx-document-preview.conf`](../deployment/nginx-document-preview.conf)
+为准；把该片段合并到同一个 nginx `server` 块。它只匹配单段 `document_id` 的
+`/preview`，不能改成覆盖整个 `/api/v1/documents/` 的宽泛代理。
 
 `proxy_pass` 不带 URI 尾部，原始路径和 `portal_ticket` query 会完整保留。修改后先检查再 reload：
 

@@ -1,4 +1,4 @@
-"""Issue 82: historical-session reference resources use scoped Portal auth."""
+"""Issues 82/84/85: reference resources use scoped Portal authorization."""
 
 import json
 import os
