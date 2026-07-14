@@ -200,6 +200,9 @@ Issue 82/84 的引用资源链：成功恢复且通过归属校验的 history �
 - **CSS 同选择器 min-height 冲突**:`.detail-grid` 曾同时声明 `min-height: 0` 和 `min-height: 480px`,后者覆盖前者导致 flex 收缩失效。不要在同一选择器声明冲突属性(Slice 38 /review 修复)
 - **autoSize inline 对象导致 SSE 期间输入框抖动**(Slice 41 诊断 + 修复):`message-input/next.tsx` 的 `autoSize={{ minRows: 2, maxRows: 8 }}` 是 inline 对象字面量,每次渲染创建新引用 → `textarea.tsx` 的 `adjustHeight` effect(依赖 autoSize)每个 SSE chunk 触发 → `style.height='auto'` 塌缩 → rAF 读 scrollHeight → 写回高度,形成 8-10px 高度振荡(用户看到的「抽搐」)。**解法**:提为模块级常量 `AUTO_SIZE_CONFIG` 稳定引用,effect 只在首次挂载触发。**教训**:React 中传给子组件的 inline 对象/数组字面量会破坏 `useCallback`/`useMemo` 引用稳定性,应提为模块级常量。诊断时需建 Playwright red-capable 循环采样 `getBoundingClientRect()`,用 4 模式 probe(css-fix / no-scroll / observe / combined)分离假设
 - **iframe EmbedContainer 标题读 `/info` 端点 dialog.name 而非会话标题**(Slice 42 诊断 + 修复):用户看到的「law-test-01」不是 portal 会话列表标题(读 portal.db `chat_session_owner.title`),而是 RAGFlow iframe 内 `EmbedContainer` 头部显示的值(读 `/info` 端点返回的 `data.title` = RAGFlow `dialog.name`)。portal 的 `proxy_bot_json_to_ragflow` 原样回传 RAGFlow 响应,泄露内部 dialog 名。**解法**:代理返回前解析 JSON,把 `data.title` 替换为 `share_page.name`。**教训**:「标题」在不同层有多个数据源(portal.db title / RAGFlow API4Conversation.name / RAGFlow dialog.name via /info),诊断显示问题需先定位用户看到的值来自哪个数据流,再判断修复点;curl + DB 查询组合是快循环
+- **scp/docker exec 文件系统隔离导致 RAGFlow web dist「假部署」**(2026-07-14 踩坑):`scp /tmp/dist.tar.gz 172.16.10.180:/tmp/` 把 tar 包传到**宿主机** `/tmp`,但 `docker exec docker-ragflow-cpu-1 bash -c "tar -xzf /tmp/dist.tar.gz ..."` 在**容器命名空间**执行,容器有独立文件系统,宿主机 `/tmp` 的文件在容器内不存在。容器内恰好残留 2026-07-08 的同名旧 `/tmp/dist.tar.gz`,`tar` 静默解压旧包,`nginx -s reload` 成功 + `echo DEPLOYED` 正常回显,但 `/ragflow/web/dist/index.html` 时间戳/内容未变(仍是 Jul 8),部署「假成功」。直到 `md5sum` 校验本地 vs 容器 `index.html` 才发现不一致。**解法**:scp 后必须 `docker cp /tmp/dist.tar.gz docker-ragflow-cpu-1:/tmp/dist.tar.gz` 跨边界复制进容器,再 docker exec 解压;`rm -rf dist/*` 改为 `rm -rf dist && mkdir -p dist`(glob 不匹配隐藏文件且旧 hash chunk 残留,tar 包 1320 文件 vs 残留 2662);部署后必须 `md5sum` 校验 `index.html` 与本地一致 + 抽查 index.html 引用的 chunk 存在且 HTTP 200,不能只看 `DEPLOYED` 回显。**教训**:`docker exec` 的命令在容器命名空间运行,无法访问宿主机文件;跨宿主机/容器边界传文件必须用 `docker cp`。部署验证必须校验内容指纹(md5/时间戳),回显和 HTTP 200 不能证明文件被替换。
+- **nginx 配置漏更新导致 Issue 85 preview 端点不工作**(2026-07-14 踩坑):提交 `0c43ddd` 含新文件 `deployment/nginx-document-preview.conf`(Issue 85 的 `/api/v1/documents/<id>/preview` location),但部署时只跑了 `bash deploy.sh`(仅同步 Portal 代码+前端 dist+重启),**没检查提交是否含 nginx 配置改动**。服务器 nginx 仍只有 `/api/v1/thumbnails` 和 `/api/v1/documents/images/` 两个 location,preview 请求被 `location /` 兜底转到 RAGFlow 原生(不经 Portal 授权),功能静默失效。**根因**:`deploy.sh` 不覆盖 nginx 配置(nginx 配置在 `~/portal-nginx/conf.d/`,不在 `~/portal-extension/` rsync 范围内)。**解法**:每次部署前必须 `git show --stat HEAD` 检查提交是否含 `deployment/nginx-*.conf` 或 `portal-nginx/` 路径的改动;有则按 §9.8 手动合并到服务器 `~/portal-nginx/conf.d/default.conf` 并 `nginx -t` + reload。**教训**:`deploy.sh` 只管 Portal 应用层,nginx 配置是独立的部署维度;提交里出现 `deployment/` 目录下的 `.conf` 文件时,必须同步更新服务器 nginx 并 reload,否则后端代码部署了但路由没生效,功能「假可用」。
+- **shell `set -e` 与 `diff` 命令冲突**(2026-07-14 踩坑):nginx 配置更新脚本用 `set -e` 保证失败即停,但 `diff old new` 在文件有差异时返回退出码 1(表示"有差异",非错误),`set -e` 把它当作失败提前退出 → 后续 `mv` / `nginx -t` / `nginx -s reload` 未执行,配置文件停在 `.new` 状态。**解法**:`diff` 在 `set -e` 脚本中要加 `|| true` 容错,或改用 `diff ... && echo "无差异" || echo "有差异"` 显式处理;或把 `diff` 放在 `set -e` 之外单独执行。**教训**:`set -e` 对返回非零但语义正常的命令(diff/grep/test)会误杀,使用时需 `|| true` 或显式判断。
 
 ## 9. 运维约束
 
@@ -283,20 +286,33 @@ docker exec docker-ragflow-cpu-1 bash -c "cp /ragflow/api/apps/restful_apis/bot_
 
 ### 9.3 RAGFlow web 前端 dist 替换
 
-修改 RAGFlow `web/` 源码后,需 build + tar + scp + docker cp 替换容器内 `/ragflow/web/dist`,并 reload 容器内 nginx。容器重建同样会丢失。
+修改 RAGFlow `web/` 源码后,需 build + tar + scp + **docker cp** 替换容器内 `/ragflow/web/dist`,并 reload 容器内 nginx。容器重建同样会丢失。
 
-Issue 83 的浅色主题由 Portal URL 参数与 RAGFlow web 初始化共同完成,部署/回滚必须同时覆盖 Portal 和 RAGFlow web dist。生产验证使用全新浏览器上下文清空 localStorage/cookie,并分别检查新会话和历史会话。2026-07-14 生产备份点:`/ragflow/web/dist.bak.issue83.20260714-115804`;精确 Playwright `1 passed`,只读主流程 `4 passed, 1 skipped`。
+Issue 83 的浅色主题由 Portal URL 参数与 RAGFlow web 初始化共同完成,部署/回滚必须同时覆盖 Portal 和 RAGFlow web dist。生产验证使用全新浏览器上下文清空 localStorage/cookie,并分别检查新会话和历史会话。2026-07-14 首轮备份点 `/ragflow/web/dist.bak.issue83.20260714-115804`(首轮部署因 scp/docker exec 路径不一致未真正生效,见下方注意);修正后真正生效的备份点 `/ragflow/web/dist.bak.20260714-154129`。精确 Playwright `1 passed`,只读主流程 `4 passed, 1 skipped`。
 
 ```bash
 # 1. 本地 build
 cd ragflow/web && npm run build
 
-# 2. 打包 + 传输
+# 2. 打包 + scp 到宿主机 /tmp
 tar -czf /tmp/dist.tar.gz -C dist .
 scp /tmp/dist.tar.gz 172.16.10.180:/tmp/
 
-# 3. 备份容器内原 dist + 替换 + reload
-ssh 172.16.10.180 'TS=$(date +%Y%m%d-%H%M%S); docker exec docker-ragflow-cpu-1 bash -c "cp -r /ragflow/web/dist /ragflow/web/dist.bak.$TS && rm -rf /ragflow/web/dist/* && tar -xzf /tmp/dist.tar.gz -C /ragflow/web/dist && nginx -s reload && echo DEPLOYED"'
+# 3. docker cp 把 tar 包复制进容器(关键!见下方"注意")
+#    docker exec 在容器命名空间执行,容器 /tmp 独立于宿主机,
+#    scp 到宿主机 /tmp 后容器内看不到,必须 docker cp 跨边界复制
+ssh 172.16.10.180 'docker cp /tmp/dist.tar.gz docker-ragflow-cpu-1:/tmp/dist.tar.gz'
+
+# 4. 备份容器内原 dist + 彻底清空 + 解压 + reload
+#    用 rm -rf dist && mkdir -p dist 替代 rm -rf dist/*:
+#    dist/* 的 glob 不匹配隐藏文件,且旧 hash chunk 会残留(tar 包 1320 文件 vs 残留 2662)
+ssh 172.16.10.180 'TS=$(date +%Y%m%d-%H%M%S); docker exec docker-ragflow-cpu-1 bash -c "cp -r /ragflow/web/dist /ragflow/web/dist.bak.$TS && rm -rf /ragflow/web/dist && mkdir -p /ragflow/web/dist && tar -xzf /tmp/dist.tar.gz -C /ragflow/web/dist && nginx -s reload && echo DEPLOYED backup=dist.bak.$TS"'
+
+# 5. 验证(必须校验 index.html md5 + chunk 可访问,不能只看 DEPLOYED 回显)
+LOCAL_MD5=$(md5 -q dist/index.html)
+REMOTE_MD5=$(ssh 172.16.10.180 'docker exec docker-ragflow-cpu-1 md5sum /ragflow/web/dist/index.html' | awk '{print $1}')
+[ "$LOCAL_MD5" = "$REMOTE_MD5" ] && echo "index.html md5 OK ($LOCAL_MD5)" || echo "FATAL: md5 mismatch local=$LOCAL_MD5 remote=$REMOTE_MD5"
+ssh 172.16.10.180 'curl -s -o /dev/null -w "container :8080 -> %{http_code}\n" http://172.16.10.180:8080/'
 ```
 
 **回滚**:
@@ -304,7 +320,9 @@ ssh 172.16.10.180 'TS=$(date +%Y%m%d-%H%M%S); docker exec docker-ragflow-cpu-1 b
 ssh 172.16.10.180 'docker exec docker-ragflow-cpu-1 bash -c "rm -rf /ragflow/web/dist && mv /ragflow/web/dist.bak.<ts> /ragflow/web/dist && nginx -s reload"'
 ```
 
-**注意**:macOS tar 会输出 `Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'` 警告,不影响解压。
+**注意**:
+- macOS tar 会输出 `Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'` 警告,不影响解压。
+- **scp/docker exec 文件系统隔离陷阱**(2026-07-14 部署踩坑):`scp` 把文件传到**宿主机** `/tmp/`,但 `docker exec ... bash -c "tar -xzf /tmp/..."` 在**容器内**执行,容器有独立文件系统,宿主机 `/tmp` 的文件在容器内不存在。若容器内恰好有同名旧 `/tmp/dist.tar.gz`(2026-07-08 遗留),`tar` 会静默解压旧包,`nginx -s reload` 成功、`echo DEPLOYED` 正常回显,但 `index.html` 时间戳/内容未变 → **部署「假成功」**。**解法**:scp 后必须 `docker cp` 把 tar 包复制进容器,再 docker exec 解压;且部署后必须用 `md5sum` 校验 `index.html` 与本地一致(不能只看回显)。本轮首轮部署正是漏了 docker cp,直到 md5 校验才发现 dist 仍是 Jul 8 旧版本。
 
 ### 9.4 回滚点
 
@@ -382,6 +400,61 @@ ssh 172.16.10.180 'curl -s -o /dev/null -w "nginx /portal/ -> %{http_code}\n" ht
 | `PORTAL_DB_URL` | `sqlite:////home/xijuangu/portal-data/portal.db` | Slice 34,文件型 SQLite |
 
 config.py 还支持可选变量(有默认值,不配不影响运行):`T_SHORT_TTL_SECONDS`、`RETRY_DELETE_INTERVAL_SECONDS`、`OIDC_*`、`PORTAL_DEFAULT_ORG_ID`、`PUBLIC_RATE_LIMIT_PER_MIN`、`PUBLIC_AUDIT_ENABLED`、`WIDGET_FRAME_ANCESTORS`。
+
+### 9.8 nginx 配置更新(portal-nginx 容器)
+
+**背景**:nginx 配置在 `~/portal-nginx/conf.d/default.conf`(挂载到 `portal-nginx` 容器),**不在 `~/portal-extension/` rsync 范围内**,`deploy.sh` 不会同步。提交里若出现 `deployment/nginx-*.conf` 或 `portal-nginx/` 路径的改动,必须手动合并到服务器并 reload。
+
+**部署前检查**(每次 `bash deploy.sh` 前必做):
+```bash
+git show --stat HEAD | grep -E 'deployment/nginx|portal-nginx'
+# 有输出 → 需按本节手动更新 nginx 配置;无输出 → 跳过
+```
+
+**更新流程**(2026-07-14 Issue 85 preview location 固化):
+```bash
+# 1. 读取提交里的 nginx 补丁文件内容(注意路径,用 git show --stat 确认完整路径)
+git show <commit>:portal-extension/deployment/nginx-<name>.conf
+
+# 2. ssh 到服务器,备份当前配置
+ssh 172.16.10.180 'cd ~/portal-nginx/conf.d && TS=$(date +%Y%m%d-%H%M%S) && cp default.conf default.conf.bak.$TS && echo "backup: default.conf.bak.$TS"'
+
+# 3. 用 awk 在 "# ---- 3. RAGFlow 原生" 前插入新 location 块
+#    (或用 sed/手动编辑;awk 适合精确插入)
+ssh 172.16.10.180 'cat > /tmp/nginx-patch.conf << '\''EOF'\''
+    # ---- 2.x portal <功能名> 代理 — Issue <N> ----
+    location ~ ^/api/v1/... {
+        proxy_pass http://172.17.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+EOF
+cd ~/portal-nginx/conf.d
+awk "/# ---- 3\\. RAGFlow 原生/ { while ((getline line < \"/tmp/nginx-patch.conf\") > 0) print line; close(\"/tmp/nginx-patch.conf\") } { print }" default.conf > default.conf.new'
+
+# 4. diff 确认(注意:不要在 set -e 脚本里跑 diff,返回码 1 会被误判为错误)
+ssh 172.16.10.180 'diff ~/portal-nginx/conf.d/default.conf ~/portal-nginx/conf.d/default.conf.new'
+
+# 5. 替换 + nginx -t + reload(分步执行,不用 set -e)
+ssh 172.16.10.180 'cd ~/portal-nginx/conf.d && mv default.conf.new default.conf'
+ssh 172.16.10.180 'docker exec portal-nginx nginx -t'  # 必须通过
+ssh 172.16.10.180 'docker exec portal-nginx nginx -s reload'
+```
+
+**验证 location 生效**(401 响应无法区分上游,需查 Portal 访问日志):
+```bash
+# 触发一次请求,curl 经 nginx :80
+ssh 172.16.10.180 'curl -s -o /dev/null http://localhost:80/api/v1/documents/verify-route/preview'
+# 检查 Portal 日志是否收到该请求(uvicorn 访问日志)
+ssh 172.16.10.180 'tail -5 ~/portal-extension/portal.log | grep -i preview || echo "未在 Portal 日志中找到,可能路由未生效"'
+```
+
+**注意**:
+- nginx location 优先级:正则 `~` 按声明顺序匹配,前缀 `^~` 优先于正则,`=` 精确匹配最高。新增 location 要放在 `location /`(兜底)之前。
+- `location ~ ^/api/v1/documents/[^/]+/preview$` 比 `location /` 更具体,会优先匹配;但若与 `location ^~ /api/v1/documents/images/` 冲突需注意 `^~` 优先级高于正则。
+- 回滚:`mv default.conf.bak.<ts> default.conf && docker exec portal-nginx nginx -s reload`
 
 ## 10. 测试策略
 
