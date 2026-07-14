@@ -3025,6 +3025,44 @@ None.
 
 ---
 
+## Issue 83 — RAGFlow 嵌入会话默认使用浅色主题
+
+> 状态：✅ 已完成（2026-07-14）。Portal 新会话和历史会话默认使用独立、稳定的浅色主题；生产环境已完成全新浏览器验证。
+
+## What to build
+
+Portal 当前打开分享页时，内嵌的 RAGFlow 会话界面默认显示为黑色深色主题。将 Portal 内的嵌入会话默认主题改为浅色，使聊天主区域、消息、输入框和引用相关界面以白色背景及清晰的深色文字呈现。
+
+新建会话和重新打开历史会话必须使用一致的浅色默认值。在没有任何 RAGFlow 主题 localStorage、cookie 或既有登录态的全新浏览器中，首次进入分享页就应直接显示浅色界面，不应先闪现深色主题再切换。
+
+本 Issue 只改变 Portal 嵌入会话的默认显示，不全局强制覆盖 RAGFlow 独立应用或管理后台中的用户主题选择。若已有明确的用户主题偏好，应避免无条件破坏该偏好；默认值与显式选择需要有清晰边界。
+
+## Acceptance criteria
+
+- [x] 在清空 RAGFlow localStorage、cookie 和登录态的全新浏览器中，只登录 Portal 后打开“劳动法”分享页，内嵌会话首屏为白色浅色主题。
+- [x] 新建会话与重新打开任一历史会话时，聊天主区域、消息区域和输入框保持浅色，不恢复为黑色主题。
+- [x] 页面初始化期间不出现可见的深色主题闪烁；刷新分享页或重载 iframe 后主题保持稳定。
+- [x] 引用标记、引用片段弹层、文档预览及其他会话内浮层在浅色主题下文字、边框和背景对比清晰，不影响点击与阅读。
+- [x] Portal 之外的 RAGFlow 独立应用/管理后台仍保留原有主题行为，嵌入页默认值不会全局覆盖用户的明确主题选择。
+- [x] 自动化测试覆盖无既有主题状态的新会话和历史会话；Playwright 断言 iframe 的实际背景色为浅色，并确认无深色闪烁或主题回退。
+- [x] 完成受影响的前端测试、类型检查和生产构建；部署后在全新浏览器上下文完成“劳动法”新会话与历史会话验证。
+- [x] 当前架构、部署运维及主题行为说明同步更新，明确浅色默认值的作用范围和回滚方式。
+
+## Verification
+
+- Portal 后端：`435 passed, 5 skipped`；Issue 83 iframe URL 定向测试 `2 passed`。
+- Portal 前端：Vitest `89 passed`，ESLint、TypeScript 和生产构建通过。
+- RAGFlow web：Jest `25 passed`（覆盖率门槛通过）；Issue 83 定向 TypeScript、ESLint 和生产构建通过。
+- 代码审查：规格与代码质量双路复核均为 Clean。
+- 生产：Portal 健康检查 HTTP 200；RAGFlow 容器 nginx 配置检查及 HTTP 200，通过构建标记确认新 dist 已生效。旧 dist 备份为 `/ragflow/web/dist.bak.issue83.20260714-115804`。
+- Playwright：Issue 83 精确生产用例 `1 passed`；只读 Portal 主流程 `4 passed, 1 skipped`（仅跳过主动发送真实聊天问题的慢用例）。用例验证新/历史会话的 body、消息区、输入框、引用卡片和文档预览合成背景，并确认初始化 class 历史未经过 `dark`。
+
+## Blocked by
+
+None.
+
+---
+
 ## 后续待办(Issue 16 AC2 遗留)
 
 > Issue 16 AC2「悬浮组件在任意页面右下角加载,点击展开对话窗,能正常对话」— Slice 16 实现了 `/widget/<id>` 骨架 HTML + 可嵌入 snippet + CSP frame-ancestors 放行,但 **悬浮组件实际 UI 渲染(右下角悬浮按钮 + 点击展开对话窗 + iframe 加载 + SSE 对话)尚未实现**。`/widget/<id>` 当前仅返回含 `<div id="widget-root">` 的占位 HTML,需前端构建产物挂载 React 组件。

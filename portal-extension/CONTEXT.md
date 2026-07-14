@@ -285,7 +285,7 @@ docker exec docker-ragflow-cpu-1 bash -c "cp /ragflow/api/apps/restful_apis/bot_
 
 修改 RAGFlow `web/` 源码后,需 build + tar + scp + docker cp 替换容器内 `/ragflow/web/dist`,并 reload 容器内 nginx。容器重建同样会丢失。
 
-Issue 83 的浅色主题由 Portal URL 参数与 RAGFlow web 初始化共同完成,部署/回滚必须同时覆盖 Portal 和 RAGFlow web dist。生产验证使用全新浏览器上下文清空 localStorage/cookie,并分别检查新会话和历史会话。
+Issue 83 的浅色主题由 Portal URL 参数与 RAGFlow web 初始化共同完成,部署/回滚必须同时覆盖 Portal 和 RAGFlow web dist。生产验证使用全新浏览器上下文清空 localStorage/cookie,并分别检查新会话和历史会话。2026-07-14 生产备份点:`/ragflow/web/dist.bak.issue83.20260714-115804`;精确 Playwright `1 passed`,只读主流程 `4 passed, 1 skipped`。
 
 ```bash
 # 1. 本地 build
@@ -385,10 +385,10 @@ config.py 还支持可选变量(有默认值,不配不影响运行):`T_SHORT_TTL
 
 ## 10. 测试策略
 
-- **后端**:pytest,按 slice/issue 组织(`tests/test_slice*.py`、`tests/test_issue*.py`),基线 433 passed + 5 skipped(2026-07-14)
+- **后端**:pytest,按 slice/issue 组织(`tests/test_slice*.py`、`tests/test_issue*.py`),基线 435 passed + 5 skipped(2026-07-14)
 - **前端**:Vitest,按页面/组件组织(`frontend/tests/*.test.tsx`),基线 89 passed(2026-07-13)
-- **RAGFlow web**:Jest 跑不起来(`umi/test` 缺失),靠 `npm run build` 兜底
-- **E2E**:Playwright + 浏览器手动验收结合。`test/playwright/portal_extension/` 覆盖 portal 实际使用主路径、6 个管理后台 tab、Slice 44 缓存回归、Issue 82 全新浏览器恢复“劳动法”含引用历史会话、临时用户 CRUD、用户组成员和分享页表单;`PORTAL_E2E_RUN_CHAT=1` 时额外发送真实 RAGFlow 问题并等待回复完成;acceptance criteria 记录在 `docs/archive/ISSUES.md`
+- **RAGFlow web**:Jest + esbuild transformer,基线 25 passed(2026-07-14);生产构建使用 `npm run build`
+- **E2E**:Playwright + 浏览器手动验收结合。`test/playwright/portal_extension/` 覆盖 portal 实际使用主路径、6 个管理后台 tab、Slice 44 缓存回归、Issue 82 全新浏览器恢复“劳动法”含引用历史会话、Issue 83 新/历史会话浅色及引用预览、临时用户 CRUD、用户组成员和分享页表单;`PORTAL_E2E_RUN_CHAT=1` 时额外发送真实 RAGFlow 问题并等待回复完成;acceptance criteria 记录在 `docs/archive/ISSUES.md`
 - 类型检查:前端 `tsc --noEmit`,后端 `ruff check`
 
 Portal Playwright 运行命令(需真实已部署环境,本地 agent 不默认执行):
@@ -418,7 +418,7 @@ uv run pytest -q test/playwright/portal_extension -s --junitxml=/tmp/playwright-
 cd ragflow/portal-extension
 uv run pytest -q
 ```
-- 基线:433 passed + 5 skipped(2026-07-14)
+- 基线:435 passed + 5 skipped(2026-07-14)
 - 前置:无(测试用临时 SQLite,不连真实 MySQL/RAGFlow)
 - 失败处理:看 `tests/test_slice*.py` 对应 slice 的断言
 

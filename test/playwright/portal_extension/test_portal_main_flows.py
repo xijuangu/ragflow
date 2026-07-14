@@ -25,12 +25,6 @@ THEME_CLASS_OBSERVER_SCRIPT = r"""
     value: classHistory,
     configurable: false,
   });
-  const record = () => classHistory.push(document.documentElement.className);
-  record();
-  new MutationObserver(record).observe(document.documentElement, {
-    attributes: true,
-    attributeFilter: ['class'],
-  });
 
   const parseColor = (color) => {
     const values = (color.match(/[\d.]+/g) || []).map(Number);
@@ -61,6 +55,23 @@ THEME_CLASS_OBSERVER_SCRIPT = r"""
     }
     return [result.red, result.green, result.blue].map(Math.round);
   };
+
+  const record = () => classHistory.push(document.documentElement.className);
+  const observeThemeClasses = () => {
+    if (!document.documentElement) return false;
+    record();
+    new MutationObserver(record).observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['class'],
+    });
+    return true;
+  };
+  if (!observeThemeClasses()) {
+    const documentObserver = new MutationObserver((_, observer) => {
+      if (observeThemeClasses()) observer.disconnect();
+    });
+    documentObserver.observe(document, { childList: true, subtree: true });
+  }
 })();
 """
 
