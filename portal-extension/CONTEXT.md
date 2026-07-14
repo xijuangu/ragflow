@@ -104,7 +104,7 @@ portal-extension/
 
 ## 4. 硬约束(不可违反)
 
-- **Portal 不得修改 RAGFlow 侧代码** —— portal 是代理层,不重写 RAGFlow 业务逻辑。本地 fork 对 RAGFlow 源码的改动(如 `bot_api.py` 扩展端点)通过 docker cp 部署到容器,不纳入 portal-extension 仓库
+- **不得在 RAGFlow 侧实现 Portal 权限业务;必要的最小兼容扩展必须经 Issue 明确批准** —— 身份、授权、会话归属和资源范围始终由 Portal 网关负责。RAGFlow fork 只允许为受控 session 端点或嵌入兼容性做最小改动,不得改变独立应用行为;改动必须配套测试、构建说明和独立部署/回滚记录。
 - **内部 RAGFlow 调用用 `RAGFLOW_HOST=:8080`**(直连,不经 nginx)
 - **浏览器 RAGFlow 访问用 `RAGFLOW_BROWSER_ORIGIN=`**(相对路径,经 nginx + portal 代理)
 - **Portal token 必须用 `pt_` 前缀**,与 RAGFlow beta token 区分(集中用 `PORTAL_TOKEN_PREFIX` 常量)
@@ -385,7 +385,7 @@ config.py 还支持可选变量(有默认值,不配不影响运行):`T_SHORT_TTL
 
 ## 10. 测试策略
 
-- **后端**:pytest,按 slice/issue 组织(`tests/test_slice*.py`、`tests/test_issue*.py`),基线 439 passed + 5 skipped(2026-07-14)
+- **后端**:pytest,按 slice/issue 组织(`tests/test_slice*.py`、`tests/test_issue*.py`),基线 441 passed + 5 skipped(2026-07-14)
 - **前端**:Vitest,按页面/组件组织(`frontend/tests/*.test.tsx`),基线 89 passed(2026-07-13)
 - **RAGFlow web**:Jest + esbuild transformer,基线 27 passed(2026-07-14);生产构建使用 `npm run build`
 - **E2E**:Playwright + 浏览器手动验收结合。`test/playwright/portal_extension/` 覆盖 portal 实际使用主路径、6 个管理后台 tab、Slice 44 缓存回归、Issue 82 全新浏览器恢复“劳动法”含引用历史会话、Issue 83 新/历史会话浅色及引用预览、临时用户 CRUD、用户组成员和分享页表单;`PORTAL_E2E_RUN_CHAT=1` 时额外发送真实 RAGFlow 问题并等待回复完成;`PORTAL_E2E_RUN_REFERENCE_CHAT=1` 时验证 Issue 84“劳动法”新回答的缩略图与交互引用;acceptance criteria 记录在 `docs/archive/ISSUES.md`

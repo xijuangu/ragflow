@@ -1,21 +1,5 @@
 # 当前 Issue 追踪
 
-本文件记录 `portal-extension` 当前待实施的纵向切片。已完成的历史 Issue 1–83、验收记录和阶段性决策保留在 [archive/ISSUES.md](archive/ISSUES.md)，不在本文件重复维护。
+本文件记录 `portal-extension` 当前待实施的纵向切片。已完成的历史 Issue 1–84、验收记录和阶段性决策保留在 [archive/ISSUES.md](archive/ISSUES.md)，不在本文件重复维护。
 
-## Issue 84：让新回答的引用资源立即可用并保持引用标记可交互
-
-## What to build
-
-用户在 Portal 嵌入的 RAGFlow 会话中提出问题后，如果流式回答包含知识库引用，当前短期 Portal 令牌必须立即获得这些引用文档的最小访问范围，使缩略图和引用图片能够正常加载；回答中的标准引用标记同时必须显示为可交互的 `Fig. n`，不能停留为纯文字 `[ID:n]`。历史恢复仍沿用既有引用授权链，未被当前历史或流式回答引用的文档继续拒绝访问。
-
-## Acceptance criteria
-
-- [ ] 新提问的 SSE 回答包含 `reference.doc_aggs` 或 `reference.chunks` 时，在浏览器收到并据此请求资源前，当前 `pt_` 令牌已授权对应文档；随后对这些文档调用 `/api/v1/thumbnails` 返回 200，不再出现“文档不在当前会话引用范围内”的 403。
-- [ ] SSE 数据即使跨多个网络 chunk 分段或一个 chunk 内包含多个事件，也能完整解析引用文档 ID；标准登录和公开分享两条 Portal SSE 路径均遵守相同授权规则。
-- [ ] 不在当前令牌已验证历史或 SSE 引用集合中的文档仍返回 403；Portal 令牌过期、撤销、分享页禁用及授权撤销语义保持不变。
-- [ ] 新回答中的标准 `[ID:n]` 引用标记显示为可交互的 `Fig. n`，引用内容和对应文档信息可展开；若上游输出可兼容的空格或全角标点变体，也应规范化后渲染。
-- [ ] 后端自动化测试覆盖“带引用 SSE → 缩略图 200”“未引用文档 403”和 SSE 分帧边界；RAGFlow Web 测试覆盖引用标记规范化，生产 Playwright 用例覆盖“劳动法 → 提问产生引用 → 缩略图 200 且页面无纯文字 `[ID:n]`”。
-
-## Blocked by
-
-None - can start immediately
+当前无待实施 Issue。

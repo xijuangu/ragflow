@@ -384,6 +384,15 @@ def test_labor_law_new_answer_reference_resources_are_immediately_available(
             # Very short answers can finish before the status button is observable.
             pass
 
+        created = _wait_for_new_session_with_reply(
+            page,
+            base_url,
+            share_page_id,
+            previous_session_ids,
+            timeout_ms=chat_timeout_ms,
+        )
+        created_session_id = created["session_id"]
+
         wait_until(
             lambda: thumbnail_responses or None,
             timeout_ms=chat_timeout_ms,
@@ -404,14 +413,6 @@ def test_labor_law_new_answer_reference_resources_are_immediately_available(
             chat_frame.locator("[data-radix-popper-content-wrapper]").last
         ).to_be_visible(timeout=15_000)
 
-        created = _wait_for_new_session_with_reply(
-            page,
-            base_url,
-            share_page_id,
-            previous_session_ids,
-            timeout_ms=chat_timeout_ms,
-        )
-        created_session_id = created["session_id"]
         expect_no_portal_errors(page)
     finally:
         if created_session_id:

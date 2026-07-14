@@ -3063,6 +3063,36 @@ None.
 
 ---
 
+## Issue 84 — 让新回答的引用资源立即可用并保持引用标记可交互
+
+> 状态：✅ 已完成（2026-07-14）。本地实现与自动化验证完成；生产部署及生产 Playwright 执行需另行授权。
+
+## What to build
+
+用户在 Portal 嵌入的 RAGFlow 会话中提出问题后，如果流式回答包含知识库引用，当前短期 Portal 令牌必须立即获得这些引用文档的最小访问范围，使缩略图和引用图片能够正常加载；回答中的标准引用标记同时必须显示为可交互的 `Fig. n`，不能停留为纯文字 `[ID:n]`。历史恢复仍沿用既有引用授权链，未被当前历史或流式回答引用的文档继续拒绝访问。
+
+## Acceptance criteria
+
+- [x] 新提问的 SSE 回答包含 `reference.doc_aggs` 或 `reference.chunks` 时，在浏览器收到并据此请求资源前，当前 `pt_` 令牌已授权对应文档；随后对这些文档调用 `/api/v1/thumbnails` 返回 200，不再出现“文档不在当前会话引用范围内”的 403。
+- [x] SSE 数据即使跨多个网络 chunk 分段或一个 chunk 内包含多个事件，也能完整解析引用文档 ID；标准登录和公开分享两条 Portal SSE 路径均遵守相同授权规则。
+- [x] 不在当前令牌已验证历史或 SSE 引用集合中的文档仍返回 403；Portal 令牌过期、撤销、分享页禁用及授权撤销语义保持不变。
+- [x] 新回答中的标准 `[ID:n]` 引用标记显示为可交互的 `Fig. n`，引用内容和对应文档信息可展开；若上游输出可兼容的空格或全角标点变体，也应规范化后渲染。
+- [x] 后端自动化测试覆盖“带引用 SSE → 缩略图 200”“未引用文档 403”和 SSE 分帧边界；RAGFlow Web 测试覆盖引用标记规范化，生产 Playwright 用例覆盖“劳动法 → 提问产生引用 → 缩略图 200 且页面无纯文字 `[ID:n]`”。
+
+## Verification
+
+- Portal 后端：全量 `441 passed, 5 skipped`；Issue 82/84 引用资源定向测试 `17 passed`。
+- RAGFlow Web：Jest 全量 `27 passed`；Issue 84 引用工具与交互渲染定向测试通过，ESLint、Prettier 和生产构建通过。
+- 代码审查：规格与代码规范双轴复审均为 Clean；SSE 分帧解析已收敛为带 8 MiB 单事件上限的单一增量解析器。
+- TypeScript 全量类型检查仍命中仓库既有跨模块错误基线，错误未涉及 Issue 84 改动文件；生产构建通过。
+- Playwright：生产用例已新增并通过 Python 语法与 Ruff 检查；本轮未获新的生产部署授权，因此未部署、未在生产执行该用例。
+
+## Blocked by
+
+None.
+
+---
+
 ## 后续待办(Issue 16 AC2 遗留)
 
 > Issue 16 AC2「悬浮组件在任意页面右下角加载,点击展开对话窗,能正常对话」— Slice 16 实现了 `/widget/<id>` 骨架 HTML + 可嵌入 snippet + CSP frame-ancestors 放行,但 **悬浮组件实际 UI 渲染(右下角悬浮按钮 + 点击展开对话窗 + iframe 加载 + SSE 对话)尚未实现**。`/widget/<id>` 当前仅返回含 `<div id="widget-root">` 的占位 HTML,需前端构建产物挂载 React 组件。

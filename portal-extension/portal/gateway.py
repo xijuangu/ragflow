@@ -43,7 +43,9 @@ import logging
 import secrets
 import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import partial
 from urllib.parse import urlencode
 
 import httpx
@@ -425,42 +427,6 @@ def _parse_question_from_body(body: bytes) -> str | None:
         return None
 
 
-def _parse_session_id_from_sse_chunk(chunk: bytes) -> str:
-    """Slice 22:从 SSE 响应字节块解析 session_id(RAGFlow 在首帧返回新建 session 的 id)。
-
-    RAGFlow SSE 首帧结构:{data: {session_id: "..."}} 或 {session_id: "..."}。
-    chunk 可能含多行,逐行尝试解析 `data:` 前缀的 JSON。
-    无 session_id 或解析失败返回空字符串(调用方累积,首个非空即用)。
-    """
-    if not chunk:
-        return ""
-    try:
-        text = chunk.decode("utf-8", errors="ignore")
-    except UnicodeDecodeError:
-        return ""
-    for line in text.split("\n"):
-        line = line.strip()
-        if not line.startswith("data:"):
-            continue
-        payload = line[len("data:") :].strip()
-        if not payload:
-            continue
-        try:
-            data = json.loads(payload)
-        except json.JSONDecodeError:
-            continue
-        # 兼容两种结构:{data:{session_id}} 与 {session_id}
-        inner = data.get("data")
-        sid = (
-            (inner.get("session_id") if isinstance(inner, dict) else None)
-            or data.get("session_id")
-            or ""
-        )
-        if sid:
-            return str(sid)
-    return ""
-
-
 def _build_upstream_headers(beta_token: str, content_type: str | None = None) -> dict:
     """构造发往 RAGFlow 的请求头(用 beta Token 鉴权)。
 
@@ -839,8 +805,7 @@ async def proxy_sse_to_ragflow(request: Request, dialog_id: str, ragflow_type: s
         portal_user_id=record.portal_user_id,
         share_page_id=record.share_page_id,
         org_id=share_page.org_id,
-        token_store=token_store,
-        t_short=t_short,
+        authorize_reference_documents=partial(token_store.authorize_documents, t_short),
     )
 
 
@@ -914,8 +879,7 @@ async def _proxy_sse_public_core(
         request_question,
         session_store,
         ragflow_type="chat",
-        token_store=token_store,
-        t_short=t_short,
+        authorize_reference_documents=partial(token_store.authorize_documents, t_short),
     )
 
 
@@ -945,8 +909,7 @@ def _build_sse_streaming_response(
     portal_user_id: str = "",
     share_page_id: str = "",
     org_id: str = "default",
-    token_store: TokenStore | None = None,
-    t_short: str = "",
+    authorize_reference_documents: Callable[[set[str]], None] | None = None,
 ) -> StreamingResponse:
     """构造 SSE 流式响应(标准路径与公开路径共用)。
 
@@ -977,19 +940,23 @@ def _build_sse_streaming_response(
         success = False
         # Slice 22:累积解析 SSE 响应的 session_id(RAGFlow fetchSessionId 新建的 session)
         parsed_session_id = ""
-        reference_parser = SSEReferenceDocumentParser()
+        event_parser = SSEJSONEventParser()
         try:
             async with _build_upstream_client(timeout=None) as client:
                 async with client.stream("POST", upstream_url, content=body, headers=upstream_headers) as upstream:
                     async for chunk in upstream.aiter_bytes():
-                        if token_store is not None and t_short:
-                            token_store.authorize_documents(t_short, reference_parser.feed(chunk))
-                        yield chunk
-                        # Slice 22:未解析到 session_id 时,尝试从当前 chunk 解析(首帧即含)
+                        payloads = event_parser.feed(chunk)
+                        if authorize_reference_documents is not None:
+                            document_ids: set[str] = set()
+                            for payload in payloads:
+                                document_ids.update(_reference_document_ids_from_payload(payload))
+                            authorize_reference_documents(document_ids)
                         if not parsed_session_id:
-                            sid = _parse_session_id_from_sse_chunk(chunk)
-                            if sid:
-                                parsed_session_id = sid
+                            for payload in payloads:
+                                if sid := _session_id_from_sse_payload(payload):
+                                    parsed_session_id = sid
+                                    break
+                        yield chunk
             # 流完整消费完毕(无异常)才标记成功
             success = True
         except httpx.RequestError:
@@ -1107,11 +1074,12 @@ def _reference_document_ids(response_body: bytes) -> set[str]:
     return _reference_document_ids_from_payload(payload)
 
 
-class SSEReferenceDocumentParser:
-    """增量解析 SSE 事件，并返回已完整事件中的引用文档 ID。"""
+class SSEJSONEventParser:
+    """增量解析 SSE JSON 事件，避免把网络 chunk 边界误当事件边界。"""
 
-    def __init__(self):
+    def __init__(self, max_event_bytes: int = 8 * 1024 * 1024):
         self._buffer = b""
+        self._max_event_bytes = max_event_bytes
 
     @staticmethod
     def _event_boundary(buffer: bytes) -> tuple[int, int] | None:
@@ -1123,7 +1091,7 @@ class SSEReferenceDocumentParser:
         return min(boundaries, default=None)
 
     @staticmethod
-    def _document_ids_from_event(event: bytes) -> set[str]:
+    def _payload_from_event(event: bytes) -> dict | None:
         data_lines = []
         for line in event.splitlines():
             if not line.startswith(b"data:"):
@@ -1131,22 +1099,37 @@ class SSEReferenceDocumentParser:
             value = line[len(b"data:") :]
             data_lines.append(value[1:] if value.startswith(b" ") else value)
         if not data_lines:
-            return set()
+            return None
         try:
             payload = json.loads(b"\n".join(data_lines))
         except (json.JSONDecodeError, UnicodeDecodeError):
-            return set()
-        return _reference_document_ids_from_payload(payload)
+            return None
+        return payload if isinstance(payload, dict) else None
 
-    def feed(self, chunk: bytes) -> set[str]:
+    def feed(self, chunk: bytes) -> list[dict]:
         self._buffer += chunk
-        document_ids: set[str] = set()
+        payloads: list[dict] = []
         while (boundary := self._event_boundary(self._buffer)) is not None:
             index, delimiter_length = boundary
             event = self._buffer[:index]
             self._buffer = self._buffer[index + delimiter_length :]
-            document_ids.update(self._document_ids_from_event(event))
-        return document_ids
+            if len(event) <= self._max_event_bytes:
+                if payload := self._payload_from_event(event):
+                    payloads.append(payload)
+        if len(self._buffer) > self._max_event_bytes:
+            self._buffer = b""
+        return payloads
+
+
+def _session_id_from_sse_payload(payload: dict) -> str:
+    """兼容 flat ``{session_id}`` 与 nested ``{data:{session_id}}``。"""
+    inner = payload.get("data")
+    session_id = (
+        (inner.get("session_id") if isinstance(inner, dict) else None)
+        or payload.get("session_id")
+        or ""
+    )
+    return str(session_id) if session_id else ""
 
 
 def _requested_document_ids(request: Request) -> set[str]:

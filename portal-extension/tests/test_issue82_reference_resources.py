@@ -6,7 +6,22 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 
-from portal.gateway import TokenStore
+from portal.gateway import SSEJSONEventParser, TokenStore
+
+
+def test_sse_json_event_parser_assembles_fragmented_payloads():
+    parser = SSEJSONEventParser()
+    event = b'data: {"data":{"session_id":"session-fragmented"}}\n\n'
+
+    assert parser.feed(event[:17]) == []
+    assert parser.feed(event[17:]) == [{"data": {"session_id": "session-fragmented"}}]
+
+
+def test_sse_json_event_parser_discards_oversized_event_and_recovers():
+    parser = SSEJSONEventParser(max_event_bytes=32)
+
+    assert parser.feed(b"data: " + (b"x" * 40)) == []
+    assert parser.feed(b'data: {"code":0}\n\n') == [{"code": 0}]
 
 
 async def _login_and_get_token(client):
