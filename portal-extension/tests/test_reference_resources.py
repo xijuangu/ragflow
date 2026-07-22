@@ -2,6 +2,7 @@
 
 import json
 import os
+import time as time_module
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -797,3 +798,252 @@ def test_issuing_image_ticket_prunes_expired_ticket(monkeypatch):
     store.issue_reference_image_ticket(active_token, "doc-new", "image-new")
 
     assert expired_ticket not in store._reference_image_tickets
+
+
+def _mock_ragflow_rejects_image_without_beta_token(monkeypatch, *, history, image_id, captured):
+    """RAGFlow mock:history 原样返回;图片端点无 beta token 时 401(模拟真实鉴权)。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(
+            {
+                "url": str(request.url),
+                "authorization": request.headers.get("Authorization", ""),
+            }
+        )
+        if request.url.path.endswith("/api/v1/thumbnails"):
+            return httpx.Response(200, json={"code": 0, "data": {}})
+        if request.url.path.endswith(f"/api/v1/documents/images/{image_id}"):
+            if request.headers.get("Authorization", "") != f"Bearer {os.environ['RAGFLOW_BETA_TOKEN']}":
+                return httpx.Response(401, json={"code": 401, "message": "Unauthorized"})
+            return httpx.Response(200, content=b"png-bytes", headers={"content-type": "image/png"})
+        return httpx.Response(200, json=history, headers={"content-type": "application/json"})
+
+    class MockAsyncClient(httpx.AsyncClient):
+        def __init__(self, *args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(handler)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr("portal.gateway.httpx.AsyncClient", MockAsyncClient)
+
+
+async def test_history_reference_chunk_image_loads_via_img_tag_without_auth_header(
+    client, app, monkeypatch
+):
+    """引用 chunk 的 image_id 由 <img src> 渲染(无 Authorization header、无 portal_ticket)。
+
+    history 响应须为 chunk.image_id 签发票据并改写,使 <img> 凭 cookie+票据加载,
+    与既有缩略图票据链对称(Issue 82/84)。
+    """
+    token, dialog_id = await _login_and_get_token(client)
+    session_id = "bug-history-ref-chunk-image"
+    image_id = "chunk-img-001"
+    app.state.session_store.bind(
+        session_id=session_id,
+        share_page_id="sp_default",
+        portal_user_id="u_admin",
+        ragflow_resource_id=dialog_id,
+    )
+    captured = []
+    history = {
+        "code": 0,
+        "data": {
+            "session_id": session_id,
+            "reference": [
+                {
+                    "chunks": [{"document_id": "doc-allowed", "image_id": image_id}],
+                    "doc_aggs": [{"doc_id": "doc-allowed", "doc_name": "劳动法.pdf"}],
+                }
+            ],
+        },
+    }
+    _mock_ragflow_rejects_image_without_beta_token(
+        monkeypatch, history=history, image_id=image_id, captured=captured
+    )
+
+    # 1. axios 式加载 history(带 Authorization)→ 建立引用 + 应改写 image_id 带票据
+    history_resp = await client.get(
+        f"/api/v1/chatbots/{dialog_id}/sessions/{session_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert history_resp.status_code == 200
+    chunk = history_resp.json()["data"]["reference"][0]["chunks"][0]
+    assert chunk["image_id"].startswith(
+        f"{image_id}?portal_ticket="
+    ), f"image_id 应被改写为带 portal_ticket,实际: {chunk['image_id']}"
+
+    # 2. <img> 式请求:无 Authorization header,仅 Portal cookie(客户端自动携带)
+    img_resp = await client.get(f"/api/v1/documents/images/{chunk['image_id']}")
+    assert img_resp.status_code == 200, f"引用 chunk 图片应可通过 cookie+票据加载,实际: {img_resp.status_code}"
+    assert img_resp.content == b"png-bytes"
+
+
+async def test_sse_reference_chunk_image_gets_ticket_and_loads_without_auth_header(
+    client, app, monkeypatch
+):
+    """新回答(流式)引用 chunk 的 image_id 也须带票据,<img> 凭 cookie+票据加载。"""
+    token, dialog_id = await _login_and_get_token(client)
+    session_id = "bug-sse-ref-chunk-image"
+    image_id = "sse-chunk-img-001"
+    app.state.session_store.bind(
+        session_id=session_id,
+        share_page_id="sp_default",
+        portal_user_id="u_admin",
+        ragflow_resource_id=dialog_id,
+    )
+    captured = []
+    reference = {
+        "chunks": [{"document_id": "doc-from-sse", "image_id": image_id}],
+        "doc_aggs": [{"doc_id": "doc-from-sse", "doc_name": "劳动法.pdf"}],
+    }
+    sse_body = (
+        "data: "
+        + json.dumps(
+            {
+                "code": 0,
+                "data": {
+                    "answer": "法定节假日[ID:0]",
+                    "session_id": session_id,
+                    "reference": reference,
+                    "final": True,
+                },
+            },
+            ensure_ascii=False,
+        )
+        + "\n\n"
+    ).encode()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(
+            {
+                "url": str(request.url),
+                "authorization": request.headers.get("Authorization", ""),
+            }
+        )
+        if request.url.path.endswith(f"/chatbots/{dialog_id}/completions"):
+            return httpx.Response(
+                200, content=sse_body, headers={"content-type": "text/event-stream"}
+            )
+        if request.url.path.endswith(f"/api/v1/documents/images/{image_id}"):
+            if request.headers.get("Authorization", "") != f"Bearer {os.environ['RAGFLOW_BETA_TOKEN']}":
+                return httpx.Response(401, json={"code": 401, "message": "Unauthorized"})
+            return httpx.Response(200, content=b"png-bytes", headers={"content-type": "image/png"})
+        return httpx.Response(404, json={"code": 404})
+
+    class MockAsyncClient(httpx.AsyncClient):
+        def __init__(self, *args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(handler)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr("portal.gateway.httpx.AsyncClient", MockAsyncClient)
+
+    completion = await client.post(
+        f"/api/v1/chatbots/{dialog_id}/completions",
+        json={"question": "法定节假日有哪些？", "stream": True, "session_id": session_id},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    body = await completion.aread()
+    assert completion.status_code == 200
+
+    # 解析 SSE 响应,提取改写后的 image_id
+    parsed_image_id = None
+    for line in body.decode("utf-8").splitlines():
+        if line.startswith("data: "):
+            payload = json.loads(line[len("data: ") :])
+            for chunk in payload.get("data", {}).get("reference", {}).get("chunks", []):
+                if chunk.get("image_id"):
+                    parsed_image_id = chunk["image_id"]
+    assert parsed_image_id is not None, "SSE 引用应包含 image_id"
+    assert parsed_image_id.startswith(
+        f"{image_id}?portal_ticket="
+    ), f"SSE 引用 chunk image_id 应被改写为带 portal_ticket,实际: {parsed_image_id}"
+
+    # <img> 式请求:无 Authorization,仅 cookie
+    img_resp = await client.get(f"/api/v1/documents/images/{parsed_image_id}")
+    assert img_resp.status_code == 200, f"流式引用 chunk 图片应可通过 cookie+票据加载,实际: {img_resp.status_code}"
+    assert img_resp.content == b"png-bytes"
+
+
+# ---------------------------------------------------------------------------
+# Bug 2: T_short 停留过久后 401 — 滑动过期(touch)修复
+# ---------------------------------------------------------------------------
+
+
+def test_token_store_touch_extends_expiration(monkeypatch):
+    """TokenStore.touch 应延长令牌的过期时间(滑动过期)。"""
+    store = TokenStore()
+    fake_now = [1000.0]
+    monkeypatch.setattr("portal.gateway.time.time", lambda: fake_now[0])
+
+    token = store.issue("user", "share", ttl_seconds=100)
+    # 原始过期时间 = 1100
+
+    # 50 秒后,touch 延长 100 秒(新过期时间 = 1050 + 100 = 1150)
+    fake_now[0] = 1050.0
+    store.touch(token, ttl_seconds=100)
+
+    # 120 秒后(超过原始 TTL 1100,但在 touch 延长后的 1150 内)
+    fake_now[0] = 1120.0
+    assert store.validate(token) is not None, "touch 应使 token 在原始 TTL 过期后仍有效"
+
+    # 160 秒后(超过 touch 延长后的 1150)
+    fake_now[0] = 1160.0
+    assert store.validate(token) is None, "token 应在 touch 延长后的 TTL 过期后失效"
+
+
+def test_token_store_touch_does_not_revive_revoked_token(monkeypatch):
+    """touch 不应复活已撤销的令牌。"""
+    store = TokenStore()
+    monkeypatch.setattr("portal.gateway.time.time", lambda: 1000.0)
+    token = store.issue("user", "share", ttl_seconds=100)
+    store.revoke(token)
+
+    store.touch(token, ttl_seconds=100)
+    assert store.validate(token) is None, "已撤销令牌不应被 touch 复活"
+
+
+async def test_sse_request_touches_t_short_to_extend_ttl(client, app, monkeypatch):
+    """活跃 SSE 请求应延长 T_short 有效期(滑动过期),避免停留过久后 401。
+
+    时序(T_short TTL = 2s):
+      t=0    签发 token(原始过期 = t+2)
+      t=1.5  第一条消息(仍有效 1.5 < 2)→ touch 续期到 t=1.5+2=3.5
+      t=3.0  第二条消息:t=3.0 > 原始过期 2.0(无 touch 会 401),
+             但 < touch 后的 3.5(有 touch 则 200)
+    """
+    token, dialog_id = await _login_and_get_token(client)
+    session_id = "bug2-sliding-ttl"
+    app.state.session_store.bind(
+        session_id=session_id,
+        share_page_id="sp_default",
+        portal_user_id="u_admin",
+        ragflow_resource_id=dialog_id,
+    )
+    # 用极短 TTL 重新签发 token(2 秒)
+    short_token = app.state.token_store.issue("u_admin", "sp_default", ttl_seconds=2)
+    _mock_sse_reference_and_thumbnails(
+        monkeypatch, session_id=session_id, dialog_id=dialog_id, captured=[]
+    )
+
+    # 等 1.5 秒:仍处于原始 TTL 内(1.5 < 2),第一条消息应成功并触发 touch
+    time_module.sleep(1.5)
+    completion1 = await client.post(
+        f"/api/v1/chatbots/{dialog_id}/completions",
+        json={"question": "test", "stream": True, "session_id": session_id},
+        headers={"Authorization": f"Bearer {short_token}"},
+    )
+    await completion1.aread()
+    assert completion1.status_code == 200, f"第一条消息应成功,实际: {completion1.status_code}"
+
+    # 再等 1.5 秒:t=3.0,已超过原始 TTL(2.0)但仍在 touch 续期窗口内(3.5)
+    time_module.sleep(1.5)
+
+    # 第二条消息:若 touch 生效,token 仍有效 → 200;否则(无 touch)→ 401
+    completion2 = await client.post(
+        f"/api/v1/chatbots/{dialog_id}/completions",
+        json={"question": "test2", "stream": True, "session_id": session_id},
+        headers={"Authorization": f"Bearer {short_token}"},
+    )
+    await completion2.aread()
+    assert completion2.status_code == 200, (
+        f"滑动过期应使 T_short 在活跃请求后仍有效,实际: {completion2.status_code}"
+    )

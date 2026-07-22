@@ -76,6 +76,8 @@ class TokenRecord:
     pending_greeting_session_ids: set[str] = field(default_factory=set)
     # Issue 82:仅允许读取已通过归属校验的历史会话所引用的文档资源。
     authorized_document_ids: set[str] = field(default_factory=set)
+    # Bug 2:签发时记录的 TTL,供 touch() 滑动过期时沿用(避免调用方每次都传 ttl_seconds)。
+    ttl_seconds: int = 300
 
 
 @dataclass(frozen=True)
@@ -146,6 +148,7 @@ class TokenStore:
             expires_at=time.time() + ttl_seconds,
             revoked=False,
             scope=scope,
+            ttl_seconds=ttl_seconds,
         )
         return token
 
@@ -159,6 +162,21 @@ class TokenStore:
         if time.time() > record.expires_at:
             return None
         return record
+
+    def touch(self, token: str, ttl_seconds: int | None = None) -> bool:
+        """Bug 2:滑动过期 — 活跃请求延长 T_short 的 expires_at。
+
+        仅对当前有效的令牌(存在 / 未撤销 / 未过期)生效;已撤销或已过期的令牌
+        不被复活(与 validate() 语义一致)。返回是否成功延长。
+
+        ttl_seconds 为 None 时沿用签发时记录的 record.ttl_seconds(典型场景:
+        SSE 代理校验通过后调 touch() 续期,无需调用方传 TTL)。
+        """
+        record = self._tokens.get(token)
+        if record is None or record.revoked or time.time() > record.expires_at:
+            return False
+        record.expires_at = time.time() + (ttl_seconds if ttl_seconds is not None else record.ttl_seconds)
+        return True
 
     def get_record(self, token: str):
         """查找令牌记录(不论是否有效,用于获取 portal_user_id 与 share_page_id)。
@@ -779,6 +797,8 @@ async def proxy_sse_to_ragflow(request: Request, dialog_id: str, ragflow_type: s
     record = token_store.validate(t_short)
     if record is None:
         raise HTTPException(status_code=401, detail="令牌无效或已过期")
+    # Bug 2:滑动过期 — 活跃 SSE 请求续期 T_short,避免停留过久后 401
+    token_store.touch(t_short)
     # 校验 T_short 绑定的分享页对应的 dialog_id 与请求的 dialog_id 一致
     share_page = seed.get_share_page(record.share_page_id)
     if not share_page or share_page.ragflow_resource_id != dialog_id:
@@ -814,6 +834,8 @@ async def proxy_sse_to_ragflow(request: Request, dialog_id: str, ragflow_type: s
         share_page_id=record.share_page_id,
         org_id=share_page.org_id,
         authorize_reference_documents=partial(token_store.authorize_documents, t_short),
+        token_store=token_store,
+        t_short=t_short,
     )
 
 
@@ -852,6 +874,8 @@ async def _proxy_sse_public_core(
     record = token_store.validate(t_short)
     if record is None:
         raise HTTPException(status_code=401, detail="令牌无效或已过期")
+    # Bug 2:滑动过期 — 活跃 SSE 请求续期 T_short,避免停留过久后 401
+    token_store.touch(t_short)
     # 步骤 2:share_page 存在且 is_public=true(关闭 is_public → 403)
     share_page = seed.get_share_page(record.share_page_id)
     if not share_page:
@@ -888,6 +912,8 @@ async def _proxy_sse_public_core(
         session_store,
         ragflow_type="chat",
         authorize_reference_documents=partial(token_store.authorize_documents, t_short),
+        token_store=token_store,
+        t_short=t_short,
     )
 
 
@@ -918,6 +944,8 @@ def _build_sse_streaming_response(
     share_page_id: str = "",
     org_id: str = "default",
     authorize_reference_documents: Callable[[set[str]], None] | None = None,
+    token_store: TokenStore | None = None,
+    t_short: str = "",
 ) -> StreamingResponse:
     """构造 SSE 流式响应(标准路径与公开路径共用)。
 
@@ -949,22 +977,29 @@ def _build_sse_streaming_response(
         # Slice 22:累积解析 SSE 响应的 session_id(RAGFlow fetchSessionId 新建的 session)
         parsed_session_id = ""
         event_parser = SSEJSONEventParser()
+        can_rewrite = token_store is not None and bool(t_short)
         try:
             async with _build_upstream_client(timeout=None) as client:
                 async with client.stream("POST", upstream_url, content=body, headers=upstream_headers) as upstream:
                     async for chunk in upstream.aiter_bytes():
-                        payloads = event_parser.feed(chunk)
+                        events = event_parser.feed_with_raw(chunk)
                         if authorize_reference_documents is not None:
                             document_ids: set[str] = set()
-                            for payload in payloads:
-                                document_ids.update(_reference_document_ids_from_payload(payload))
+                            for payload, _ in events:
+                                if payload is not None:
+                                    document_ids.update(_reference_document_ids_from_payload(payload))
                             authorize_reference_documents(document_ids)
                         if not parsed_session_id:
-                            for payload in payloads:
-                                if sid := _session_id_from_sse_payload(payload):
+                            for payload, _ in events:
+                                if payload is not None and (sid := _session_id_from_sse_payload(payload)):
                                     parsed_session_id = sid
                                     break
-                        yield chunk
+                        for payload, raw_bytes in events:
+                            if payload is not None and can_rewrite:
+                                if _rewrite_reference_chunk_image_ids(payload, token_store, t_short):
+                                    yield _serialize_sse_event(payload)
+                                    continue
+                            yield raw_bytes
             # 流完整消费完毕(无异常)才标记成功
             success = True
         except httpx.RequestError:
@@ -1115,18 +1150,28 @@ class SSEJSONEventParser:
         return payload if isinstance(payload, dict) else None
 
     def feed(self, chunk: bytes) -> list[dict]:
+        """增量解析 SSE JSON 事件，返回 payload 列表(非 JSON 事件被跳过)。"""
+        return [payload for payload, _ in self.feed_with_raw(chunk) if payload is not None]
+
+    def feed_with_raw(self, chunk: bytes) -> list[tuple[dict | None, bytes]]:
+        """增量解析 SSE 事件，返回 (payload, raw_event_bytes) 元组列表。
+
+        非 JSON 事件的 payload 为 None,但 raw_event_bytes 仍返回(供调用方透传)。
+        raw_event_bytes 包含事件分隔符(\\n\\n 或 \\r\\n\\r\\n),可直接 yield 给客户端。
+        """
         self._buffer += chunk
-        payloads: list[dict] = []
+        events: list[tuple[dict | None, bytes]] = []
         while (boundary := self._event_boundary(self._buffer)) is not None:
             index, delimiter_length = boundary
             event = self._buffer[:index]
+            delimiter = self._buffer[index : index + delimiter_length]
             self._buffer = self._buffer[index + delimiter_length :]
             if len(event) <= self._max_event_bytes:
-                if payload := self._payload_from_event(event):
-                    payloads.append(payload)
+                payload = self._payload_from_event(event)
+                events.append((payload, event + delimiter))
         if len(self._buffer) > self._max_event_bytes:
             self._buffer = b""
-        return payloads
+        return events
 
 
 def _session_id_from_sse_payload(payload: dict) -> str:
@@ -1171,6 +1216,61 @@ def _rewrite_thumbnail_image_urls(response_body: bytes, token_store: TokenStore,
         separator = "&" if "?" in image_url else "?"
         data[document_id] = f"{image_url}{separator}portal_ticket={ticket}"
     return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+
+def _rewrite_reference_chunk_image_ids(payload: dict, token_store: TokenStore, t_short: str) -> bool:
+    """为 reference.chunks 中的 image_id 签发单资源票据并就地改写。
+
+    与 ``_rewrite_thumbnail_image_urls`` 对称:前者处理 thumbnails 响应中的图片 URL,
+    本函数处理 history/SSE 引用 chunk 中的 image_id(裸 ID,非完整 URL)。
+
+    <img> 标签无法携带 Authorization header,改写后的 image_id 带票据,使 <img> 凭
+    cookie + 票据通过 ``proxy_document_image_to_ragflow`` 加载。
+
+    就地修改 payload,返回 True 表示有改动(调用方需重新序列化)。
+    """
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if isinstance(data, dict):
+        references = data.get("reference")
+    elif isinstance(payload, dict):
+        references = payload.get("reference")
+    else:
+        references = None
+    if references is None:
+        return False
+
+    changed = False
+    reference_items = references if isinstance(references, list) else [references]
+    for reference in reference_items:
+        if not isinstance(reference, dict):
+            continue
+        chunks = reference.get("chunks")
+        if not isinstance(chunks, list):
+            continue
+        for chunk in chunks:
+            if not isinstance(chunk, dict):
+                continue
+            image_id = chunk.get("image_id")
+            document_id = chunk.get("document_id")
+            if not isinstance(image_id, str) or not image_id:
+                continue
+            if not isinstance(document_id, str) or not document_id:
+                continue
+            if "portal_ticket=" in image_id:
+                continue
+            try:
+                ticket = token_store.issue_reference_image_ticket(t_short, document_id, image_id)
+            except ValueError:
+                continue
+            separator = "&" if "?" in image_id else "?"
+            chunk["image_id"] = f"{image_id}{separator}portal_ticket={ticket}"
+            changed = True
+    return changed
+
+
+def _serialize_sse_event(payload: dict) -> bytes:
+    """将 payload dict 序列化为单行 SSE 事件(data: <json>\\n\\n)。"""
+    return b"data: " + json.dumps(payload, ensure_ascii=False).encode("utf-8") + b"\n\n"
 
 
 async def _validate_reference_access(
@@ -1553,10 +1653,18 @@ async def proxy_session_history_to_ragflow(
     try:
         async with _build_upstream_client() as client:
             resp = await client.get(upstream_url, headers=_build_upstream_headers(settings.ragflow_beta_token))
+        body = resp.content
         if resp.status_code == 200:
-            token_store.authorize_documents(t_short, _reference_document_ids(resp.content))
+            token_store.authorize_documents(t_short, _reference_document_ids(body))
+            # 为 reference.chunks 中的 image_id 签发票据并改写,使 <img> 凭 cookie+票据加载
+            try:
+                payload = json.loads(body)
+                if isinstance(payload, dict) and _rewrite_reference_chunk_image_ids(payload, token_store, t_short):
+                    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                pass  # 非 JSON 或解析失败,原样回传
         return Response(
-            content=resp.content,
+            content=body,
             status_code=resp.status_code,
             media_type=resp.headers.get("content-type", "application/json"),
         )
