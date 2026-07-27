@@ -63,7 +63,7 @@ portal-extension/
 ├── portal/                   # 后端(FastAPI)
 │   ├── main.py               # app = create_app(),中间件装配
 │   ├── routes.py             # 路由(用户/组/分享页/会话/管理/公开)
-│   ├── gateway.py            # 网关:SSE 代理/TokenStore/SessionStore/上游 RAGFlow 调用
+│   ├── gateway.py            # 网关:SSE 代理/TokenStore(含 touch 滑动过期)/SessionStore/上游 RAGFlow 调用/reference.chunks image_id 票据改写
 │   ├── models.py             # ORM 模型(User/Group/SharePage/Grant/SessionOwner/...)
 │   ├── auth.py               # 鉴权依赖(get_current_user/require_org_admin)
 │   ├── password.py           # 密码哈希(argon2)
@@ -85,10 +85,10 @@ portal-extension/
 │   │   ├── components/        # AdminLayout/AdminRoute/AppHeader/ProtectedRoute
 │   │   ├── hooks/             # useAdminList/useOptimisticToggle
 │   │   └── utils/
-│   ├── tests/                # Vitest(89 tests)
+│   ├── tests/                # Vitest(89 tests,2026-07-13)
 │   ├── vite.config.ts        # base='/portal/'
 │   └── vitest.config.ts
-├── tests/                    # 后端 pytest(422 passed + 5 skipped)
+├── tests/                    # 后端 pytest(451 passed + 5 skipped,2026-07-22)
 │   ├── conftest.py
 │   └── test_slice*.py        # 按 slice 组织的 E2E + 单测
 └── docs/
@@ -157,6 +157,21 @@ portal 网关 `_ragflow_bot_segment` 用于 completions(agent → "agentbots"),s
 
 Issue 82/84 的引用资源链：成功恢复且通过归属校验的 history 响应，以及新回答中已完整解析的 SSE 引用事件，都会把引用 `doc_id` 绑定到当前 `pt_`；SSE 授权发生在对应事件转发给浏览器之前，解析不依赖网络 chunk 边界。`/api/v1/thumbnails` 只能查询 history/SSE 形成的集合。非 base64 缩略图路径会附加绑定 token/doc/image 的 `pit_` 票据，`<img>` 请求凭同源 Portal cookie + 票据取图，不需要 RAGFlow 登录态。无 Portal token/票据的原生 RAGFlow 请求保持透传。
 
+### 6.4.1 引用 chunks 的 image_id 票据改写(Bug 1 修复,2026-07-22)
+
+`reference.chunks[i].image_id` 是**裸 ID**(非完整 URL),前端 `<Image>` 组件据此拼 `/api/v1/documents/images/${image_id}` —— 该 URL 无 `portal_ticket` 参数,`<img>` 无法发送 Authorization header → 命中 `proxy_document_image_to_ragflow` 透传分支 → 转发到 RAGFlow 无 beta token → 401 → 图片不显示。
+
+修复扩展了"非 base64 缩略图路径"改写模式:
+- `_rewrite_reference_chunk_image_ids(payload, token_store, t_short)`:遍历 `reference.chunks`,为每个含 `document_id` + `image_id` 的 chunk 签发 `pit_` 票据,就地改写为 `image_id?portal_ticket=<ticket>`
+- history 响应:`proxy_session_history_to_ragflow` 解析 JSON 后调本函数改写再回传
+- SSE 流:`_build_sse_streaming_response` 用 `SSEJSONEventParser.feed_with_raw()` 同时拿 payload + 原始字节;payload 含 image_id 时改写并用 `_serialize_sse_event()` 重新序列化,否则透传原始字节
+
+### 6.4.2 T_short 滑动过期(Bug 2 修复,2026-07-22)
+
+原设计:T_short 默认 TTL 300s(5 分钟),内存存储,**无刷新机制**。用户在聊天页面停留超过 5 分钟后,下次提问时 T_short 已过期 → 网关返回 401 → 前端重定向 `/login` → 必须刷新页面获取新 T_short。
+
+修复:`TokenStore.touch(token, ttl_seconds=None)` 实现滑动过期。仅对当前有效令牌(存在/未撤销/未过期)延长 `expires_at`,已撤销/已过期的令牌不能被复活(与 `validate()` 语义一致)。`ttl_seconds` 为 None 时沿用签发时记录的 `TokenRecord.ttl_seconds`。`proxy_sse_to_ragflow` 和 `_proxy_sse_public_core` 在 `validate()` 成功后调 `token_store.touch(t_short)`,活跃 SSE 请求自动续期。重启后全部失效(内存存储不变)。
+
 ### 6.5 UI 重设计边界(2026-07-09 grilling 决策)
 
 > 这组边界描述的是 2026-07-09 的首轮视觉迁移。2026-07-13 的生产化收口 Issue 75–81 已明确追加纯前端工作，其中 Issue 77 覆盖下述第 3 项并实现移动卡片/侧栏，Issue 79 覆盖第 4–5 项并引入统一弹窗组件，Issue 78 以构建开关收口未配置的 SSO 入口。仍然有效的边界是：不新增后端接口、不实现设计稿中缺少后端能力的功能、不替换 RAGFlow 原生 chat UI。
@@ -203,6 +218,8 @@ Issue 82/84 的引用资源链：成功恢复且通过归属校验的 history �
 - **scp/docker exec 文件系统隔离导致 RAGFlow web dist「假部署」**(2026-07-14 踩坑):`scp /tmp/dist.tar.gz 172.16.10.180:/tmp/` 把 tar 包传到**宿主机** `/tmp`,但 `docker exec docker-ragflow-cpu-1 bash -c "tar -xzf /tmp/dist.tar.gz ..."` 在**容器命名空间**执行,容器有独立文件系统,宿主机 `/tmp` 的文件在容器内不存在。容器内恰好残留 2026-07-08 的同名旧 `/tmp/dist.tar.gz`,`tar` 静默解压旧包,`nginx -s reload` 成功 + `echo DEPLOYED` 正常回显,但 `/ragflow/web/dist/index.html` 时间戳/内容未变(仍是 Jul 8),部署「假成功」。直到 `md5sum` 校验本地 vs 容器 `index.html` 才发现不一致。**解法**:scp 后必须 `docker cp /tmp/dist.tar.gz docker-ragflow-cpu-1:/tmp/dist.tar.gz` 跨边界复制进容器,再 docker exec 解压;`rm -rf dist/*` 改为 `rm -rf dist && mkdir -p dist`(glob 不匹配隐藏文件且旧 hash chunk 残留,tar 包 1320 文件 vs 残留 2662);部署后必须 `md5sum` 校验 `index.html` 与本地一致 + 抽查 index.html 引用的 chunk 存在且 HTTP 200,不能只看 `DEPLOYED` 回显。**教训**:`docker exec` 的命令在容器命名空间运行,无法访问宿主机文件;跨宿主机/容器边界传文件必须用 `docker cp`。部署验证必须校验内容指纹(md5/时间戳),回显和 HTTP 200 不能证明文件被替换。
 - **nginx 配置漏更新导致 Issue 85 preview 端点不工作**(2026-07-14 踩坑):提交 `0c43ddd` 含新文件 `deployment/nginx-document-preview.conf`(Issue 85 的 `/api/v1/documents/<id>/preview` location),但部署时只跑了 `bash deploy.sh`(仅同步 Portal 代码+前端 dist+重启),**没检查提交是否含 nginx 配置改动**。服务器 nginx 仍只有 `/api/v1/thumbnails` 和 `/api/v1/documents/images/` 两个 location,preview 请求被 `location /` 兜底转到 RAGFlow 原生(不经 Portal 授权),功能静默失效。**根因**:`deploy.sh` 不覆盖 nginx 配置(nginx 配置在 `~/portal-nginx/conf.d/`,不在 `~/portal-extension/` rsync 范围内)。**解法**:每次部署前必须 `git show --stat HEAD` 检查提交是否含 `deployment/nginx-*.conf` 或 `portal-nginx/` 路径的改动;有则按 §9.8 手动合并到服务器 `~/portal-nginx/conf.d/default.conf` 并 `nginx -t` + reload。**教训**:`deploy.sh` 只管 Portal 应用层,nginx 配置是独立的部署维度;提交里出现 `deployment/` 目录下的 `.conf` 文件时,必须同步更新服务器 nginx 并 reload,否则后端代码部署了但路由没生效,功能「假可用」。
 - **shell `set -e` 与 `diff` 命令冲突**(2026-07-14 踩坑):nginx 配置更新脚本用 `set -e` 保证失败即停,但 `diff old new` 在文件有差异时返回退出码 1(表示"有差异",非错误),`set -e` 把它当作失败提前退出 → 后续 `mv` / `nginx -t` / `nginx -s reload` 未执行,配置文件停在 `.new` 状态。**解法**:`diff` 在 `set -e` 脚本中要加 `|| true` 容错,或改用 `diff ... && echo "无差异" || echo "有差异"` 显式处理;或把 `diff` 放在 `set -e` 之外单独执行。**教训**:`set -e` 对返回非零但语义正常的命令(diff/grep/test)会误杀,使用时需 `|| true` 或显式判断。
+- **T_short 5 分钟硬过期导致 SSE 长会话中途 401**(Bug 2,2026-07-22 修复):用户在聊天页面停留超过 5 分钟后,下次提问时 T_short 已过期,网关返回 401,iframe 跳登录页。根因:`issue()` 只在签发时设 `expires_at`,无续期机制。**解法**:`TokenStore` 新增 `touch(token, ttl_seconds=None)` 方法,`proxy_sse_to_ragflow` 和 `_proxy_sse_public_core` 在校验通过后调 `touch()` 滑动续期(沿用签发时 TTL);已撤销/已过期的令牌不能被 touch 复活。**教训**:短期令牌配 SSE 长会话场景必须考虑"活跃即续期",否则用户会因正常停留而被迫重登。
+- **引用 chunks 的 image_id 是裸 ID 导致引用图片 401**(Bug 1,2026-07-22 修复):`reference.chunks[i].image_id` 不是完整 URL 而是裸 ID,前端 `<Image>` 拼出的 URL 无 `portal_ticket`,`<img>` 无法发送 Authorization header → 401。根因:既有"非 base64 缩略图路径"改写逻辑只覆盖完整 URL,未覆盖裸 ID 字段。**解法**:新增 `_rewrite_reference_chunk_image_ids` 在 history 响应和 SSE 流中就地改写裸 image_id 为带 `pit_` 票据形态。**教训**:同一资源(图片)在不同字段形态(完整 URL vs 裸 ID)下都可能出现,改写逻辑需覆盖所有出现位置;SSE 流改写需要 `feed_with_raw` 同时返回 payload 和原始字节,改写后用 `_serialize_sse_event` 重新序列化。
 
 ## 9. 运维约束
 
@@ -458,7 +475,7 @@ ssh 172.16.10.180 'tail -5 ~/portal-extension/portal.log | grep -i preview || ec
 
 ## 10. 测试策略
 
-- **后端**:pytest,按 slice/issue 组织(`tests/test_slice*.py`、`tests/test_issue*.py`),基线 441 passed + 5 skipped(2026-07-14)
+- **后端**:pytest,按 slice/issue 组织(`tests/test_slice*.py`、`tests/test_issue*.py`),基线 451 passed + 5 skipped(2026-07-22)
 - **前端**:Vitest,按页面/组件组织(`frontend/tests/*.test.tsx`),基线 89 passed(2026-07-13)
 - **RAGFlow web**:Jest + esbuild transformer,基线 27 passed(2026-07-14);生产构建使用 `npm run build`
 - **E2E**:Playwright + 浏览器手动验收结合。`test/playwright/portal_extension/` 覆盖 portal 实际使用主路径、6 个管理后台 tab、Slice 44 缓存回归、Issue 82 全新浏览器恢复“劳动法”含引用历史会话、Issue 83 新/历史会话浅色及引用预览、临时用户 CRUD、用户组成员和分享页表单;`PORTAL_E2E_RUN_CHAT=1` 时额外发送真实 RAGFlow 问题并等待回复完成;`PORTAL_E2E_RUN_REFERENCE_CHAT=1` 时验证 Issue 84“劳动法”新回答的缩略图与交互引用;acceptance criteria 记录在 `docs/archive/ISSUES.md`
@@ -491,7 +508,7 @@ uv run pytest -q test/playwright/portal_extension -s --junitxml=/tmp/playwright-
 cd ragflow/portal-extension
 uv run pytest -q
 ```
-- 基线:435 passed + 5 skipped(2026-07-14)
+- 基线:451 passed + 5 skipped(2026-07-22)
 - 前置:无(测试用临时 SQLite,不连真实 MySQL/RAGFlow)
 - 失败处理:看 `tests/test_slice*.py` 对应 slice 的断言
 

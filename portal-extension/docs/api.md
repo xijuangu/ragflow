@@ -91,7 +91,7 @@ widget 响应：
 
 标准校验链：
 
-1. 如果是 `pt_` 门户令牌，必须存在、未过期、未撤销。
+1. 如果是 `pt_` 门户令牌，必须存在、未过期、未撤销。校验通过后网关调 `TokenStore.touch()` 滑动续期（沿用签发时 TTL），避免长会话中途 401。
 2. 标准令牌要求当前 cookie 登录态有效。
 3. 用户或用户所属组必须仍有分享页 `use` 授权。
 4. 请求带 `session_id` 时必须匹配 `chat_session_owner`。
@@ -104,7 +104,8 @@ widget 响应：
 3. `/thumbnails` 请求中的全部 `doc_ids` 必须属于 history/SSE 形成的集合；任意未引用 ID 返回 403，不请求上游。
 4. `/documents/{document_id}/preview` 的 `document_id` 必须属于同一集合；校验通过后网关以 beta token 获取原始文件，并保留文件类型和下载展示信息。
 5. 非 base64 缩略图路径会附加不透明 `portal_ticket`。该票据只对应一个文档和一个图片 ID，过期时间不晚于基础 `pt_`。
-6. `/documents/images/{image_id}` 不依赖 Authorization header，但要求有效图片票据和同源 Portal cookie，并实时复查 grant 与基础令牌状态。
+6. `reference.chunks[i].image_id`（裸 ID，非完整 URL）由 `_rewrite_reference_chunk_image_ids` 在 history 响应和 SSE 流中就地改写为带 `portal_ticket` 的形态，使 `<img>` 能凭 cookie + 票据加载，不需要 Authorization header。SSE 流改写依赖 `SSEJSONEventParser.feed_with_raw` 同时返回 payload 和原始字节，改写后用 `_serialize_sse_event` 重新序列化；无 image_id 的事件透传原始字节。
+7. `/documents/images/{image_id}` 不依赖 Authorization header，但要求有效图片票据和同源 Portal cookie，并实时复查 grant 与基础令牌状态。
 
 无 `pt_` 前缀的 token 会按原生 RAGFlow token 透传路径处理；不带 `portal_ticket` 的图片请求也保留原始 Authorization/Cookie 透传，用于兼容原生分享页场景。
 

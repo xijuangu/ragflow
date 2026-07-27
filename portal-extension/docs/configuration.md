@@ -20,7 +20,7 @@
 |---|---:|---|
 | `PORTAL_USER2_USERNAME` | `user2` | 测试/种子普通用户。 |
 | `PORTAL_USER2_PASSWORD` | 空 | 测试/种子普通用户密码。 |
-| `T_SHORT_TTL_SECONDS` | `300` | `pt_` 短期令牌有效期。 |
+| `T_SHORT_TTL_SECONDS` | `300` | `pt_` 短期令牌初始有效期（秒）。活跃 SSE 请求会触发 `TokenStore.touch()` 滑动续期，沿用签发时 TTL；实际令牌存活时间 = 最后一次活跃请求 + 此值。 |
 | `RAGFLOW_BROWSER_ORIGIN` | 空 | 浏览器 iframe 使用的 RAGFlow origin；空表示同源相对路径。 |
 | `RETRY_DELETE_INTERVAL_SECONDS` | `300` | 双删重试任务间隔；`<=0` 禁用定时任务。 |
 | `PORTAL_DEFAULT_ORG_ID` | `default` | 默认 org id。 |

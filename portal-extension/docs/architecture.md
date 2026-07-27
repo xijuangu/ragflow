@@ -52,9 +52,9 @@ RAGFlow
 
 1. iframe 发起 `POST /api/v1/chatbots/{id}/completions` 或 `POST /api/v1/agentbots/{id}/completions`。
 2. 网关读取 `Authorization: Bearer pt_...`。
-3. 网关校验短期令牌、cookie 登录态、分享页授权、会话归属和 resource id。
+3. 网关校验短期令牌、cookie 登录态、分享页授权、会话归属和 resource id；校验通过后调 `TokenStore.touch()` 滑动续期令牌，避免长会话中途 401。
 4. 网关把 Authorization 替换成服务端保存的 `RAGFLOW_BETA_TOKEN`，转发给 RAGFlow。
-5. 网关增量解析完整 SSE 事件；事件含 `reference.doc_aggs` / `reference.chunks` 时，先把文档 ID 加入当前 `pt_` 的最小引用范围，再把原始事件回传浏览器。
+5. 网关增量解析完整 SSE 事件；事件含 `reference.doc_aggs` / `reference.chunks` 时，先把文档 ID 加入当前 `pt_` 的最小引用范围，再把原始事件回传浏览器。事件含 `reference.chunks[i].image_id`（裸 ID）时，网关就地改写为带 `portal_ticket` 的形态，使浏览器 `<img>` 能凭 cookie + 票据加载，不需要 Authorization header。
 6. 流成功后，网关绑定新 `session_id` 或更新会话活跃时间/消息数。
 
 ### 恢复历史会话
@@ -62,7 +62,7 @@ RAGFlow
 1. 前端调用 `GET /share-pages/{id}/sessions` 获取当前用户自己的会话列表。
 2. 用户选择会话后，前端调用 `GET /share-pages/{id}/sessions/{sid}`。
 3. iframe 用新的 `pt_` 调同源 sessions 端点；网关校验 Portal cookie、grant、resource id 和会话归属，再使用服务端 beta token 读取消息与引用。
-4. 网关只把成功 history 响应中的 `doc_aggs[].doc_id` / `chunks[].document_id` 加入该 `pt_` 的内存文档范围。
+4. 网关只把成功 history 响应中的 `doc_aggs[].doc_id` / `chunks[].document_id` 加入该 `pt_` 的内存文档范围；同时把 `reference.chunks[i].image_id`（裸 ID）就地改写为带 `portal_ticket` 的形态，使浏览器 `<img>` 能凭 cookie + 票据加载。
 5. iframe 请求 `GET /api/v1/thumbnails?doc_ids=...` 时，所有文档 ID 都必须属于该范围；校验通过后才换 beta token 请求 RAGFlow。
 6. 用户点击引用文档卡片时，iframe 用同一 `pt_` 请求 `GET /api/v1/documents/{document_id}/preview`；网关重新检查用户、grant、令牌和文档范围后换 beta token 获取原始文件，RAGFlow 不会收到 `pt_`。
 7. 如果缩略图值是 `/api/v1/documents/images/{image_id}`，网关把它改写为带 `portal_ticket` 的同源 URL。票据绑定基础 `pt_`、文档 ID、图片 ID，且寿命不超过基础令牌。
@@ -71,7 +71,7 @@ RAGFlow
 ## 安全模型
 
 - 真实 RAGFlow beta token 只存在服务端环境变量 `RAGFLOW_BETA_TOKEN` 中。
-- 门户令牌统一使用 `pt_` 前缀，默认 5 分钟过期，重启后全部失效。
+- 门户令牌统一使用 `pt_` 前缀，默认初始 TTL 5 分钟，活跃 SSE 请求触发 `TokenStore.touch()` 滑动续期（沿用签发时 TTL，避免长会话中途 401），重启后全部失效。已撤销或已过期的令牌不能被 `touch` 复活。
 - 授权撤销后，网关每次请求都会重新检查 grant；即使旧 `pt_` 未过期也会被拒绝。
 - 用户会话隔离依赖 `chat_session_owner`，任何带 `session_id` 的请求都必须匹配当前用户和分享页 resource。
 - 引用资源使用“先验证 history 或完整 SSE 引用事件，再授权文档”的能力收窄模型；缩略图和完整 preview 都不能凭 `pt_` 自行扩展文档范围。SSE 解析不依赖网络 chunk 边界，标准和公开 `pt_` 遵守同一范围规则。图片票据是单图片、不透明、短期凭据，基础令牌撤销或 grant 移除后立即不可用。

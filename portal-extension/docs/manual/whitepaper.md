@@ -132,7 +132,7 @@ Portal Extension 的核心安全原则:**beta Token 全程只在网关→RAGFlow
 机制:
 1. 网关在启动时从环境变量读取 beta Token,存在内存中(不写文件、不返回任何 API)
 2. 用户登录 + 授权校验通过后,网关**签发短期嵌入令牌 T_short**(随机字符串,
-   `pt_` 前缀,5 分钟过期,内存存储,可撤销)
+   `pt_` 前缀,默认初始 TTL 5 分钟,内存存储,可撤销;活跃 SSE 请求触发 `TokenStore.touch()` 滑动续期)
 3. iframe URL 的 `auth` 参数放 T_short,不放 beta Token
 4. iframe 内 RAGFlow 前端的 `getAuthorization()` 原生优先读 URL `?auth=`,
    回退才读 localStorage——因此 RAGFlow 前端拿着 T_short 调 API,以为它是真 Token
@@ -174,7 +174,7 @@ T_short 不是持久化凭据,而是"用户登录态 + 授权"的**派生凭据*
 
 - **签发时机**:用户请求分享页 embed-url 时,网关校验 grant 存在后签发,
   绑定到具体用户 + 分享页
-- **存活期**:5 分钟(`T_SHORT_TTL_SECONDS` 可配),过期自动失效
+- **存活期**:默认初始 TTL 5 分钟(`T_SHORT_TTL_SECONDS` 可配);活跃 SSE 请求触发 `TokenStore.touch()` 滑动续期(沿用签发时 TTL),实际存活时间 = 最后一次活跃请求 + TTL;已撤销或已过期的令牌不能被 `touch` 复活
 - **存储**:纯内存,进程重启后所有 T_short 失效——用户重新登录获取新 T_short,
   不丢失任何业务数据(历史会话在 DB,不丢失)
 - **撤销**:管理员撤销授权时,网关批量吊销该用户对该分享页的所有 T_short,
@@ -199,13 +199,24 @@ iframe 内每次 SSE 请求(POST `/api/v1/chatbots/<dialog>/completions`)都经
 |---|---|---|---|
 | 0 | 同源 cookie 有效(门户登录态) | 403 | 未登录用户无法调网关,即使带有效 T_short |
 | 1 | grant 存在(用户/组对该分享页有 use 权限) | 403 | 撤销授权后立即失效(即使 T_short 仍有效) |
-| 2 | T_short 有效(未过期、未撤销) | 401 | 过期/吊销令牌被拒 |
+| 2 | T_short 有效(未过期、未撤销) | 401 | 过期/吊销令牌被拒;校验通过后调 `TokenStore.touch()` 滑动续期,避免长会话中途 401 |
 | 3 | session_id 归属当前用户 | 403 | 用户无法用他人 session_id 调网关 |
 | 4 | session 的 dialog_id 与分享页一致 | 403 | 防止跨资源 session 混用 |
 
 步骤 1 在步骤 2 之前的设计是刻意的:撤销授权时同时删 grant + 吊销 T_short,
 若先校验 T_short(已吊销)会返回 401,与"撤销后应返回 403"的验收要求矛盾。
 先校验 grant → 403,保证撤销语义一致。
+
+### 3.3.1 引用资源票据改写:让 `<img>` 不依赖 RAGFlow 登录态
+
+RAGFlow 回答末尾的引用会以 `reference.chunks` 和缩略图形式返回文档资源。其中:
+
+- **非 base64 缩略图路径**(完整 URL 形态 `/api/v1/documents/images/<id>`)由网关改写为带 `portal_ticket` 的同源 URL
+- **`reference.chunks[i].image_id`**(裸 ID 形态,非完整 URL)由 `_rewrite_reference_chunk_image_ids` 在 history 响应和 SSE 流中就地改写为带 `portal_ticket` 的形态
+
+`portal_ticket`(前缀 `pit_`)是单图片、不透明、短期凭据,绑定基础 `pt_`、文档 ID、图片 ID,寿命不超过基础令牌。浏览器 `<img>` 不带 Authorization header,凭同源 Portal cookie + 票据取图,网关实时复查 grant 与基础令牌状态。基础令牌撤销或 grant 移除后票据立即不可用。
+
+SSE 流改写依赖 `SSEJSONEventParser.feed_with_raw()` 同时返回 payload 和原始字节:含 image_id 的 payload 改写后用 `_serialize_sse_event()` 重新序列化,无 image_id 的事件透传原始字节(保持逐字节兼容)。
 
 ### 3.4 会话归属:解决"会话丢失"
 
@@ -337,14 +348,14 @@ flowchart TD
 | 令牌 | 持有者 | 权限范围 | 有效期 | 存储 |
 |---|---|---|---|---|
 | beta Token | 网关(仅内存) | RAGFlow 租户全部资源 | 永久(管理员手动轮换) | 环境变量,不写文件 |
-| T_short | 浏览器(iframe URL) | 单用户 + 单分享页 | 5 分钟 | 网关内存,重启失效 |
+| T_short | 浏览器(iframe URL) | 单用户 + 单分享页 | 默认 5 分钟(滑动续期) | 网关内存,重启失效 |
 | session cookie | 浏览器(HTTP-only) | 门户登录态 | 浏览器会话 | 签名 cookie |
 
 ### 5.2 攻击面分析
 
 - **beta Token 泄露**:不可能——只在网关→RAGFlow 这一跳出现,不返回浏览器,
   不写日志,不写文件
-- **T_short 被截获**:风险极低——5 分钟过期,绑定用户+分享页,撤销立即失效,
+- **T_short 被截获**:风险极低——默认 5 分钟初始过期(滑动续期),绑定用户+分享页,撤销立即失效,
   且需配合同源 cookie 才能通过校验链
 - **跨用户 session 访问**:被步骤 3/4 校验拦截——session_id 归属校验 +
   dialog_id 一致性校验

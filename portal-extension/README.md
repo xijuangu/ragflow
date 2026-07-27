@@ -61,7 +61,7 @@ portal-extension/
 后端：
 
 ```bash
-cd /Users/xijuangu/Developer/Work/thqh_projects/rag/ragflow/portal-extension
+cd ragflow/portal-extension   # 从仓库根目录
 uv sync --python 3.13 --extra dev
 
 export PORTAL_ADMIN_PASSWORD=testpass123
@@ -94,18 +94,18 @@ npm run build
 
 ```bash
 # 后端测试
-cd /Users/xijuangu/Developer/Work/thqh_projects/rag/ragflow/portal-extension
+cd ragflow/portal-extension
 uv run pytest -q
 uv run ruff check portal tests
 
 # 前端测试
-cd /Users/xijuangu/Developer/Work/thqh_projects/rag/ragflow/portal-extension/frontend
+cd ragflow/portal-extension/frontend
 npm run test
 npm run typecheck
 npm run lint
 
 # 生产部署
-cd /Users/xijuangu/Developer/Work/thqh_projects/rag/ragflow/portal-extension
+cd ragflow/portal-extension
 bash deploy.sh
 ```
 
@@ -120,7 +120,7 @@ bash deploy.sh
 - [开发与测试](docs/development-and-testing.md)：本地运行、测试套件、质量门禁。
 - [部署运维](docs/deployment-and-operations.md)：生产拓扑、部署脚本、健康检查、回滚。
 - [前端说明](frontend/README.md)：前端路由、API 客户端、构建和测试。
-- [项目材料](project-materials/README.md)：早期 PRD、原型、UI 设计稿和 RAG 验证文件。
+- [项目材料](project-materials/)：早期 PRD、原型、UI 设计稿和 RAG 验证文件。
 - [历史归档](docs/archive/README.md)：PRD、ISSUES、NOTES、handoff、早期决策和 UI PRD 等追溯材料。
 
 ## 重要约束

@@ -70,7 +70,7 @@ ssh 172.16.10.180 'docker exec portal-nginx nginx -s reload'
 在本地执行：
 
 ```bash
-cd /Users/xijuangu/Developer/Work/thqh_projects/rag/ragflow/portal-extension
+cd ragflow/portal-extension   # 从仓库根目录
 bash deploy.sh
 ```
 
@@ -102,6 +102,23 @@ bash deploy.sh
 5. `exec python -m uvicorn portal.main:app --host 0.0.0.0 --port 8000`。
 
 `start.sh` 依赖 `.env` 存在。缺失 `.env` 时，管理员密码等配置会为空，最常见表现是登录一直“密码错误”。
+
+### 手动重启 fallback（deploy.sh 失败时）
+
+`deploy.sh` 失败时需手动重启 portal。**pkill + nohup 不能放在同一条 ssh 命令中**：`pkill -f "uvicorn portal.main:app"` 会匹配 ssh 命令行本身，ssh 被 kill 后 `nohup start.sh` 不会执行 → portal 进程不启动 → 502。必须分两条 ssh 命令：
+
+```bash
+# 命令 1：杀旧进程（ssh 退出码 255 是正常的，因为 pkill 匹配了 ssh 自身命令行）
+ssh 172.16.10.180 'pkill -f "uvicorn portal.main:app" || true; sleep 2'
+
+# 命令 2：启动新进程（用 ssh -f 避免挂起，或用 nohup & disown）
+ssh -f 172.16.10.180 'cd ~/portal-extension && nohup bash start.sh > portal.log 2>&1 </dev/null &'
+```
+
+关键点：
+- **分两条命令**：pkill 和 nohup 不能合并；pkill 杀掉 ssh 后 nohup 永远不执行（这是反复踩过的坑，见 `CONTEXT.md` §9.1）。
+- **ssh -f 后台化**：纯 `nohup & disown` 在 uvicorn 长期进程上仍会挂起（远端 shell 退出后仍等待继承 stdout fd 的后台进程）；`ssh -f` 从客户端侧后台化 ssh 进程，远端 shell 立即退出。
+- **验证**：命令 2 后必须 `curl -X POST /login` 确认返回 200（非 401/502），`curl nginx :80 /portal/` 确认返回 200（非 502）。
 
 ## 部署前检查
 
