@@ -133,7 +133,12 @@ ssh 172.16.10.180 'docker cp /tmp/dialog_service.py docker-ragflow-cpu-1:/ragflo
 ssh 172.16.10.180 'docker exec docker-ragflow-cpu-1 pkill -f ragflow_server.py; sleep 15'
 
 # 4. 验证:流式末帧答案帧应含 "usage":{"input":N,"output":M}(grep 有输出即生效)
-ssh 172.16.10.180 "curl -sN -H 'Authorization: Beta <beta_token>' -H 'Content-Type: application/json' -d '{\"question\":\"你好\",\"session_id\":\"<session_id>\",\"stream\":true}' http://172.16.10.180:8080/api/v1/chatbots/<dialog_id>/completions | grep -o '\"usage\":{[^}]*}' | tail -1"
+#    注意 Authorization 用 Bearer 前缀(RAGFlow 只认 Bearer;Beta 前缀报 102 API key invalid);
+#    且不带 session_id 的请求走预创建 prologue 捷径(无 LLM 调用、无 usage),
+#    验证真实 usage 需先预创建拿 session_id 再带 session_id 提问
+ssh 172.16.10.180 "curl -sN -H 'Authorization: Bearer <beta_token>' -H 'Content-Type: application/json' -d '{\"question\":\"你好\",\"session_id\":\"<session_id>\",\"stream\":true}' http://172.16.10.180:8080/api/v1/chatbots/<dialog_id>/completions | grep -o '\"usage\": *{[^}]*}' | tail -1"
+
+> **2026-08-24 已部署并验证**:备份点 `dialog_service.py.bak.20260824-141502`;直连验证真实问答末帧 `"usage": {"input": 4844, "output": 472}`;Portal 端到端(登录 → embed-url → 网关 SSE 真实问答)`usage_record` 落账 `input_tokens=4844/output_tokens=472/incomplete=False`,估算兜底路径(empty_response 捷径)亦验证 `incomplete=True`。回滚命令:见下方回滚小节(`<ts>` = 20260824-141502)。
 
 # 回滚
 docker exec docker-ragflow-cpu-1 bash -c "cp /ragflow/api/db/services/dialog_service.py.bak.<ts> /ragflow/api/db/services/dialog_service.py && pkill -f ragflow_server.py"
