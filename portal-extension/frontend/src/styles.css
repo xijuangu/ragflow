@@ -560,7 +560,13 @@ tbody tr:hover { background: var(--surface-2); }
   z-index: 40;
   top: calc(100% + 4px);
   left: 0;
-  right: 0;
+  right: auto;
+  /* 窄输入框(筛选栏 ~180px / 紧凑表单 240px)装不下「名称 + 32位 hex ID」整行:
+     下拉按内容自适应加宽(不窄于输入框,480px 封顶),配合 option 的 nowrap,
+     文字永远单行横排(2026-08-24 竖排 bug 修复)。 */
+  width: max-content;
+  min-width: 100%;
+  max-width: min(480px, calc(100vw - 48px));
   max-height: 240px;
   overflow-y: auto;
   background: var(--surface);
@@ -589,6 +595,17 @@ tbody tr:hover { background: var(--surface-2); }
 
 .combobox-option.active {
   background: var(--accent-tint);
+}
+
+/* 不可断行的长 sublabel(32位 hex ID / 邮箱)在 flex 行里会把可按字换行的
+   CJK label 挤到 min-content=1 字宽 → 文字竖排。两段都禁止换行,
+   溢出用省略号(配合下拉自适应加宽,正常场景完整显示不触发省略)。 */
+.combobox-option-label,
+.combobox-option-sub {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .combobox-option-sub {

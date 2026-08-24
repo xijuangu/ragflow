@@ -224,6 +224,7 @@ Issue 93 起,所有「取令牌记录 → `pt_` 前缀判定 → cookie/grant �
 - **T_short 5 分钟硬过期导致 SSE 长会话中途 401**(Bug 2,2026-07-22 修复):用户在聊天页面停留超过 5 分钟后,下次提问时 T_short 已过期,网关返回 401,iframe 跳登录页。根因:`issue()` 只在签发时设 `expires_at`,无续期机制。**解法**:`TokenStore` 新增 `touch(token, ttl_seconds=None)` 方法,`proxy_sse_to_ragflow` 和 `_proxy_sse_public_core` 在校验通过后调 `touch()` 滑动续期(沿用签发时 TTL);已撤销/已过期的令牌不能被 touch 复活。**教训**:短期令牌配 SSE 长会话场景必须考虑"活跃即续期",否则用户会因正常停留而被迫重登。
 - **引用 chunks 的 image_id 是裸 ID 导致引用图片 401**(Bug 1,2026-07-22 修复):`reference.chunks[i].image_id` 不是完整 URL 而是裸 ID,前端 `<Image>` 拼出的 URL 无 `portal_ticket`,`<img>` 无法发送 Authorization header → 401。根因:既有"非 base64 缩略图路径"改写逻辑只覆盖完整 URL,未覆盖裸 ID 字段。**解法**:新增 `_rewrite_reference_chunk_image_ids` 在 history 响应和 SSE 流中就地改写裸 image_id 为带 `pit_` 票据形态。**教训**:同一资源(图片)在不同字段形态(完整 URL vs 裸 ID)下都可能出现,改写逻辑需覆盖所有出现位置;SSE 流改写需要 `feed_with_raw` 同时返回 payload 和原始字节,改写后用 `_serialize_sse_event` 重新序列化。
 - **`.card { overflow: hidden }` 裁切 combobox 绝对定位下拉**(2026-08-24 生产 bug,授权管理页):Issue 88 的 SearchableCombobox 下拉是 `position: absolute`,放在 `admin-form card` 这种**矮卡片**内时被 `.card` 的 `overflow: hidden`(圆角裁切用)裁成窄条;其他页面容器高(组详情卡/表格卡)未暴露,组详情卡在成员少时同样潜伏。**解法**:`.admin-form.card, .card.group-detail { overflow: visible }`(这两类卡片无依赖圆角裁切的全出血子元素,安全);Playwright 用 `getComputedStyle(el).overflow` 断言 + `elementFromPoint` 命中卡片外下拉底部做双重回归锚点。**教训**:给卡片内放绝对定位的浮层(下拉/气泡)时,先确认祖先链没有 `overflow: hidden`;Playwright 的 visible/bounding_box 不受祖先裁切影响,测视觉裁切必须用 elementFromPoint 或 computed style。
+- **combobox 选项文字竖排**(2026-08-24 生产 bug,授权/用量页分享页下拉):option 是 flex 行(label + sublabel),sublabel 为不可断行长串(32 位 hex 资源 ID,min-content ≈ 220px)时 flex 收缩把可按字换行的 CJK label 挤到 min-content=1 字宽 → label 竖排(选项高 124px)、ASCII label 场景则 li 横向溢出。窄输入框(筛选栏 ~180px / 紧凑表单 240px)装不下整行是诱因。**解法**:`.combobox-option-label/-sub { min-width:0; nowrap; ellipsis }` 两段永不换行 + 下拉 `width: max-content; min-width: 100%; max-width: 480px` 按内容自适应加宽(正常场景完整显示不触发省略);Playwright 回归 = 逐 combobox 断言选项高 ≤44px(单行)且无横向溢出(`test_combobox_layout.py`,6 处全覆盖)。**教训**:flex 行内混排「可按字换行的 CJK」与「不可断行的长 ASCII 串」时,后者 min-content 会吃掉全部宽度、前者被挤到单字宽 — 两端都要 nowrap+min-width:0+ellipsis 才有确定布局。
 
 ## 9. 运维约束
 
@@ -536,9 +537,9 @@ PORTAL_E2E_ADMIN_USERNAME=admin \
 PORTAL_E2E_ADMIN_PASSWORD='<admin-password>' \
 uv run --python 3.13 pytest -q test/playwright/portal_extension -s --junitxml=/tmp/playwright-portal.xml
 ```
-- 基线:5 passed + 4 skipped(2026-08-24 适配后;skip = 2 个劳动法 fixture 用例(当前环境无该分享页,显式 skip 指引 env var)+ 2 个真实聊天慢用例)
+- 基线:11 passed + 4 skipped(2026-08-24 适配后;skip = 2 个劳动法 fixture 用例(当前环境无该分享页,显式 skip 指引 env var)+ 2 个真实聊天慢用例)
 - 前置:172.16.10.180 已部署最新代码 + `.venv-playwright` 已装 playwright 依赖 + admin 密码与服务器 `.env` 一致
-- 默认覆盖:登录、分享页列表、iframe shell、token 不泄露、7 个 admin tab 加载(含用量统计)、Slice 44 缓存回归、临时用户 CRUD + 审计 + 用户组成员 + 分享页表单(Issue 88/89 combobox/master-detail 已适配,`select_combobox_option` helper 替代 `select_option_containing`)
+- 默认覆盖:登录、分享页列表、iframe shell、token 不泄露、7 个 admin tab 加载(含用量统计)、Slice 44 缓存回归、临时用户 CRUD + 审计 + 用户组成员 + 分享页表单(Issue 88/89 combobox/master-detail 已适配,`select_combobox_option` helper 替代 `select_option_containing`)、combobox 布局回归(6 处下拉选项单行不竖排)
 - **combobox 测试要点**:多选 combobox 选中后必须先 `press("Escape")` 关闭下拉再点「添加」— 下拉展开时点按钮,mousedown 触发 blur 关闭下拉的重渲染会吞掉 click,表单不提交;listbox id 含 React useId 的 `:`,定位用 `[id='...']` 属性选择器而非 `#` 拼接
 - **不纳入默认回归**:`PORTAL_E2E_RUN_CHAT=1` 和 `PORTAL_E2E_RUN_REFERENCE_CHAT=1` 真实聊天慢用例(每次跑会产生不可控对话内容并在结束后清理会话),仅在验收聊天相关 Issue 或发版前手动追加
 - 失败处理:看 `FAILURES` 段 + `test/playwright/artifacts/` 截图;CRUD 用例失败时 finally 会用管理员 API 清理临时用户(`pw-user-*` / `pw-group-user-*`)
