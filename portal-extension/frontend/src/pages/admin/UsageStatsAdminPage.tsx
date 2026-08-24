@@ -165,7 +165,7 @@ export default function UsageStatsAdminPage() {
   };
 
   return (
-    <section>
+    <section className="usage-admin">
       <div className="page-head">
         <div>
           <div className="kicker">管理后台 / 用量统计</div>

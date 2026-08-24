@@ -215,7 +215,13 @@ svg { display: block; }
 /* ============================================================
    TABLES + MOBILE CARDS(新 D1)
    ============================================================ */
-.table-wrap { overflow-x: auto; }
+/* 表格全出血到卡片边缘,横向滚动 + 底部圆角裁切收在 wrap 自己身上
+   (2026-08-24:card-table 卡片本体改 overflow:visible 给 combobox 下拉让路,
+   原本由 .card 裁的表格底角由这里接管 — 视觉不变)。 */
+.table-wrap {
+  overflow-x: auto;
+  border-radius: 0 0 var(--radius) var(--radius);
+}
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 thead th { text-align: left; font-weight: 600; color: var(--muted); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; padding: 10px 16px; border-bottom: 1px solid var(--border); white-space: nowrap; }
 tbody td { padding: 12px 16px; border-bottom: 1px solid var(--border); vertical-align: middle; }
@@ -576,11 +582,20 @@ tbody tr:hover { background: var(--surface-2); }
   list-style: none;
 }
 
-/* 下拉是绝对定位,不能被 overflow:hidden 的卡片裁切(授权表单卡片很矮,下拉被裁成
-   窄条;组详情卡成员少时同样潜伏)。这两类卡片内只有带 padding 的字段/列表,没有
-   依赖 .card 圆角裁切的全出血子元素,改 visible 让下拉溢出卡片渲染。 */
+/* 向下空间不足(距最近滚动祖先底边 < 250px)时组件加 drop-up 向上弹 —
+   绝对定位下拉不参与滚动容器高度计算,超出即被静默裁切(2026-08-24 用量页)。 */
+.combobox-dropdown.drop-up {
+  top: auto;
+  bottom: calc(100% + 4px);
+}
+
+/* 下拉是绝对定位,不能被 overflow:hidden 的卡片裁切(授权表单/组详情卡/带筛选栏的
+   card-table 卡都会复现 — 卡片越矮下拉被裁得越剩窄条)。规则:含 combobox 的卡片
+   一律 overflow:visible;依赖圆角裁切的全出血子元素自己接管圆角(表格 → .table-wrap,
+   见 TABLES 区块)。admin-form/group-detail 卡内只有带 padding 的字段/列表,无此需求。 */
 .admin-form.card,
-.card.group-detail {
+.card.group-detail,
+.card.card-table {
   overflow: visible;
 }
 
@@ -937,6 +952,17 @@ tbody tr:hover { background: var(--surface-2); }
 /* Issue 74:创建用户组表单 — 单字段表单不撑满,input 固定宽 */
 .admin-form-row-compact .form-field {
   flex: 0 0 240px;
+}
+
+/* 用量统计页(2026-08-24):表格限高在卡内滚动,section 不被长表撑高 —
+   否则 Slice 51 的 admin 滚动容器(.admin-main > section overflow-y:auto)
+   高度仍只到视口,筛选栏 combobox 下拉(240px,在筛选栏下方)超出滚动区
+   底边的部分被静默裁掉(绝对定位溢出不参与滚动高度计算,不出滚动条)。
+   表内滚后 section 高度 = 头部 + 视口内表格,下拉完整落在 section 内。 */
+.usage-admin .table-wrap {
+  max-height: calc(100vh - 420px);
+  min-height: 200px;
+  overflow-y: auto;
 }
 
 /* Issue 74:成员列表两列网格紧凑排列,不再单列撑满 */

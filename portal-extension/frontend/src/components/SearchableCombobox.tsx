@@ -112,6 +112,13 @@ export default function SearchableCombobox(props: SearchableComboboxProps) {
     setActiveIndex(-1);
   };
 
+  const openDropdown = () => {
+    decideDirection();
+    setOpen(true);
+    setQuery('');
+    setActiveIndex(-1);
+  };
+
   const commitValue = (value: string) => {
     if (isMulti) {
       if (value && !props.values.includes(value)) props.onChange([...props.values, value]);
@@ -132,7 +139,7 @@ export default function SearchableCombobox(props: SearchableComboboxProps) {
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault();
       if (!open) {
-        setOpen(true);
+        openDropdown();
         return;
       }
       if (items.length === 0) return;
@@ -158,6 +165,33 @@ export default function SearchableCombobox(props: SearchableComboboxProps) {
     e.preventDefault();
     commitValue(value);
     inputRef.current?.focus();
+  };
+
+  // 2026-08-24:向下空间不足时向上翻转。下拉是绝对定位,不参与滚动祖先的
+  // 滚动高度计算 — admin 各页的 section 滚动容器(Slice 51,overflow-y:auto)
+  // 高度只到视口,下拉超出其底边的部分会被静默裁掉(空态/短表场景必然超出;
+  // 即使当前未滚动,overflow 裁切同样生效)。打开时测 input 距最近的
+  // overflow 裁切祖先(含 overflow:hidden,如 .main)底边的剩余空间,不足则向上弹。
+  const [dropUp, setDropUp] = useState(false);
+  const decideDirection = () => {
+    const input = inputRef.current;
+    if (!input) return;
+    const inputBox = input.getBoundingClientRect();
+    // 最近的 overflow 裁切祖先:auto/scroll/hidden 都会裁绝对定位溢出
+    let ancestor: HTMLElement | null = input.parentElement;
+    let bottomEdge = window.innerHeight;
+    while (ancestor && ancestor !== document.body) {
+      const { overflow, overflowY } = getComputedStyle(ancestor);
+      const clips = [overflow, overflowY].some(v => v === 'auto' || v === 'scroll' || v === 'hidden');
+      if (clips) {
+        bottomEdge = ancestor.getBoundingClientRect().bottom;
+        break;
+      }
+      ancestor = ancestor.parentElement;
+    }
+    const spaceBelow = bottomEdge - inputBox.bottom;
+    // 向上需要容纳下拉(240px)+ 间距;不足则翻转
+    setDropUp(spaceBelow < 250);
   };
 
   // 单选关闭时输入框显示选中项 label
@@ -215,29 +249,21 @@ export default function SearchableCombobox(props: SearchableComboboxProps) {
         onChange={(e) => {
           setQuery(e.target.value);
           setActiveIndex(-1);
-          if (!open) setOpen(true);
+          if (!open) openDropdown();
         }}
         onFocus={() => {
-          if (!disabled) {
-            setOpen(true);
-            setQuery('');
-            setActiveIndex(-1);
-          }
+          if (!disabled) openDropdown();
         }}
         // input 已聚焦时再次点击不会触发 focus,需 click 兜底重新打开
         onClick={() => {
-          if (!disabled && !open) {
-            setOpen(true);
-            setQuery('');
-            setActiveIndex(-1);
-          }
+          if (!disabled && !open) openDropdown();
         }}
         onBlur={close}
         onKeyDown={handleKeyDown}
       />
       {open && (
         <ul
-          className="combobox-dropdown"
+          className={`combobox-dropdown${dropUp ? ' drop-up' : ''}`}
           role="listbox"
           id={listboxId}
           aria-multiselectable={isMulti || undefined}
