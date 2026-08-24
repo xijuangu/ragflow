@@ -86,7 +86,7 @@
 
 ## Issue 90：RAGFlow fork——chatbot completions SSE 末帧透出结构化 usage（硬约束批准票）
 
-> 状态：待实施。无阻塞。本票即 §4 硬约束「RAGFlow 侧改动需 Issue 明确批准」的批准记录（2026-08-24 用户决策）。
+> 状态：✅ 已完成（2026-08-24）。本票即 §4 硬约束「RAGFlow 侧改动需 Issue 明确批准」的批准记录（2026-08-24 用户决策）。
 
 ## What to build
 
@@ -94,10 +94,50 @@
 
 ## Acceptance criteria
 
-- [ ] 流式与非流式 chatbot completions 响应均携带结构化 `usage: {input, output}`；agent 路径不动。
-- [ ] 不带该字段的旧客户端/门户版本行为不回归（字段纯增量）。
-- [ ] RAGFlow 侧配套测试（usage 字段存在且数值与 `num_tokens_from_string` 口径一致）。
-- [ ] 文档含构建说明与 docker cp 部署/回滚步骤（沿用 CONTEXT.md §9.2 模式，记录容器重建丢失边界）。
+- [x] 流式与非流式 chatbot completions 响应均携带结构化 `usage: {input, output}`；agent 路径不动。
+- [x] 不带该字段的旧客户端/门户版本行为不回归（字段纯增量）。
+- [x] RAGFlow 侧配套测试（usage 字段存在且数值与 `num_tokens_from_string` 口径一致）。
+- [x] 文档含构建说明与 docker cp 部署/回滚步骤（沿用 CONTEXT.md §9.2 模式，记录容器重建丢失边界）。
+
+### 实施记录（2026-08-24）
+
+方案选择：并入既有末帧（`final: true` 的答案帧），不加新帧——`structure_answer()` 原地改 answer dict 并原样返回，usage 自动随之透出，`bot_api.py`/`conversation_service.py` 零改动，是改动面最小的路径。
+
+改动文件（纯增量，共 2 个）：
+
+- `api/db/services/dialog_service.py`：`async_chat()` 内 `decorate_answer()` 返回 dict 新增 `"usage": {"input": used_token_count, "output": tk_num}`。input = `message_fit_in` 本地计词（dialog_service.py:769），output = `num_tokens_from_string(think + answer)`（dialog_service.py:834）。与 Langfuse `usage_details` 同源同口径。
+- `test/unit_test/api/db/services/test_dialog_service_usage.py`：4 个用例——stream 末帧携带 usage（且 output == `num_tokens_from_string(answer)`、delta 帧不带 usage）、非流式单帧携带 usage、`empty_response` 捷径（无 LLM 调用）不带 usage 的边界、`structure_answer` 透传锁定。
+
+透出路径：stream 末帧答案帧（`data: {..., "data": {..., "final": true, "usage": {...}}}`，位于终止帧 `data: true` 之前）；非流式 `get_result(data=answer)` 的 result dict。同字段也会出现在其它 `async_chat` 消费方（chat_api/openai_api/sdk 会话接口）的末帧——同为纯增量，旧客户端忽略即可。agent（agentbots）路径与 rag/llm 调用层未动。
+
+边界：`empty_response` 捷径与断流/异常帧不带 usage；门户记账（Issue 91）按 §12.2 估算口径兜底，与「旧 RAGFlow 末帧无 usage」同路径。
+
+### 部署/回滚（docker cp，沿用 §9.2 模式）
+
+线上容器 `docker-ragflow-cpu-1` 为官方 v0.26.0 镜像 + 既往 cp 的 fork `bot_api.py`（Slice 2/5 端点）。本票只需替换 `dialog_service.py` 一个文件，**不要动容器内 `bot_api.py`**。
+
+**容器重建边界**：`docker restart` 不丢；`docker compose down -v` 或重新 `up` 镜像会丢，需重新执行。
+
+```bash
+# 1. 备份容器内原文件
+TS=$(date +%Y%m%d-%H%M%S)
+docker exec docker-ragflow-cpu-1 cp /ragflow/api/db/services/dialog_service.py /ragflow/api/db/services/dialog_service.py.bak.$TS
+
+# 2. 替换(从本地 fork 源码)
+scp ragflow/api/db/services/dialog_service.py 172.16.10.180:/tmp/dialog_service.py
+ssh 172.16.10.180 'docker cp /tmp/dialog_service.py docker-ragflow-cpu-1:/ragflow/api/db/services/dialog_service.py'
+
+# 3. 重启 api server(不重启容器,避免丢其他 cp 文件)
+ssh 172.16.10.180 'docker exec docker-ragflow-cpu-1 pkill -f ragflow_server.py; sleep 15'
+
+# 4. 验证:流式末帧答案帧应含 "usage":{"input":N,"output":M}(grep 有输出即生效)
+ssh 172.16.10.180 "curl -sN -H 'Authorization: Beta <beta_token>' -H 'Content-Type: application/json' -d '{\"question\":\"你好\",\"session_id\":\"<session_id>\",\"stream\":true}' http://172.16.10.180:8080/api/v1/chatbots/<dialog_id>/completions | grep -o '\"usage\":{[^}]*}' | tail -1"
+
+# 回滚
+docker exec docker-ragflow-cpu-1 bash -c "cp /ragflow/api/db/services/dialog_service.py.bak.<ts> /ragflow/api/db/services/dialog_service.py && pkill -f ragflow_server.py"
+```
+
+本地构建/验证：改动无新依赖，`uv sync --python 3.13 --all-extras` 后 `uv run --group test pytest test/unit_test/api/db/services/test_dialog_service_usage.py`（4 passed）；`ruff check api/db/services/dialog_service.py` 通过。
 
 ## Issue 91：门户 usage_record 表 + 网关 SSE 记账
 
