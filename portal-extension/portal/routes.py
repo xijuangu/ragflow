@@ -1511,7 +1511,8 @@ async def admin_list_all_sessions(
     until: float | None = Query(None, description="截止时间(unix 时间戳,按 created_at 过滤)"),
     keyword: str | None = Query(None, description="按会话标题模糊匹配(大小写不敏感)"),
     org_id: str | None = Query(None, description="按 org_id 过滤(仅 is_admin 生效;org_admin 强制本 org)"),
-    limit: int = Query(100, ge=1, le=1000, description="返回条数上限"),
+    # Issue 87/92:前端全量拉取做内存检索(§12.1),上限与 usage-records 对齐为 10000
+    limit: int = Query(100, ge=1, le=10000, description="返回条数上限"),
     user=Depends(require_org_admin),
 ):
     """管理员列出所有用户的会话(按用户/分享页/时间/关键词/org 过滤,返回元数据,不含正文)。
@@ -1664,7 +1665,8 @@ async def admin_list_audit_logs(
     since: float | None = Query(None, description="起始时间(unix 时间戳)"),
     until: float | None = Query(None, description="截止时间(unix 时间戳)"),
     org_id: str | None = Query(None, description="按 org_id 过滤(仅 is_admin 生效;org_admin 强制本 org)"),
-    limit: int = Query(100, ge=1, le=1000, description="返回条数上限"),
+    # Issue 87/92:前端全量拉取做内存检索(§12.1),上限与 usage-records 对齐为 10000
+    limit: int = Query(100, ge=1, le=10000, description="返回条数上限"),
     user=Depends(require_org_admin),
 ):
     """管理员查看审计日志(按 action/actor/时间/org 过滤,对应 Slice 6 验收点 5)。

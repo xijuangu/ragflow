@@ -127,7 +127,7 @@ describe('SessionsAdminPage', () => {
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
       { url: '/admin/users', status: 200, body: USERS_RESPONSE },
       { url: '/admin/share-pages', status: 200, body: SHARE_PAGES_RESPONSE },
-      { url: '/admin/sessions', status: 200, body: SESSIONS_RESPONSE },
+      { url: '/admin/sessions?limit=10000', status: 200, body: SESSIONS_RESPONSE },
     ]);
 
     renderPage();
@@ -142,7 +142,7 @@ describe('SessionsAdminPage', () => {
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
       { url: '/admin/users', status: 200, body: USERS_RESPONSE },
       { url: '/admin/share-pages', status: 200, body: SHARE_PAGES_RESPONSE },
-      { url: '/admin/sessions', status: 200, body: SESSIONS_RESPONSE },
+      { url: '/admin/sessions?limit=10000', status: 200, body: SESSIONS_RESPONSE },
     ]);
 
     renderPage();
@@ -159,9 +159,11 @@ describe('SessionsAdminPage', () => {
     expect(screen.queryByTestId('session-row-sess_b')).not.toBeInTheDocument();
     expect(screen.getByTestId('session-row-sess_a')).toBeInTheDocument();
 
-    // 全量加载后不再发起带查询参数的 sessions 请求
+    // 全量加载后不再发起带筛选参数的 sessions 请求(初始加载仅 limit,Issue 87/92)
     const calls = getFetchCalls(globalThis.fetch);
-    const sessionCalls = calls.filter((c) => c.url.startsWith('/admin/sessions?'));
+    const sessionCalls = calls.filter(
+      (c) => c.url.includes('user_id=') || c.url.includes('share_page_id=') || c.url.includes('keyword='),
+    );
     expect(sessionCalls).toHaveLength(0);
   });
 
@@ -171,7 +173,7 @@ describe('SessionsAdminPage', () => {
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
       { url: '/admin/users', status: 200, body: USERS_RESPONSE },
       { url: '/admin/share-pages', status: 200, body: SHARE_PAGES_RESPONSE },
-      { url: '/admin/sessions', status: 200, body: SESSIONS_RESPONSE },
+      { url: '/admin/sessions?limit=10000', status: 200, body: SESSIONS_RESPONSE },
     ]);
 
     renderPage();
@@ -202,7 +204,7 @@ describe('SessionsAdminPage', () => {
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
       { url: '/admin/users', status: 200, body: USERS_RESPONSE },
       { url: '/admin/share-pages', status: 200, body: SHARE_PAGES_RESPONSE },
-      { url: '/admin/sessions', status: 200, body: SESSIONS_RESPONSE },
+      { url: '/admin/sessions?limit=10000', status: 200, body: SESSIONS_RESPONSE },
     ]);
 
     renderPage();
@@ -228,7 +230,7 @@ describe('SessionsAdminPage', () => {
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
       { url: '/admin/users', status: 200, body: USERS_RESPONSE },
       { url: '/admin/share-pages', status: 200, body: SHARE_PAGES_RESPONSE },
-      { url: '/admin/sessions', status: 200, body: SESSIONS_RESPONSE },
+      { url: '/admin/sessions?limit=10000', status: 200, body: SESSIONS_RESPONSE },
     ]);
     renderPage();
 
@@ -255,7 +257,7 @@ describe('SessionsAdminPage', () => {
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
       { url: '/admin/users', status: 200, body: USERS_RESPONSE },
       { url: '/admin/share-pages', status: 200, body: SHARE_PAGES_RESPONSE },
-      { url: '/admin/sessions', status: 200, body: SESSIONS_RESPONSE },
+      { url: '/admin/sessions?limit=10000', status: 200, body: SESSIONS_RESPONSE },
       { url: '/admin/sessions/sess_a?elevated=true', status: 200, body: ELEVATED_RESPONSE },
     ]);
     renderPage();
@@ -283,7 +285,7 @@ describe('SessionsAdminPage', () => {
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
       { url: '/admin/users', status: 200, body: USERS_RESPONSE },
       { url: '/admin/share-pages', status: 200, body: SHARE_PAGES_RESPONSE },
-      { url: '/admin/sessions', status: 500, body: { detail: '服务器错误' } },
+      { url: '/admin/sessions?limit=10000', status: 500, body: { detail: '服务器错误' } },
     ]);
 
     renderPage();
@@ -297,7 +299,7 @@ describe('SessionsAdminPage', () => {
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
       { url: '/admin/users', status: 200, body: USERS_RESPONSE },
       { url: '/admin/share-pages', status: 200, body: SHARE_PAGES_RESPONSE },
-      { url: '/admin/sessions', status: 200, body: SESSIONS_RESPONSE },
+      { url: '/admin/sessions?limit=10000', status: 200, body: SESSIONS_RESPONSE },
       { url: '/admin/sessions/sess_a?elevated=true', status: 500, body: { detail: 'RAGFlow 不可用' } },
     ]);
     renderPage();

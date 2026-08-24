@@ -192,10 +192,10 @@ admin sidebar 新增「用量统计」tab，仅 admin 可见。汇总视图：�
 
 ## Acceptance criteria
 
-- [ ] 校验链全仓只剩一份实现；三条代理链与 reference 端点均调用统一入口，公开/私有差异降为参数。
-- [ ] 撤权返 403、无令牌返 401、未引用文档返 403 等既有语义逐条有测试锁定，451+5 后端基线不回归。
-- [ ] `app.state` 关键服务缺失时请求报错而非静默跳过校验；不再有 `getattr(..., None)` 形式的服务定位。
-- [ ] CONTEXT.md 相应段落（§3 代码结构 / §6.4）同步。
+- [x] 校验链全仓只剩一份实现；三条代理链与 reference 端点均调用统一入口，公开/私有差异降为参数。
+- [x] 撤权返 403、无令牌返 401、未引用文档返 403 等既有语义逐条有测试锁定，451+5 后端基线不回归。
+- [x] `app.state` 关键服务缺失时请求报错而非静默跳过校验；不再有 `getattr(..., None)` 形式的服务定位。
+- [x] CONTEXT.md 相应段落（§3 代码结构 / §6.4）同步。
 
 ## Issue 94：models.py 回归纯持久化（编排上移至 gateway）
 
@@ -207,9 +207,9 @@ admin sidebar 新增「用量统计」tab，仅 admin 可见。汇总视图：�
 
 ## Acceptance criteria
 
-- [ ] `models.py` 不再 import gateway（无延迟 import、无环），只含持久化与 store 方法。
-- [ ] 级联删除、消息数同步行为不变，相关 slice 测试不回归。
-- [ ] seed 数据构建路径复用 store 方法，启动引导结果与现状一致（有测试锁定）。
+- [x] `models.py` 不再 import gateway（无延迟 import、无环），只含持久化与 store 方法。
+- [x] 级联删除、消息数同步行为不变，相关 slice 测试不回归。
+- [x] seed 数据构建路径复用 store 方法，启动引导结果与现状一致（有测试锁定）。
 
 ## Issue 95：会话归属校验收敛 + 双删编排下沉
 
@@ -221,9 +221,9 @@ admin sidebar 新增「用量统计」tab，仅 admin 可见。汇总视图：�
 
 ## Acceptance criteria
 
-- [ ] 三块重复校验删除，admin 变体走显式参数；404 vs 403 语义差异在代码中显式化（注释/命名）。
-- [ ] `_dual_delete_session` 位于 gateway 层；`routes.py` 无双删编排逻辑。
-- [ ] 归属与双删相关测试不回归。
+- [x] 三块重复校验删除，admin 变体走显式参数；404 vs 403 语义差异在代码中显式化（注释/命名）。
+- [x] `_dual_delete_session` 位于 gateway 层；`routes.py` 无双删编排逻辑。
+- [x] 归属与双删相关测试不回归。
 
 ## Issue 96：死代码清理 + admin_update_user 校验修复
 
@@ -235,8 +235,8 @@ admin sidebar 新增「用量统计」tab，仅 admin 可见。汇总视图：�
 
 ## Acceptance criteria
 
-- [ ] 死代码删除后测试基线不回归；`admin_update_user` 只传 `is_public` 时返回 422 而非写库，有回归测试。
-- [ ] `"u_anonymous"` 全仓只剩常量定义一处。
+- [x] 死代码删除后测试基线不回归；`admin_update_user` 只传 `is_public` 时返回 422 而非写库，有回归测试。
+- [x] `"u_anonymous"` 全仓只剩常量定义一处。
 
 ## Issue 97：测试 mock 迁移到 httpx transport 层，删除为 monkeypatch 保留的薄模块
 

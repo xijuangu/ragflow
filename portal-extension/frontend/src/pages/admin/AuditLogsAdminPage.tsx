@@ -48,7 +48,7 @@ export default function AuditLogsAdminPage() {
     async () => {
       const [usersRes, logsRes] = await Promise.all([
         api.listAdminUsers(),
-        api.listAdminAuditLogs(),
+        api.listAdminAuditLogs({ limit: 10000 }),
       ]);
       return { users: usersRes.users, logs: logsRes.audit_logs };
     },

@@ -40,7 +40,7 @@ export default function SessionsAdminPage() {
       const [usersRes, pagesRes, sessionsRes] = await Promise.all([
         api.listAdminUsers(),
         api.listAdminSharePages(),
-        api.listAdminSessions(),
+        api.listAdminSessions({ limit: 10000 }),
       ]);
       return {
         users: usersRes.users,

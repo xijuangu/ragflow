@@ -99,7 +99,7 @@ describe('AuditLogsAdminPage', () => {
     globalThis.fetch = mockFetch([
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
       { url: '/admin/users', status: 200, body: USERS_RESPONSE },
-      { url: '/admin/audit-logs', status: 200, body: AUDIT_LOGS_RESPONSE },
+      { url: '/admin/audit-logs?limit=10000', status: 200, body: AUDIT_LOGS_RESPONSE },
     ]);
 
     renderPage();
@@ -124,7 +124,7 @@ describe('AuditLogsAdminPage', () => {
     globalThis.fetch = mockFetch([
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
       { url: '/admin/users', status: 200, body: USERS_RESPONSE },
-      { url: '/admin/audit-logs', status: 200, body: AUDIT_LOGS_RESPONSE },
+      { url: '/admin/audit-logs?limit=10000', status: 200, body: AUDIT_LOGS_RESPONSE },
     ]);
 
     renderPage();
@@ -139,7 +139,9 @@ describe('AuditLogsAdminPage', () => {
 
     // 全量加载后不再发起带查询参数的 audit-logs 请求
     const calls = getFetchCalls(globalThis.fetch);
-    expect(calls.filter((c) => c.url.startsWith('/admin/audit-logs?'))).toHaveLength(0);
+    // 初始加载带 limit=10000(全量拉取,Issue 87/92);筛选/搜索不得再带参请求
+    const filtered = calls.filter((c) => c.url.includes('action=') || c.url.includes('actor_user_id='));
+    expect(filtered).toHaveLength(0);
   });
 
   it('搜索框按操作者用户名不区分大小写模糊匹配(Issue 87)', async () => {
@@ -147,7 +149,7 @@ describe('AuditLogsAdminPage', () => {
     globalThis.fetch = mockFetch([
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
       { url: '/admin/users', status: 200, body: USERS_RESPONSE },
-      { url: '/admin/audit-logs', status: 200, body: AUDIT_LOGS_RESPONSE },
+      { url: '/admin/audit-logs?limit=10000', status: 200, body: AUDIT_LOGS_RESPONSE },
     ]);
 
     renderPage();
@@ -169,7 +171,7 @@ describe('AuditLogsAdminPage', () => {
     globalThis.fetch = mockFetch([
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
       { url: '/admin/users', status: 200, body: USERS_RESPONSE },
-      { url: '/admin/audit-logs', status: 200, body: { audit_logs: [] } },
+      { url: '/admin/audit-logs?limit=10000', status: 200, body: { audit_logs: [] } },
     ]);
 
     renderPage();
@@ -193,7 +195,7 @@ describe('AuditLogsAdminPage', () => {
     globalThis.fetch = mockFetch([
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
       { url: '/admin/users', status: 200, body: USERS_RESPONSE },
-      { url: '/admin/audit-logs', status: 500, body: { detail: '服务器错误' } },
+      { url: '/admin/audit-logs?limit=10000', status: 500, body: { detail: '服务器错误' } },
     ]);
 
     renderPage();
@@ -205,7 +207,7 @@ describe('AuditLogsAdminPage', () => {
     globalThis.fetch = mockFetch([
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
       { url: '/admin/users', status: 200, body: USERS_RESPONSE },
-      { url: '/admin/audit-logs', status: 200, body: { audit_logs: [] } },
+      { url: '/admin/audit-logs?limit=10000', status: 200, body: { audit_logs: [] } },
     ]);
 
     renderPage();
@@ -218,7 +220,7 @@ describe('AuditLogsAdminPage', () => {
     globalThis.fetch = mockFetch([
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
       { url: '/admin/users', status: 200, body: USERS_RESPONSE },
-      { url: '/admin/audit-logs', status: 200, body: AUDIT_LOGS_RESPONSE },
+      { url: '/admin/audit-logs?limit=10000', status: 200, body: AUDIT_LOGS_RESPONSE },
     ]);
 
     renderPage();
@@ -238,7 +240,7 @@ describe('AuditLogsAdminPage', () => {
     globalThis.fetch = mockFetch([
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
       { url: '/admin/users', status: 200, body: USERS_RESPONSE },
-      { url: '/admin/audit-logs', status: 200, body: AUDIT_LOGS_RESPONSE },
+      { url: '/admin/audit-logs?limit=10000', status: 200, body: AUDIT_LOGS_RESPONSE },
     ]);
 
     renderPage();

@@ -27,6 +27,9 @@ import type { UsageSummaryRow } from './usageAggregation';
 
 type ViewMode = 'summary' | 'detail';
 
+/** 与后端 models.py ANONYMOUS_USER_ID 常量同值(公开分享页匿名锚点,跨语言各自维护)。 */
+const ANONYMOUS_USER_ID = 'u_anonymous';
+
 export default function UsageStatsAdminPage() {
   const [viewMode, setViewMode] = useState<ViewMode>('summary');
 
@@ -59,7 +62,7 @@ export default function UsageStatsAdminPage() {
 
   const resolveUser = (portalUserId: string) =>
     userMap.get(portalUserId)?.username
-    ?? (portalUserId === 'u_anonymous' ? '匿名用户(公开分享)' : portalUserId);
+    ?? (portalUserId === ANONYMOUS_USER_ID ? '匿名用户(公开分享)' : portalUserId);
   const resolveSharePage = (sharePageId: string) =>
     sharePageMap.get(sharePageId)?.name ?? sharePageId;
 
