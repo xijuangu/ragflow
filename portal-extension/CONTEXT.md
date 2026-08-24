@@ -62,7 +62,7 @@ portal-extension/
 ├── .env / ~/.env             # 配置(本地/服务器)
 ├── portal/                   # 后端(FastAPI)
 │   ├── main.py               # app = create_app(),中间件装配
-│   ├── routes.py             # 路由(用户/组/分享页/会话/管理/公开)
+│   ├── routes.py             # 路由(用户/组/分享页/会话/管理/公开);薄适配 — 归属校验收敛在 _get_owned_session_or_404,双删编排 _dual_delete_session 在 gateway.py(Issue 95)
 │   ├── gateway.py            # 网关:SSE 代理/TokenStore(含 touch 滑动过期)/SessionStore/上游 RAGFlow 调用/reference.chunks image_id 票据改写;令牌/分享页校验链收敛在 resolve_token_and_share_page(Issue 93,全仓唯一实现)
 │   ├── models.py             # ORM 模型(User/Group/SharePage/Grant/SessionOwner/...);纯持久化 — 含 RAGFlow 调用的编排方法(cascade_delete_for_user/sync_message_count_from_history)已上移 gateway.py(Issue 94),models 不 import gateway
 │   ├── auth.py               # 鉴权依赖(get_current_user/require_org_admin)

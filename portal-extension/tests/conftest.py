@@ -145,8 +145,9 @@ def mock_delete_session(monkeypatch):
     """工厂:mock RAGFlow DELETE 端点(portal.routes 与 portal.gateway 两处都 mock)。
 
     传 side_effect(异常或 HTTPException)模拟失败;不传则模拟成功。
-    同时 mock routes 与 gateway 两处,因为 SessionStore.cascade_delete_for_user
-    直接调 portal.gateway.delete_session_via_ragflow(不经 routes 间接调用)。
+    同时 mock routes 与 gateway 两处:routes 命名空间覆盖 admin_retry_delete_session
+    的直接调用;gateway 命名空间覆盖 cascade_delete_for_user 与 _dual_delete_session
+    (Issue 94/95 后这两个编排函数都在 gateway.py,按名解析 gateway 模块 globals)。
 
     用法:
       ``mock_delete_session()`` — 成功

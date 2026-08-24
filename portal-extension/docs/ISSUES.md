@@ -167,7 +167,7 @@ admin sidebar 新增「用量统计」tab，仅 admin 可见。汇总视图：�
 
 ## Issue 95：会话归属校验收敛 + 双删编排下沉
 
-> 状态：待实施。阻塞：← Issue 94（双删下沉依赖环已解开）。
+> 状态：✅ 已完成（2026-08-24,分支 impl/93-96）。resume/rename/delete 三处逐行相同的归属校验收敛为 routes.py `_get_owned_session_or_404()`(404 不存在 / 403 归属他人 / 403 不属于该分享页的语义分叉在 docstring 显式写明);admin 变体显式传 `expected_owner_id=None` 跳过归属校验。`_dual_delete_session` 从 routes.py 下沉至 gateway.py(随 `_delete_session` 分发一并移入,routes 恢复「只注册路由 + 薄适配」);chat/agent 分发按名解析 gateway 模块 globals,相关测试 mock 接缝随之改 patch gateway 命名空间(conftest `mock_delete_session` 双命名空间不变)。基线 451+5 不回归。
 
 ## What to build
 

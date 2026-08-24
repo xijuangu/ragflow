@@ -810,11 +810,12 @@ async def delete_agent_session_via_ragflow(settings, agent_id: str, session_id: 
 
 
 # ---------------------------------------------------------------------------
-# Issue 94:编排函数(原 SessionStore 方法上移至网关层)
+# Issue 94/95:编排函数(归属网关层)
 #
-# 这两个函数含 RAGFlow HTTP 调用与业务决策,属于网关编排而非持久化;
-# 上移后 models.py 回归纯持久化(不再延迟 import gateway,无环)。
-# 首参数均为 session_store(原 self);其余签名与原方法一致。
+# cascade_delete_for_user / sync_message_count_from_history 原为 SessionStore
+# 方法(Issue 94 上移,models.py 回归纯持久化,不再延迟 import gateway);
+# _dual_delete_session 原为 routes.py 私有函数(Issue 95 下沉,routes 恢复薄适配)。
+# 首参数均为 session_store/store;其余签名与原实现一致。
 # 测试 mock 接缝不变:内部调用按名解析本模块 globals
 # (patch ``portal.gateway.delete_session_via_ragflow`` 等仍生效)。
 # ---------------------------------------------------------------------------
@@ -897,6 +898,40 @@ async def sync_message_count_from_history(
         if owner is not None and owner.message_count != len(messages):
             session_store.update_message_count(session_id, len(messages))
     return history
+
+
+async def _dual_delete_session(
+    settings,
+    store,
+    dialog_id: str,
+    session_id: str,
+    ragflow_type: str = "chat",
+) -> bool:
+    """单会话双删协调:RAGFlow DELETE 成功 → 门户硬删除;失败 → 标记 deleted_at 待重试。
+
+    用于 routes 的 delete_session / admin_delete_session 双删策略(单会话场景)。
+    与 ``cascade_delete_for_user`` 的区别:级联删除用户时 RAGFlow 失败
+    也硬删除门户侧(用户已不存在无法重试,避免孤儿);此处单会话删除失败时保留
+    门户侧记录标记 deleted_at,供后台重试任务后续清理。
+
+    Slice 16:``ragflow_type`` 参数,agent 类型调 agentbot 端点,chat 类型调 chatbot 端点。
+    Issue 95:从 routes.py 下沉至网关层(双删编排属权限业务,§4 硬约束:routes 只注册
+    路由 + 薄适配)。分发按名解析本模块 globals,测试 patch
+    ``portal.gateway.delete_session_via_ragflow`` / ``delete_agent_session_via_ragflow`` 仍生效。
+
+    返回 True 表示 RAGFlow 删除成功(门户侧已硬删除);
+    返回 False 表示 RAGFlow 失败(门户侧已标记 deleted_at,记录保留待重试)。
+    """
+    try:
+        if ragflow_type == "agent":
+            await delete_agent_session_via_ragflow(settings, dialog_id, session_id)
+        else:
+            await delete_session_via_ragflow(settings, dialog_id, session_id)
+        store.delete(session_id)
+        return True
+    except HTTPException:
+        store.mark_deleted(session_id)
+        return False
 
 
 async def proxy_sse_to_ragflow(request: Request, dialog_id: str, ragflow_type: str = "chat"):
