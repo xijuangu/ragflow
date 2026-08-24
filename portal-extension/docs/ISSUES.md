@@ -138,7 +138,7 @@ admin sidebar 新增「用量统计」tab，仅 admin 可见。汇总视图：�
 
 ## Issue 93：网关校验链收敛为单一 resolve 模块 + app.state 访问 fail-closed
 
-> 状态：待实施。无阻塞。必须在 Issue 91 之前完成。
+> 状态：✅ 已完成（2026-08-24,分支 impl/93-96）。4 份校验链收敛为 `resolve_token_and_share_page`(SSE 标准/公开、bot JSON、history/thumbnail/preview/image 共用),「先查 grant 再 validate」顺序不变量单份存在;`_proxy_sse_public_core`/`_validate_reference_access`/`_portal_reference_context`/`PortalReferenceContext` 删除,公开链后半段由 `_proxy_public_sse_stream` 共用;session_store/rate_limiter/audit_store 改直接属性访问(fail-closed)。唯一有意语义差异:公开链 is_public/enabled 双失败时 detail 顺序与旧 reference 校验相反(均为 403)。基线 451+5 不回归。无阻塞。必须在 Issue 91 之前完成。
 
 ## What to build
 
