@@ -22,6 +22,7 @@ import SharePagesAdminPage from './pages/admin/SharePagesAdminPage';
 import GrantsAdminPage from './pages/admin/GrantsAdminPage';
 import SessionsAdminPage from './pages/admin/SessionsAdminPage';
 import AuditLogsAdminPage from './pages/admin/AuditLogsAdminPage';
+import UsageStatsAdminPage from './pages/admin/UsageStatsAdminPage';
 
 export default function App() {
   const { user, loading } = useAuth();
@@ -67,6 +68,7 @@ export default function App() {
         <Route path="grants" element={<GrantsAdminPage />} />
         <Route path="sessions" element={<SessionsAdminPage />} />
         <Route path="audit" element={<AuditLogsAdminPage />} />
+        <Route path="usage" element={<UsageStatsAdminPage />} />
       </Route>
       <Route path="/" element={<Navigate to="/share-pages" replace />} />
       <Route path="*" element={<Navigate to="/share-pages" replace />} />

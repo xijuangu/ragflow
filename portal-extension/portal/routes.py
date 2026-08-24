@@ -239,6 +239,22 @@ def _audit_log_to_dict(log) -> dict:
     }
 
 
+def _usage_record_to_dict(rec) -> dict:
+    """用量记账记录 → 响应 dict(Issue 92,不含任何问答正文)。"""
+    return {
+        "id": rec.id,
+        "created_at": rec.created_at,
+        "portal_user_id": rec.portal_user_id,
+        "share_page_id": rec.share_page_id,
+        "session_id": rec.session_id,
+        "model_name": rec.model_name,
+        "input_tokens": rec.input_tokens,
+        "output_tokens": rec.output_tokens,
+        "incomplete": rec.incomplete,
+        "org_id": rec.org_id,
+    }
+
+
 def _session_owner_to_metadata_dict(owner) -> dict:
     """会话归属记录 → 管理员元数据 dict(不含正文,Slice 6 验收点 3)。
 
@@ -1687,6 +1703,42 @@ async def admin_list_audit_logs(
         org_id=filter_org,
     )
     return {"audit_logs": [_audit_log_to_dict(log) for log in logs]}
+
+
+@router.get("/admin/usage-records")
+async def admin_list_usage_records(
+    request: Request,
+    user_id: str | None = Query(None, description="按门户用户 ID 过滤(含匿名锚点 u_anonymous)"),
+    share_page_id: str | None = Query(None, description="按分享页 ID 过滤"),
+    since: float | None = Query(None, description="起始时间(unix 时间戳,按 created_at 过滤)"),
+    until: float | None = Query(None, description="截止时间(unix 时间戳,按 created_at 过滤)"),
+    incomplete: bool | None = Query(None, description="按 incomplete 标记过滤(估算口径记录)"),
+    org_id: str | None = Query(None, description="按 org_id 过滤(仅 is_admin 生效;org_admin 强制本 org)"),
+    limit: int = Query(1000, ge=1, le=10000, description="返回条数上限"),
+    user=Depends(require_org_admin),
+):
+    """管理员查询用量记账记录(Issue 92,按用户/分享页/时间/incomplete/org 过滤)。
+
+    对应 Issue 92 验收点:汇总/明细两视图的数据源;筛选/排序/聚合遵循 Issue 86
+    全站约定在前端内存完成(§12.1),本接口提供全量记录(默认倒序,上限 1000 条,
+    可经 limit 提高到 10000;量级增长后再评估服务端分页)。
+    数值为 RAGFlow 本地计词口径,非厂商账单;incomplete=true 为估算兜底记录。
+    不返回问答正文(usage_record 表本身不存正文,§12.2)。
+
+    Slice 13 沿用:is_admin 跨 org + ?org_id 筛选;org_admin 只看本 org。
+    """
+    usage_store = request.app.state.usage_store
+    filter_org = _admin_org_filter(user, org_id)
+    records = usage_store.list(
+        portal_user_id=user_id,
+        share_page_id=share_page_id,
+        since=since,
+        until=until,
+        incomplete=incomplete,
+        org_id=filter_org,
+        limit=limit,
+    )
+    return {"usage_records": [_usage_record_to_dict(r) for r in records]}
 
 
 @router.get("/admin/orgs")

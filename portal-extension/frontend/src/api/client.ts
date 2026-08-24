@@ -177,6 +177,30 @@ export interface AdminAuditLogsQuery {
   limit?: number;
 }
 
+/** 管理员视角的用量记账记录(对应 GET /admin/usage-records,Issue 92;不含问答正文)。 */
+export interface AdminUsageRecord {
+  id: string;
+  created_at: number;
+  portal_user_id: string;
+  share_page_id: string;
+  session_id: string;
+  model_name: string;
+  input_tokens: number;
+  output_tokens: number;
+  incomplete: boolean;
+  org_id: string;
+}
+
+/** GET /admin/usage-records 查询参数。 */
+export interface AdminUsageRecordsQuery {
+  user_id?: string;
+  share_page_id?: string;
+  since?: number;
+  until?: number;
+  incomplete?: boolean;
+  limit?: number;
+}
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -479,5 +503,21 @@ export const api = {
     if (query.limit !== undefined) qs.set('limit', String(query.limit));
     const suffix = qs.toString() ? `?${qs.toString()}` : '';
     return request<{ audit_logs: AdminAuditLog[] }>(`/admin/audit-logs${suffix}`);
+  },
+
+  // 用量统计 ---------------------------------------------------------------
+
+  /** 管理员查询用量记账记录(按用户/分享页/时间/incomplete 过滤,GET /admin/usage-records)。
+   *  Issue 92:汇总聚合/筛选/排序在前端内存完成(§12.1 约定),此处拉全量(limit 默认 1000)。 */
+  listAdminUsageRecords(query: AdminUsageRecordsQuery = {}): Promise<{ usage_records: AdminUsageRecord[] }> {
+    const qs = new URLSearchParams();
+    if (query.user_id) qs.set('user_id', query.user_id);
+    if (query.share_page_id) qs.set('share_page_id', query.share_page_id);
+    if (query.since !== undefined) qs.set('since', String(query.since));
+    if (query.until !== undefined) qs.set('until', String(query.until));
+    if (query.incomplete !== undefined) qs.set('incomplete', String(query.incomplete));
+    if (query.limit !== undefined) qs.set('limit', String(query.limit));
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    return request<{ usage_records: AdminUsageRecord[] }>(`/admin/usage-records${suffix}`);
   },
 };

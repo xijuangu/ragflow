@@ -120,13 +120,15 @@ export function applyAdminListView<T>(
 /**
  * 列表视图 hook:对调用方管理的数组应用搜索/筛选/排序。
  * useAdminList 内部即用它实现 options.view;列表状态在 useAdminList 之外的页面直接用本 hook。
+ * ``initialFilterValues``:筛选初始值(Issue 92「默认本月」场景);空值仍表示不筛选。
  */
 export function useAdminListView<T>(
   items: T[] | null,
   config: AdminListViewConfig<T>,
+  initialFilterValues?: Record<string, string>,
 ): UseAdminListViewResult<T> {
   const [search, setSearch] = useState('');
-  const [filterValues, setFilterValues] = useState<Record<string, string>>({});
+  const [filterValues, setFilterValues] = useState<Record<string, string>>(initialFilterValues ?? {});
   const [sort, setSort] = useState<AdminListSortState | null>(null);
 
   const setFilterValue = useCallback((key: string, value: string) => {
