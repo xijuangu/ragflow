@@ -8,7 +8,9 @@
    session-list、session-item、login-page、admin-table-wrap、admin-table 等)。
    保留的旧 class(仍在 JSX 中使用):login-card、iframe-container、
    widget-snippet-panel、snippet-*、admin-form、admin-form-row、admin-actions、
-   admin-groups、admin-group-*、member-*、admin-main。
+   admin-group-*、member-*、admin-main。
+   Issue 88/89 新增:combobox*(可搜索下拉)、group-master-detail / group-master-*
+   / group-detail*(用户组主从视图);旧 admin-groups 卡片网格已删除。
    ------------------------------------------------------------
    必须保留的布局修复(已迁移到新 class,不可丢失):
    - Slice 31:.conv-item flex-shrink:0(会话列表不压缩,触发滚动)
@@ -793,16 +795,77 @@ tbody tr:hover { background: var(--surface-2); }
   white-space: nowrap;
 }
 
-/* ---- Groups admin ---- */
-.admin-groups {
-  display: flex;
-  flex-direction: column;
+/* ---- Groups admin(Issue 89 master-detail 主从视图)---- */
+.group-master-detail {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
   gap: 16px;
   margin-top: 16px;
+  align-items: start;
 }
 
-.admin-group-card {
+.group-master {
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.group-master .loading,
+.group-master .empty-state {
+  margin: 16px;
+}
+
+.group-master-list {
+  list-style: none;
+  overflow-y: auto;
+}
+
+.group-master-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 16px;
+  font-size: 14px;
+  text-align: left;
+  color: var(--fg);
+  border-bottom: 1px solid var(--border);
+}
+
+.group-master-item:hover {
+  background: var(--surface-2);
+}
+
+.group-master-item.active {
+  background: var(--accent-tint);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.group-master-item-name {
+  font-weight: 550;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.group-detail {
   padding: 16px;
+  min-height: 240px;
+}
+
+.group-detail-subhead {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 16px 0 8px;
+}
+
+.group-grants {
+  margin-top: 8px;
 }
 
 .admin-group-header {
@@ -835,26 +898,7 @@ tbody tr:hover { background: var(--surface-2); }
   flex-wrap: wrap;
 }
 
-/* Issue 74:添加成员 select 固定宽,不再 flex:1 撑满整行 */
-.admin-add-member-form select {
-  flex: 0 0 220px;
-  height: 30px;
-  padding: 0 26px 0 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  font-size: 12px;
-  outline: none;
-  background: var(--surface);
-  color: var(--fg);
-  appearance: none;
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b6964' stroke-width='2'><path d='m6 9 6 6 6-6'/></svg>");
-  background-repeat: no-repeat;
-  background-position: right 8px center;
-}
-
-.admin-add-member-form select:focus {
-  border-color: color-mix(in oklch, var(--accent) 50%, var(--border));
-}
+/* Issue 74/88:添加成员 combobox 固定宽,不再 flex:1 撑满整行(规则见 combobox 区块) */
 
 /* Issue 74:创建用户组表单 — 单字段表单不撑满,input 固定宽 */
 .admin-form-row-compact .form-field {
@@ -1049,14 +1093,14 @@ tbody tr:hover { background: var(--surface-2); }
   .table-wrap { display: none; }
   .card-table .card-body { padding: 0; }
   .mobile-cards { display: block; }
-  .admin-groups.mobile-cards { display: flex; }
+  .group-master-detail { grid-template-columns: 1fr; }
   .admin-form-row, .filters { align-items: stretch; }
   .admin-form-row .form-field, .admin-form-row-compact .form-field, .filters .form-field { flex: 1 1 100%; min-width: 0; }
   .admin-form-row .btn, .filters > .btn { width: 100%; min-height: 44px; justify-content: center; }
   .m-card-actions .btn, .modal-actions .btn, .conv-list-toggle, .topbar-right > .btn { min-height: 44px; }
   .admin-group-header { align-items: flex-start; gap: 8px; }
   .member-list { grid-template-columns: 1fr; }
-  .admin-add-member-form select, .admin-add-member-form .btn { flex: 1 1 100%; width: 100%; }
+  .admin-add-member-form .combobox, .admin-add-member-form .btn { flex: 1 1 100%; width: 100%; }
   .login-aside { display: none; }
   .login-main { padding: 32px 20px; }
   .detail-shell { flex-direction: column; height: auto; }

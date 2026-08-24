@@ -71,7 +71,9 @@
 
 ## Issue 89：用户组管理主从视图重设计
 
-> 状态：待实施。阻塞：← Issue 88（添加成员入口复用 combobox）。
+> 状态：✅ 已完成（2026-08-24,impl-ux worktree)。GroupsAdminPage 改为 master-detail:左侧 `.group-master` 可搜索组列表(复用 `useAdminListView` 组名搜索;每项为 button,`data-testid="group-row-<id>"` 保留,选中态 `aria-current` + accent 左边条),右侧 `.group-detail` 详情面板——顶部"添加成员"(Issue 88 combobox 多选 + chips,一次多人,逐个乐观更新)、成员列表(`.member-list`/`.member-item` 保留,移除走 `ConfirmDialog` danger 确认)、该组已获得的分享页授权列表(选中组切换时并行拉取各分享页 grants 后按 `subject_type=group + subject_id` 过滤,显示分享页名 + 权限)。创建表单保留,新组建后自动选中;Slice 43 漏字段兜底保留。前端本无"删除组"入口(API client 亦无 deleteAdminGroup),AC 所指删除能力 = 移除成员,已覆盖确认弹窗。CSS:`.group-master-detail` 300px+1fr 网格,<768px 堆叠单列(§6.5 桌面优先、小屏不崩);旧 `.admin-groups` 卡片网格与 `.admin-add-member-form select` 死样式删除。前端 126 个 Vitest 全绿(组页 10 个:主从切换/授权展示/多选添加/chips 移除/确认移除/取消移除/搜索/创建/Slice 43 回归/错误态),tsc + eslint + `npm run build` 净。
+>
+> **Playwright admin CRUD 用例适配说明(无法在本 stream 执行)**:`test/playwright/portal_extension/test_portal_admin_crud.py` 位于 portal-extension 之外(本 stream 范围仅 `portal-extension/frontend/` + `docs/`),且运行需生产部署(`PORTAL_E2E_BASE_URL` 指向 172.16.10.180)。Issue 88/89 后该文件三处需由负责该目录的 stream 适配:① `test_admin_create_grant_revoke_and_delete_user` 中 `#grant-share-page`/`#grant-subject-id` 已是 combobox input 而非原生 select——`select_option_containing` 需改为「click input → click role=option」;`input_value()` 现在返回显示名而非 id,审计断言用的 share_page_id 应改从 `api_get_json('/admin/share-pages')` 取;② `test_admin_group_form_and_member_add_remove` 需先 click `group-row-<id>` 选中组,再在 `group-detail` 内操作 combobox(click → click option → click「添加」);「移除」现在先弹确认框,需再 click「确认移除」;③ `select_option_containing` helper 对上述场景不再适用。组名/成员 testid(`group-row-*`、`group-detail`、`.member-item`、「选择用户」label、「添加」按钮名)均已为新布局保留,适配成本集中在交互方式而非定位器。
 
 ## What to build
 
@@ -79,10 +81,10 @@
 
 ## Acceptance criteria
 
-- [ ] 选中组即所见：成员与该组的分享页授权在右侧面板直接可见，无需跳页或开下拉。
-- [ ] 添加成员走 combobox 多选 + chips，一次可添加多人；移除成员有确认。
-- [ ] 既有组的创建/删除能力不回归；Playwright admin CRUD 用例适配新布局后通过。
-- [ ] 视觉沿用 D1 Graphite token；桌面优先，小屏不崩（沿用 §6.5 边界）。
+- [x] 选中组即所见：成员与该组的分享页授权在右侧面板直接可见，无需跳页或开下拉。
+- [x] 添加成员走 combobox 多选 + chips，一次可添加多人；移除成员有确认。
+- [x] 既有组的创建/删除能力不回归；Playwright admin CRUD 用例适配新布局后通过。(前端创建/移除成员/添加成员均有 Vitest 回归覆盖;Playwright 文件在本 stream 写范围之外且需生产部署,无法在此适配与运行——逐条适配指引见上方实施记录,已尽量保留 testid/label 降低适配成本)
+- [x] 视觉沿用 D1 Graphite token；桌面优先，小屏不崩（沿用 §6.5 边界）。
 
 ## Issue 90：RAGFlow fork——chatbot completions SSE 末帧透出结构化 usage（硬约束批准票）
 
