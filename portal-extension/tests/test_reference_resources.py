@@ -34,7 +34,7 @@ async def _login_and_get_token(client):
     return params["auth"][0], params["shared_id"][0]
 
 
-def _mock_history_and_thumbnails(monkeypatch, *, session_id, dialog_id, captured):
+def _mock_history_and_thumbnails(app, *, session_id, dialog_id, captured):
     history = {
         "code": 0,
         "data": {
@@ -79,16 +79,12 @@ def _mock_history_and_thumbnails(monkeypatch, *, session_id, dialog_id, captured
             )
         return httpx.Response(404, json={"code": 404})
 
-    class MockAsyncClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            kwargs["transport"] = httpx.MockTransport(handler)
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr("portal.gateway.httpx.AsyncClient", MockAsyncClient)
+    # Issue 97:mock 装到 app 的 transport 注入点(不再 patch 全局 httpx.AsyncClient)
+    app.state.settings.upstream_transport = httpx.MockTransport(handler)
 
 
 def _mock_sse_reference_and_thumbnails(
-    monkeypatch,
+    app,
     *,
     session_id,
     dialog_id,
@@ -153,15 +149,11 @@ def _mock_sse_reference_and_thumbnails(
             )
         return httpx.Response(404, json={"code": 404})
 
-    class MockAsyncClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            kwargs["transport"] = httpx.MockTransport(handler)
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr("portal.gateway.httpx.AsyncClient", MockAsyncClient)
+    # Issue 97:mock 装到 app 的 transport 注入点(不再 patch 全局 httpx.AsyncClient)
+    app.state.settings.upstream_transport = httpx.MockTransport(handler)
 
 
-async def _authorize_owned_history_document(client, app, monkeypatch, *, session_id):
+async def _authorize_owned_history_document(client, app, *, session_id):
     token, dialog_id = await _login_and_get_token(client)
     app.state.session_store.bind(
         session_id=session_id,
@@ -171,7 +163,7 @@ async def _authorize_owned_history_document(client, app, monkeypatch, *, session
     )
     captured = []
     _mock_history_and_thumbnails(
-        monkeypatch,
+        app,
         session_id=session_id,
         dialog_id=dialog_id,
         captured=captured,
@@ -184,7 +176,7 @@ async def _authorize_owned_history_document(client, app, monkeypatch, *, session
     return token, captured
 
 
-async def test_owned_history_authorizes_its_document_thumbnails(client, app, monkeypatch):
+async def test_owned_history_authorizes_its_document_thumbnails(client, app):
     """Owned history references become the only document IDs available to its pt_ token."""
     token, dialog_id = await _login_and_get_token(client)
     session_id = "issue82-owned-history"
@@ -196,7 +188,7 @@ async def test_owned_history_authorizes_its_document_thumbnails(client, app, mon
     )
     captured = []
     _mock_history_and_thumbnails(
-        monkeypatch,
+        app,
         session_id=session_id,
         dialog_id=dialog_id,
         captured=captured,
@@ -222,12 +214,11 @@ async def test_owned_history_authorizes_its_document_thumbnails(client, app, mon
     assert captured[-1]["authorization"] == f"Bearer {os.environ['RAGFLOW_BETA_TOKEN']}"
 
 
-async def test_owned_history_authorizes_its_document_preview(client, app, monkeypatch):
+async def test_owned_history_authorizes_its_document_preview(client, app):
     """Issue 85: a referenced document opens through Portal without a RAGFlow login."""
     token, captured = await _authorize_owned_history_document(
         client,
         app,
-        monkeypatch,
         session_id="issue85-owned-history-preview",
     )
 
@@ -245,11 +236,10 @@ async def test_owned_history_authorizes_its_document_preview(client, app, monkey
     assert captured[-1]["authorization"] == f"Bearer {os.environ['RAGFLOW_BETA_TOKEN']}"
 
 
-async def test_preview_rejects_document_not_referenced_by_owned_history(client, app, monkeypatch):
+async def test_preview_rejects_document_not_referenced_by_owned_history(client, app):
     token, captured = await _authorize_owned_history_document(
         client,
         app,
-        monkeypatch,
         session_id="issue85-preview-document-scope",
     )
 
@@ -262,11 +252,10 @@ async def test_preview_rejects_document_not_referenced_by_owned_history(client, 
     assert len(captured) == 1, "越权 preview 不得发往 RAGFlow"
 
 
-async def test_preview_rechecks_share_page_grant(client, app, monkeypatch):
+async def test_preview_rechecks_share_page_grant(client, app):
     token, captured = await _authorize_owned_history_document(
         client,
         app,
-        monkeypatch,
         session_id="issue85-preview-revoked-grant",
     )
     assert app.state.seed.revoke_grant("sp_default", "user", "u_admin") is True
@@ -296,7 +285,7 @@ async def test_preview_rejects_unknown_or_revoked_portal_token(client, app):
     assert revoked.status_code == 401
 
 
-async def test_sse_answer_authorizes_its_document_thumbnails(client, app, monkeypatch):
+async def test_sse_answer_authorizes_its_document_thumbnails(client, app):
     """Issue 84: a new referenced answer can load its resources without reopening history."""
     token, dialog_id = await _login_and_get_token(client)
     session_id = "issue84-sse-reference"
@@ -308,7 +297,7 @@ async def test_sse_answer_authorizes_its_document_thumbnails(client, app, monkey
     )
     captured = []
     _mock_sse_reference_and_thumbnails(
-        monkeypatch,
+        app,
         session_id=session_id,
         dialog_id=dialog_id,
         captured=captured,
@@ -339,7 +328,7 @@ async def test_sse_answer_authorizes_its_document_thumbnails(client, app, monkey
     assert len(thumbnail_calls) == 1, "unreferenced document IDs must not be sent to RAGFlow"
 
 
-async def test_fragmented_sse_reference_authorizes_document_thumbnails(client, app, monkeypatch):
+async def test_fragmented_sse_reference_authorizes_document_thumbnails(client, app):
     """Issue 84: authorization does not depend on upstream network chunk boundaries."""
     token, dialog_id = await _login_and_get_token(client)
     session_id = "issue84-fragmented-sse-reference"
@@ -369,7 +358,7 @@ async def test_fragmented_sse_reference_authorizes_document_thumbnails(client, a
         + "\n\n"
     ).encode()
     _mock_sse_reference_and_thumbnails(
-        monkeypatch,
+        app,
         session_id=session_id,
         dialog_id=dialog_id,
         captured=[],
@@ -392,7 +381,7 @@ async def test_fragmented_sse_reference_authorizes_document_thumbnails(client, a
     assert thumbnail.status_code == 200
 
 
-async def test_coalesced_sse_events_authorize_references_from_each_complete_event(client, app, monkeypatch):
+async def test_coalesced_sse_events_authorize_references_from_each_complete_event(client, app):
     """Issue 84: multiple SSE events in one network chunk are parsed independently."""
     token, dialog_id = await _login_and_get_token(client)
     session_id = "issue84-coalesced-sse-events"
@@ -420,7 +409,7 @@ async def test_coalesced_sse_events_authorize_references_from_each_complete_even
         + "\n\n"
     ).encode()
     _mock_sse_reference_and_thumbnails(
-        monkeypatch,
+        app,
         session_id=session_id,
         dialog_id=dialog_id,
         captured=[],
@@ -443,7 +432,7 @@ async def test_coalesced_sse_events_authorize_references_from_each_complete_even
     assert thumbnail.status_code == 200
 
 
-async def test_public_sse_answer_authorizes_only_its_document_thumbnails(client, app, monkeypatch):
+async def test_public_sse_answer_authorizes_only_its_document_thumbnails(client, app):
     """Issue 84: the public iframe path applies the same reference scope without a Portal cookie."""
     assert app.state.seed.set_share_page_public("sp_default", True) is True
     embed = await client.get("/public/sp_default/embed-url")
@@ -460,7 +449,7 @@ async def test_public_sse_answer_authorizes_only_its_document_thumbnails(client,
     )
     captured = []
     _mock_sse_reference_and_thumbnails(
-        monkeypatch,
+        app,
         session_id=session_id,
         dialog_id=dialog_id,
         captured=captured,
@@ -490,7 +479,7 @@ async def test_public_sse_answer_authorizes_only_its_document_thumbnails(client,
     assert len(thumbnail_calls) == 1
 
 
-async def test_thumbnail_rejects_document_not_referenced_by_owned_history(client, app, monkeypatch):
+async def test_thumbnail_rejects_document_not_referenced_by_owned_history(client, app):
     token, dialog_id = await _login_and_get_token(client)
     session_id = "issue82-document-scope"
     app.state.session_store.bind(
@@ -500,7 +489,7 @@ async def test_thumbnail_rejects_document_not_referenced_by_owned_history(client
         ragflow_resource_id=dialog_id,
     )
     captured = []
-    _mock_history_and_thumbnails(monkeypatch, session_id=session_id, dialog_id=dialog_id, captured=captured)
+    _mock_history_and_thumbnails(app, session_id=session_id, dialog_id=dialog_id, captured=captured)
     assert (
         await client.get(
             f"/api/v1/chatbots/{dialog_id}/sessions/{session_id}",
@@ -536,7 +525,7 @@ async def test_thumbnail_rejects_unknown_or_revoked_portal_token(client, app):
     assert revoked.status_code == 401
 
 
-async def test_thumbnail_rechecks_share_page_grant(client, app, monkeypatch):
+async def test_thumbnail_rechecks_share_page_grant(client, app):
     token, dialog_id = await _login_and_get_token(client)
     session_id = "issue82-revoked-grant"
     app.state.session_store.bind(
@@ -546,7 +535,7 @@ async def test_thumbnail_rechecks_share_page_grant(client, app, monkeypatch):
         ragflow_resource_id=dialog_id,
     )
     captured = []
-    _mock_history_and_thumbnails(monkeypatch, session_id=session_id, dialog_id=dialog_id, captured=captured)
+    _mock_history_and_thumbnails(app, session_id=session_id, dialog_id=dialog_id, captured=captured)
     assert (
         await client.get(
             f"/api/v1/chatbots/{dialog_id}/sessions/{session_id}",
@@ -565,7 +554,7 @@ async def test_thumbnail_rechecks_share_page_grant(client, app, monkeypatch):
     assert len(captured) == 1
 
 
-async def test_foreign_session_cannot_authorize_its_reference_documents(client, app, monkeypatch):
+async def test_foreign_session_cannot_authorize_its_reference_documents(client, app):
     token, dialog_id = await _login_and_get_token(client)
     session_id = "issue82-foreign-history"
     app.state.session_store.bind(
@@ -575,7 +564,7 @@ async def test_foreign_session_cannot_authorize_its_reference_documents(client, 
         ragflow_resource_id=dialog_id,
     )
     captured = []
-    _mock_history_and_thumbnails(monkeypatch, session_id=session_id, dialog_id=dialog_id, captured=captured)
+    _mock_history_and_thumbnails(app, session_id=session_id, dialog_id=dialog_id, captured=captured)
 
     history = await client.get(
         f"/api/v1/chatbots/{dialog_id}/sessions/{session_id}",
@@ -592,9 +581,7 @@ async def test_foreign_session_cannot_authorize_its_reference_documents(client, 
     assert captured == []
 
 
-async def test_session_from_another_share_page_cannot_authorize_documents(
-    client, app, monkeypatch
-):
+async def test_session_from_another_share_page_cannot_authorize_documents(client, app):
     """同一用户/同一 resource 也不能跨分享页复用 grant 与 pt_。"""
     token, dialog_id = await _login_and_get_token(client)
     other_page = app.state.seed.create_share_page(
@@ -609,7 +596,7 @@ async def test_session_from_another_share_page_cannot_authorize_documents(
         ragflow_resource_id=dialog_id,
     )
     captured = []
-    _mock_history_and_thumbnails(monkeypatch, session_id=session_id, dialog_id=dialog_id, captured=captured)
+    _mock_history_and_thumbnails(app, session_id=session_id, dialog_id=dialog_id, captured=captured)
 
     response = await client.get(
         f"/api/v1/chatbots/{dialog_id}/sessions/{session_id}",
@@ -620,7 +607,7 @@ async def test_session_from_another_share_page_cannot_authorize_documents(
     assert captured == []
 
 
-async def test_history_rejects_portal_token_owned_by_another_logged_in_user(client, app, monkeypatch):
+async def test_history_rejects_portal_token_owned_by_another_logged_in_user(client, app):
     token, dialog_id = await _login_and_get_token(client)
     session_id = "issue82-current-user-mismatch"
     app.state.session_store.bind(
@@ -630,7 +617,7 @@ async def test_history_rejects_portal_token_owned_by_another_logged_in_user(clie
         ragflow_resource_id=dialog_id,
     )
     captured = []
-    _mock_history_and_thumbnails(monkeypatch, session_id=session_id, dialog_id=dialog_id, captured=captured)
+    _mock_history_and_thumbnails(app, session_id=session_id, dialog_id=dialog_id, captured=captured)
     assert (await client.post("/logout")).status_code == 200
     assert (
         await client.post("/login", json={"username": "user2", "password": "testpass123"})
@@ -645,10 +632,10 @@ async def test_history_rejects_portal_token_owned_by_another_logged_in_user(clie
     assert captured == []
 
 
-async def test_native_ragflow_token_thumbnail_request_is_passed_through(client, monkeypatch):
+async def test_native_ragflow_token_thumbnail_request_is_passed_through(client, app):
     captured = []
     _mock_history_and_thumbnails(
-        monkeypatch,
+        app,
         session_id="unused",
         dialog_id="unused",
         captured=captured,
@@ -664,10 +651,10 @@ async def test_native_ragflow_token_thumbnail_request_is_passed_through(client, 
     assert captured[-1]["authorization"] == "Bearer native-ragflow-token"
 
 
-async def test_native_ragflow_token_document_preview_is_passed_through(client, monkeypatch):
+async def test_native_ragflow_token_document_preview_is_passed_through(client, app):
     captured = []
     _mock_history_and_thumbnails(
-        monkeypatch,
+        app,
         session_id="unused",
         dialog_id="unused",
         captured=captured,
@@ -683,9 +670,7 @@ async def test_native_ragflow_token_document_preview_is_passed_through(client, m
     assert captured[-1]["authorization"] == "Bearer native-ragflow-token"
 
 
-async def test_thumbnail_image_url_gets_scoped_ticket_and_loads_without_authorization_header(
-    client, app, monkeypatch
-):
+async def test_thumbnail_image_url_gets_scoped_ticket_and_loads_without_authorization_header(client, app):
     token, dialog_id = await _login_and_get_token(client)
     session_id = "issue82-image-ticket"
     image_id = "kb-1-thumbnail.png"
@@ -723,12 +708,8 @@ async def test_thumbnail_image_url_gets_scoped_ticket_and_loads_without_authoriz
             return httpx.Response(200, content=b"png-bytes", headers={"content-type": "image/png"})
         return httpx.Response(404)
 
-    class MockAsyncClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            kwargs["transport"] = httpx.MockTransport(handler)
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr("portal.gateway.httpx.AsyncClient", MockAsyncClient)
+    # Issue 97:mock 装到 app 的 transport 注入点(不再 patch 全局 httpx.AsyncClient)
+    app.state.settings.upstream_transport = httpx.MockTransport(handler)
     assert (
         await client.get(
             f"/api/v1/chatbots/{dialog_id}/sessions/{session_id}",
@@ -753,26 +734,23 @@ async def test_thumbnail_image_url_gets_scoped_ticket_and_loads_without_authoriz
     assert captured[-1]["authorization"] == f"Bearer {os.environ['RAGFLOW_BETA_TOKEN']}"
 
     ticket_value = parse_qs(urlparse(image_url).query)["portal_ticket"][0]
-    assert ticket_value in app.state.token_store._reference_image_tickets
+    # Issue 98:票据归 ReferenceAccessStore 管(校验时实时复核 T_short 有效性)
+    assert app.state.reference_access_store.get_reference_image_ticket(ticket_value) is not None
     app.state.token_store.revoke(token)
-    assert ticket_value not in app.state.token_store._reference_image_tickets
+    assert app.state.reference_access_store.get_reference_image_ticket(ticket_value) is None
     revoked = await client.get(image_url)
     assert revoked.status_code == 401
 
 
-async def test_native_ragflow_document_image_request_is_passed_through(client, monkeypatch):
+async def test_native_ragflow_document_image_request_is_passed_through(client, app):
     captured = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured.append(request.headers.get("Authorization", ""))
         return httpx.Response(200, content=b"native-image", headers={"content-type": "image/webp"})
 
-    class MockAsyncClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            kwargs["transport"] = httpx.MockTransport(handler)
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr("portal.gateway.httpx.AsyncClient", MockAsyncClient)
+    # Issue 97:mock 装到 app 的 transport 注入点(不再 patch 全局 httpx.AsyncClient)
+    app.state.settings.upstream_transport = httpx.MockTransport(handler)
     response = await client.get(
         "/api/v1/documents/images/native-image.webp",
         headers={"Authorization": "Bearer native-ragflow-token"},
@@ -785,22 +763,25 @@ async def test_native_ragflow_document_image_request_is_passed_through(client, m
 
 
 def test_issuing_image_ticket_prunes_expired_ticket(monkeypatch):
-    store = TokenStore()
+    from portal.gateway import ReferenceAccessStore
+
+    token_store = TokenStore()
+    store = ReferenceAccessStore(token_store)
     now = 1_000.0
     monkeypatch.setattr("portal.gateway.time.time", lambda: now)
-    expired_token = store.issue("user", "share", ttl_seconds=10)
+    expired_token = token_store.issue("user", "share", ttl_seconds=10)
     store.authorize_documents(expired_token, {"doc-old"})
     expired_ticket = store.issue_reference_image_ticket(expired_token, "doc-old", "image-old")
 
     now = 2_000.0
-    active_token = store.issue("user", "share", ttl_seconds=10)
+    active_token = token_store.issue("user", "share", ttl_seconds=10)
     store.authorize_documents(active_token, {"doc-new"})
     store.issue_reference_image_ticket(active_token, "doc-new", "image-new")
 
     assert expired_ticket not in store._reference_image_tickets
 
 
-def _mock_ragflow_rejects_image_without_beta_token(monkeypatch, *, history, image_id, captured):
+def _mock_ragflow_rejects_image_without_beta_token(app, *, history, image_id, captured):
     """RAGFlow mock:history 原样返回;图片端点无 beta token 时 401(模拟真实鉴权)。"""
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -818,17 +799,11 @@ def _mock_ragflow_rejects_image_without_beta_token(monkeypatch, *, history, imag
             return httpx.Response(200, content=b"png-bytes", headers={"content-type": "image/png"})
         return httpx.Response(200, json=history, headers={"content-type": "application/json"})
 
-    class MockAsyncClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            kwargs["transport"] = httpx.MockTransport(handler)
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr("portal.gateway.httpx.AsyncClient", MockAsyncClient)
+    # Issue 97:mock 装到 app 的 transport 注入点(不再 patch 全局 httpx.AsyncClient)
+    app.state.settings.upstream_transport = httpx.MockTransport(handler)
 
 
-async def test_history_reference_chunk_image_loads_via_img_tag_without_auth_header(
-    client, app, monkeypatch
-):
+async def test_history_reference_chunk_image_loads_via_img_tag_without_auth_header(client, app):
     """引用 chunk 的 image_id 由 <img src> 渲染(无 Authorization header、无 portal_ticket)。
 
     history 响应须为 chunk.image_id 签发票据并改写,使 <img> 凭 cookie+票据加载,
@@ -857,7 +832,7 @@ async def test_history_reference_chunk_image_loads_via_img_tag_without_auth_head
         },
     }
     _mock_ragflow_rejects_image_without_beta_token(
-        monkeypatch, history=history, image_id=image_id, captured=captured
+        app, history=history, image_id=image_id, captured=captured
     )
 
     # 1. axios 式加载 history(带 Authorization)→ 建立引用 + 应改写 image_id 带票据
@@ -877,9 +852,7 @@ async def test_history_reference_chunk_image_loads_via_img_tag_without_auth_head
     assert img_resp.content == b"png-bytes"
 
 
-async def test_sse_reference_chunk_image_gets_ticket_and_loads_without_auth_header(
-    client, app, monkeypatch
-):
+async def test_sse_reference_chunk_image_gets_ticket_and_loads_without_auth_header(client, app):
     """新回答(流式)引用 chunk 的 image_id 也须带票据,<img> 凭 cookie+票据加载。"""
     token, dialog_id = await _login_and_get_token(client)
     session_id = "bug-sse-ref-chunk-image"
@@ -929,12 +902,8 @@ async def test_sse_reference_chunk_image_gets_ticket_and_loads_without_auth_head
             return httpx.Response(200, content=b"png-bytes", headers={"content-type": "image/png"})
         return httpx.Response(404, json={"code": 404})
 
-    class MockAsyncClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            kwargs["transport"] = httpx.MockTransport(handler)
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr("portal.gateway.httpx.AsyncClient", MockAsyncClient)
+    # Issue 97:mock 装到 app 的 transport 注入点(不再 patch 全局 httpx.AsyncClient)
+    app.state.settings.upstream_transport = httpx.MockTransport(handler)
 
     completion = await client.post(
         f"/api/v1/chatbots/{dialog_id}/completions",
@@ -1001,7 +970,7 @@ def test_token_store_touch_does_not_revive_revoked_token(monkeypatch):
     assert store.validate(token) is None, "已撤销令牌不应被 touch 复活"
 
 
-async def test_sse_request_touches_t_short_to_extend_ttl(client, app, monkeypatch):
+async def test_sse_request_touches_t_short_to_extend_ttl(client, app):
     """活跃 SSE 请求应延长 T_short 有效期(滑动过期),避免停留过久后 401。
 
     时序(T_short TTL = 2s):
@@ -1021,7 +990,7 @@ async def test_sse_request_touches_t_short_to_extend_ttl(client, app, monkeypatc
     # 用极短 TTL 重新签发 token(2 秒)
     short_token = app.state.token_store.issue("u_admin", "sp_default", ttl_seconds=2)
     _mock_sse_reference_and_thumbnails(
-        monkeypatch, session_id=session_id, dialog_id=dialog_id, captured=[]
+        app, session_id=session_id, dialog_id=dialog_id, captured=[]
     )
 
     # 等 1.5 秒:仍处于原始 TTL 内(1.5 < 2),第一条消息应成功并触发 touch

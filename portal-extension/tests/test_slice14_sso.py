@@ -546,7 +546,7 @@ async def test_builtin_login_still_works(client):
 # ===========================================================================
 
 
-async def test_oidc_fetch_discovery_via_mock_transport(monkeypatch):
+async def test_oidc_fetch_discovery_via_mock_transport():
     """OIDC discovery:用 httpx.MockTransport 模拟 IdP discovery 端点。"""
     clear_discovery_cache()
     discovery_doc = {
@@ -556,45 +556,44 @@ async def test_oidc_fetch_discovery_via_mock_transport(monkeypatch):
         "jwks_uri": "https://idp.test.example/jwks",
     }
 
-    class _MockAsyncClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            kwargs["transport"] = httpx.MockTransport(
-                lambda req: (
-                    httpx.Response(200, json=discovery_doc)
-                    if "openid-configuration" in str(req.url)
-                    else httpx.Response(404)
-                )
-            )
-            super().__init__(*args, **kwargs)
+    def handler(req: httpx.Request) -> httpx.Response:
+        if "openid-configuration" in str(req.url):
+            return httpx.Response(200, json=discovery_doc)
+        return httpx.Response(404)
 
-    monkeypatch.setattr("portal.oidc.httpx.AsyncClient", _MockAsyncClient)
     from portal.oidc import _fetch_discovery
 
-    config = OIDCConfig(issuer="https://idp.test.example", client_id="c", client_secret="s", redirect_uri="r")
+    config = OIDCConfig(
+        issuer="https://idp.test.example",
+        client_id="c",
+        client_secret="s",
+        redirect_uri="r",
+        transport=httpx.MockTransport(handler),
+    )
     doc = await _fetch_discovery(config)
     assert doc["authorization_endpoint"] == "https://idp.test.example/auth"
     assert doc["token_endpoint"] == "https://idp.test.example/token"
     clear_discovery_cache()
 
 
-async def test_oidc_discovery_unreachable_returns_502(monkeypatch):
+async def test_oidc_discovery_unreachable_returns_502():
     """IdP discovery 不可达 → HTTPException 502。"""
     clear_discovery_cache()
 
     def _raise_connect_error(request):
         raise httpx.ConnectError("connection refused")
 
-    class _MockAsyncClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            kwargs["transport"] = httpx.MockTransport(_raise_connect_error)
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr("portal.oidc.httpx.AsyncClient", _MockAsyncClient)
     from fastapi import HTTPException
 
     from portal.oidc import _fetch_discovery
 
-    config = OIDCConfig(issuer="https://idp.test.example", client_id="c", client_secret="s", redirect_uri="r")
+    config = OIDCConfig(
+        issuer="https://idp.test.example",
+        client_id="c",
+        client_secret="s",
+        redirect_uri="r",
+        transport=httpx.MockTransport(_raise_connect_error),
+    )
     with pytest.raises(HTTPException) as exc_info:
         await _fetch_discovery(config)
     assert exc_info.value.status_code == 502
@@ -602,7 +601,7 @@ async def test_oidc_discovery_unreachable_returns_502(monkeypatch):
     clear_discovery_cache()
 
 
-async def test_oidc_get_authorization_url_builds_correct_url(monkeypatch):
+async def test_oidc_get_authorization_url_builds_correct_url():
     """get_authorization_url 构造正确的授权 URL(含 state/nonce/client_id/redirect_uri)。"""
     clear_discovery_cache()
     discovery_doc = {
@@ -612,12 +611,6 @@ async def test_oidc_get_authorization_url_builds_correct_url(monkeypatch):
         "jwks_uri": "https://idp.test.example/jwks",
     }
 
-    class _MockAsyncClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            kwargs["transport"] = httpx.MockTransport(lambda req: httpx.Response(200, json=discovery_doc))
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr("portal.oidc.httpx.AsyncClient", _MockAsyncClient)
     from portal.oidc import get_authorization_url
 
     config = OIDCConfig(
@@ -625,6 +618,7 @@ async def test_oidc_get_authorization_url_builds_correct_url(monkeypatch):
         client_id="my-client-id",
         client_secret="secret",
         redirect_uri="https://portal.test/sso/callback",
+        transport=httpx.MockTransport(lambda req: httpx.Response(200, json=discovery_doc)),
     )
     url = await get_authorization_url(config, state="test-state", nonce="test-nonce")
     assert "idp.test.example/auth" in url

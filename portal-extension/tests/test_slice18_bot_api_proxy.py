@@ -45,8 +45,8 @@ async def _login_and_get_t_short(client, share_page_id="sp_default"):
     return qs["auth"][0], qs["shared_id"][0]
 
 
-def _mock_upstream_json(monkeypatch, status_code=200, json_body=None, capture=None):
-    """辅助:mock 网关 httpx.AsyncClient,让非 SSE GET 请求返回 JSON 响应。
+def _mock_upstream_json(app, status_code=200, json_body=None, capture=None):
+    """辅助:配置上游 transport,让非 SSE GET 请求返回 JSON 响应(Issue 97)。
 
     capture:可选 list,收集上游请求的 URL 与 Authorization。
     """
@@ -54,24 +54,19 @@ def _mock_upstream_json(monkeypatch, status_code=200, json_body=None, capture=No
 
     body = json.dumps(json_body or {"code": 0, "data": {"title": "测试对话"}}).encode("utf-8")
 
-    class _MockAsyncClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            def handler(req: httpx.Request) -> httpx.Response:
-                if capture is not None:
-                    capture.append({
-                        "url": str(req.url),
-                        "authorization": req.headers.get("Authorization", ""),
-                    })
-                return httpx.Response(
-                    status_code,
-                    content=body,
-                    headers={"content-type": "application/json"},
-                )
+    def handler(req: httpx.Request) -> httpx.Response:
+        if capture is not None:
+            capture.append({
+                "url": str(req.url),
+                "authorization": req.headers.get("Authorization", ""),
+            })
+        return httpx.Response(
+            status_code,
+            content=body,
+            headers={"content-type": "application/json"},
+        )
 
-            kwargs["transport"] = httpx.MockTransport(handler)
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr("portal.gateway.httpx.AsyncClient", _MockAsyncClient)
+    app.state.settings.upstream_transport = httpx.MockTransport(handler)
 
 
 # ===========================================================================
@@ -79,11 +74,11 @@ def _mock_upstream_json(monkeypatch, status_code=200, json_body=None, capture=No
 # ===========================================================================
 
 
-async def test_chatbot_info_with_tshort_uses_beta_token(client, app, monkeypatch):
+async def test_chatbot_info_with_tshort_uses_beta_token(client, app):
     """有 T_short 调 /info → 网关换 beta Token 调 RAGFlow,返回 200。"""
     t_short, dialog_id = await _login_and_get_t_short(client)
     captured = []
-    _mock_upstream_json(monkeypatch, 200, {"code": 0, "data": {"title": "测试"}}, captured)
+    _mock_upstream_json(app, 200, {"code": 0, "data": {"title": "测试"}}, captured)
 
     resp = await client.get(
         f"/api/v1/chatbots/{dialog_id}/info",
@@ -100,11 +95,11 @@ async def test_chatbot_info_with_tshort_uses_beta_token(client, app, monkeypatch
     assert f"/api/v1/chatbots/{dialog_id}/info" in captured[0]["url"]
 
 
-async def test_chatbot_info_response_passed_through(client, app, monkeypatch):
+async def test_chatbot_info_response_passed_through(client, app):
     """/info 代理的 JSON 响应回传,Slice 42 起 data.title 用 share_page.name 替换 dialog.name。"""
     t_short, dialog_id = await _login_and_get_t_short(client)
     _mock_upstream_json(
-        monkeypatch,
+        app,
         200,
         {"code": 0, "data": {"title": "自定义标题", "prologue": "欢迎"}},
     )
@@ -121,7 +116,7 @@ async def test_chatbot_info_response_passed_through(client, app, monkeypatch):
     assert body["data"]["prologue"] == "欢迎"
 
 
-async def test_chatbot_session_history_with_tshort_uses_beta_token(client, app, monkeypatch):
+async def test_chatbot_session_history_with_tshort_uses_beta_token(client, app):
     """有 T_short 调 /sessions/{session_id} → 校验归属后换 beta Token 取 RAGFlow history。"""
     t_short, dialog_id = await _login_and_get_t_short(client)
     session_id = "slice24-history-proxy-001"
@@ -133,7 +128,7 @@ async def test_chatbot_session_history_with_tshort_uses_beta_token(client, app, 
     )
     captured = []
     _mock_upstream_json(
-        monkeypatch,
+        app,
         200,
         {"code": 0, "data": {"messages": [{"role": "assistant", "content": "hi"}], "reference": []}},
         captured,
@@ -151,7 +146,7 @@ async def test_chatbot_session_history_with_tshort_uses_beta_token(client, app, 
     assert f"/api/v1/chatbots/{dialog_id}/sessions/{session_id}" in captured[0]["url"]
 
 
-async def test_chatbot_session_history_rejects_other_user_session(client, app, monkeypatch):
+async def test_chatbot_session_history_rejects_other_user_session(client, app):
     """用户 B 持自己的 T_short 读取用户 A 的 session history → 403。"""
     t_short, dialog_id = await _login_and_get_t_short(client)
     session_id = "slice24-history-proxy-foreign"
@@ -167,7 +162,7 @@ async def test_chatbot_session_history_rejects_other_user_session(client, app, m
     resp = await client.get("/share-pages/sp_default/embed-url")
     assert resp.status_code == 200
     user2_t_short = _extract_params(resp.json()["iframe_url"])["auth"][0]
-    _mock_upstream_json(monkeypatch, 200, {"code": 0, "data": {"messages": []}})
+    _mock_upstream_json(app, 200, {"code": 0, "data": {"messages": []}})
 
     resp = await client.get(
         f"/api/v1/chatbots/{dialog_id}/sessions/{session_id}",
@@ -182,10 +177,10 @@ async def test_chatbot_session_history_rejects_other_user_session(client, app, m
 # ===========================================================================
 
 
-async def test_chatbot_info_passthrough_no_token(client, app, monkeypatch):
+async def test_chatbot_info_passthrough_no_token(client, app):
     """无 T_short 调 /info → 透传 RAGFlow(原生分享页场景),返回 200。"""
     captured = []
-    _mock_upstream_json(monkeypatch, 200, {"code": 0, "data": {"title": "原生分享页"}}, captured)
+    _mock_upstream_json(app, 200, {"code": 0, "data": {"title": "原生分享页"}}, captured)
 
     # 无 Authorization header → 透传
     resp = await client.get("/api/v1/chatbots/some-dialog-id/info")
@@ -196,10 +191,10 @@ async def test_chatbot_info_passthrough_no_token(client, app, monkeypatch):
     assert "/api/v1/chatbots/some-dialog-id/info" in captured[0]["url"]
 
 
-async def test_chatbot_info_passthrough_unknown_token(client, app, monkeypatch):
+async def test_chatbot_info_passthrough_unknown_token(client, app):
     """未知 Bearer token(非 portal T_short)调 /info → 透传 RAGFlow,保留原始 auth。"""
     captured = []
-    _mock_upstream_json(monkeypatch, 200, {"code": 0, "data": {"title": "RAGFlow 原生"}}, captured)
+    _mock_upstream_json(app, 200, {"code": 0, "data": {"title": "RAGFlow 原生"}}, captured)
 
     resp = await client.get(
         "/api/v1/chatbots/some-dialog-id/info",
@@ -218,12 +213,12 @@ async def test_chatbot_info_passthrough_unknown_token(client, app, monkeypatch):
 # ===========================================================================
 
 
-async def test_chatbot_info_rejects_revoked_tshort(client, app, monkeypatch):
+async def test_chatbot_info_rejects_revoked_tshort(client, app):
     """有 T_short 但已撤销 → 401(校验链不跳过,非透传)。"""
     t_short, dialog_id = await _login_and_get_t_short(client)
     # 撤销 T_short
     app.state.token_store.revoke(t_short)
-    _mock_upstream_json(monkeypatch, 200)
+    _mock_upstream_json(app, 200)
 
     resp = await client.get(
         f"/api/v1/chatbots/{dialog_id}/info",
@@ -232,13 +227,13 @@ async def test_chatbot_info_rejects_revoked_tshort(client, app, monkeypatch):
     assert resp.status_code == 401, f"已撤销的 T_short 应返回 401,实际: {resp.status_code}"
 
 
-async def test_chatbot_info_rejects_expired_tshort(client, app, monkeypatch):
+async def test_chatbot_info_rejects_expired_tshort(client, app):
     """有 T_short 但已过期 → 401。"""
     t_short, dialog_id = await _login_and_get_t_short(client)
     # 模拟过期
     rec = app.state.token_store._tokens[t_short]
     rec.expires_at = 0.0
-    _mock_upstream_json(monkeypatch, 200)
+    _mock_upstream_json(app, 200)
 
     resp = await client.get(
         f"/api/v1/chatbots/{dialog_id}/info",
@@ -247,13 +242,13 @@ async def test_chatbot_info_rejects_expired_tshort(client, app, monkeypatch):
     assert resp.status_code == 401
 
 
-async def test_chatbot_info_rejects_missing_grant(client, app, monkeypatch):
+async def test_chatbot_info_rejects_missing_grant(client, app):
     """有 T_short 但 grant 已撤销 → 403(校验链步骤 1 生效)。"""
     t_short, dialog_id = await _login_and_get_t_short(client)
     # 撤销 admin 对 sp_default 的授权
     seed = app.state.seed
     seed.revoke_grant("sp_default", "user", "u_admin")
-    _mock_upstream_json(monkeypatch, 200)
+    _mock_upstream_json(app, 200)
 
     resp = await client.get(
         f"/api/v1/chatbots/{dialog_id}/info",
@@ -262,10 +257,10 @@ async def test_chatbot_info_rejects_missing_grant(client, app, monkeypatch):
     assert resp.status_code == 403
 
 
-async def test_chatbot_info_rejects_dialog_mismatch(client, app, monkeypatch):
+async def test_chatbot_info_rejects_dialog_mismatch(client, app):
     """T_short 绑定的 dialog_id 与请求的 dialog_id 不一致 → 401。"""
     t_short, _dialog_id = await _login_and_get_t_short(client)
-    _mock_upstream_json(monkeypatch, 200)
+    _mock_upstream_json(app, 200)
 
     # 用不同的 dialog_id 调 /info
     resp = await client.get(
@@ -280,7 +275,7 @@ async def test_chatbot_info_rejects_dialog_mismatch(client, app, monkeypatch):
 # ===========================================================================
 
 
-async def test_agentbot_inputs_with_tshort(client, app, monkeypatch):
+async def test_agentbot_inputs_with_tshort(client, app):
     """Agent /inputs 代理:有 T_short → 换 beta Token 调 RAGFlow agentbot 端点。"""
     await _login(client)
     # 创建 agent 分享页 + 授权
@@ -299,7 +294,7 @@ async def test_agentbot_inputs_with_tshort(client, app, monkeypatch):
     t_short = _extract_params(embed.json()["iframe_url"])["auth"][0]
 
     captured = []
-    _mock_upstream_json(monkeypatch, 200, {"code": 0, "data": {"inputs": []}}, captured)
+    _mock_upstream_json(app, 200, {"code": 0, "data": {"inputs": []}}, captured)
 
     resp = await client.get(
         "/api/v1/agentbots/agent-info-001/inputs",
@@ -313,10 +308,10 @@ async def test_agentbot_inputs_with_tshort(client, app, monkeypatch):
     assert captured[0]["authorization"] == f"Bearer {beta_token}"
 
 
-async def test_agentbot_inputs_passthrough_no_token(client, app, monkeypatch):
+async def test_agentbot_inputs_passthrough_no_token(client, app):
     """Agent /inputs 代理:无 T_short → 透传 RAGFlow agentbot 端点。"""
     captured = []
-    _mock_upstream_json(monkeypatch, 200, {"code": 0, "data": {"inputs": []}}, captured)
+    _mock_upstream_json(app, 200, {"code": 0, "data": {"inputs": []}}, captured)
 
     resp = await client.get("/api/v1/agentbots/agent-pass-001/inputs")
     assert resp.status_code == 200
@@ -330,24 +325,19 @@ async def test_agentbot_inputs_passthrough_no_token(client, app, monkeypatch):
 # ===========================================================================
 
 
-async def test_chatbot_completions_passthrough_preserves_authorization(client, app, monkeypatch):
+async def test_chatbot_completions_passthrough_preserves_authorization(client, app):
     """SSE /completions 透传:无 T_short 时保留原始 Authorization(含 RAGFlow beta Token)。"""
     captured_auth = []
 
-    class _MockAsyncClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            def handler(req: httpx.Request) -> httpx.Response:
-                captured_auth.append(req.headers.get("Authorization", ""))
-                return httpx.Response(
-                    200,
-                    content=b'data: {"answer":"ok"}\n\n',
-                    headers={"content-type": "text/event-stream"},
-                )
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured_auth.append(req.headers.get("Authorization", ""))
+        return httpx.Response(
+            200,
+            content=b'data: {"answer":"ok"}\n\n',
+            headers={"content-type": "text/event-stream"},
+        )
 
-            kwargs["transport"] = httpx.MockTransport(handler)
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr("portal.gateway.httpx.AsyncClient", _MockAsyncClient)
+    app.state.settings.upstream_transport = httpx.MockTransport(handler)
 
     # 模拟原生分享页用户:带 RAGFlow 自身 beta Token,无 portal 会话
     resp = await client.post(
@@ -363,25 +353,20 @@ async def test_chatbot_completions_passthrough_preserves_authorization(client, a
     )
 
 
-async def test_chatbot_completions_with_tshort_uses_beta_token(client, app, monkeypatch):
+async def test_chatbot_completions_with_tshort_uses_beta_token(client, app):
     """SSE /completions:有 T_short → 换 beta Token(透传分支不触发)。"""
     t_short, dialog_id = await _login_and_get_t_short(client)
     captured_auth = []
 
-    class _MockAsyncClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            def handler(req: httpx.Request) -> httpx.Response:
-                captured_auth.append(req.headers.get("Authorization", ""))
-                return httpx.Response(
-                    200,
-                    content=b'data: {"answer":"ok","session_id":"s1","id":"m1","final":true}\n\n',
-                    headers={"content-type": "text/event-stream"},
-                )
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured_auth.append(req.headers.get("Authorization", ""))
+        return httpx.Response(
+            200,
+            content=b'data: {"answer":"ok","session_id":"s1","id":"m1","final":true}\n\n',
+            headers={"content-type": "text/event-stream"},
+        )
 
-            kwargs["transport"] = httpx.MockTransport(handler)
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr("portal.gateway.httpx.AsyncClient", _MockAsyncClient)
+    app.state.settings.upstream_transport = httpx.MockTransport(handler)
 
     resp = await client.post(
         f"/api/v1/chatbots/{dialog_id}/completions",
@@ -406,18 +391,18 @@ async def test_chatbot_completions_with_tshort_uses_beta_token(client, app, monk
 # ===========================================================================
 
 
-async def test_chatbot_info_passthrough_preserves_upstream_error(client, app, monkeypatch):
+async def test_chatbot_info_passthrough_preserves_upstream_error(client, app):
     """透传时 RAGFlow 返回 401 → 网关原样回传 401(不吞错误)。"""
-    _mock_upstream_json(monkeypatch, 401, {"code": 401, "message": "Authentication error"})
+    _mock_upstream_json(app, 401, {"code": 401, "message": "Authentication error"})
 
     resp = await client.get("/api/v1/chatbots/some-dialog/info")
     assert resp.status_code == 401
 
 
-async def test_chatbot_info_with_tshort_preserves_upstream_404(client, app, monkeypatch):
+async def test_chatbot_info_with_tshort_preserves_upstream_404(client, app):
     """有 T_short 时 RAGFlow 返回 404 → 网关原样回传 404。"""
     t_short, dialog_id = await _login_and_get_t_short(client)
-    _mock_upstream_json(monkeypatch, 404, {"code": 404, "message": "Not found"})
+    _mock_upstream_json(app, 404, {"code": 404, "message": "Not found"})
 
     resp = await client.get(
         f"/api/v1/chatbots/{dialog_id}/info",

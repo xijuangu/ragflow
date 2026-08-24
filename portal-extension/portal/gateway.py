@@ -29,13 +29,22 @@ Slice 5 扩展(原型 H7/H8 验证结论 — 会话重命名/删除双删):
 Slice 16 扩展(widget + Agent 支持):
   - build_agent_iframe_url:构造 RAGFlow Agent iframe URL(/agent/share?...)。
   - build_widget_url / build_widget_snippet:widget 独立页面 URL 与可嵌入 iframe snippet。
-  - precreate_agent_session_via_ragflow / fetch_agent_session_history_via_ragflow /
-    rename_agent_session_via_ragflow / delete_agent_session_via_ragflow:
-    agent 类型走 RAGFlow agentbot 端点(/api/v1/agentbots/<id>/...),与 chat 的
-    chatbot 端点(/api/v1/chatbots/<id>/...)对应。
+  - 上游会话函数统一收 ragflow_type 参数(TD15):agent 类型走 RAGFlow agentbot/agents
+    端点(/api/v1/agentbots/<id>/...),与 chat 的 chatbot 端点(/api/v1/chatbots/<id>/...)
+    对应;Issue 97 删除 *_agent_*_via_ragflow 透传 wrapper(原为测试 monkeypatch 接缝)。
   - proxy_sse_to_ragflow 加 ragflow_type 参数:agent 类型上游走 agentbot 端点,
-    message_count 同步调 fetch_agent_session_history_via_ragflow。
+    message_count 同步调 fetch_session_history_via_ragflow(ragflow_type='agent')。
   - 校验链对 widget 与 agent 类型同样生效(不因 ragflow_type/embed_type 跳过)。
+
+Issue 97(测试 mock 接缝迁移):
+  - _build_upstream_client 收 settings,经 settings.upstream_transport 注入
+    httpx.MockTransport;测试在 transport 层 mock RAGFlow 响应,不再按名 patch
+    本模块命名空间(生产 upstream_transport 始终 None,行为零变化)。
+
+Issue 98(令牌与引用授权分离):
+  - TokenStore 回归只管 T_short 生命周期(issue/validate/touch/revoke);
+    引用资源授权(已验证引用文档集合 + pit_ 图片票据)拆到 ReferenceAccessStore,
+    通过 t_short 值关联(app.state.reference_access_store,组合持有 token_store)。
 """
 
 import json
@@ -70,6 +79,11 @@ class TokenRecord:
       - scope='standard':标准令牌,需 cookie + grant + session 归属校验;
       - scope='public':公开令牌,免 cookie/grant 校验,但每次校验 share_page.is_public=true
         (关闭 is_public 时,即便令牌未过期也立即 403)。
+
+    Issue 98:``authorized_document_ids`` 已迁至 ReferenceAccessStore(引用资源授权
+    与令牌生命周期分离,通过 t_short 值关联);``pending_greeting_session_ids``
+    评估后保留在此 — 它是 SSE greeting 解析出的「待绑定会话」上下文,与令牌同
+    生命周期(随 revoke/过期自然失效),既非引用授权也非独立业务状态,拆出无收益。
     """
 
     token: str
@@ -79,8 +93,6 @@ class TokenRecord:
     revoked: bool = False
     scope: str = "standard"  # Slice 15:'standard'(默认)或 'public'(公开分享页)
     pending_greeting_session_ids: set[str] = field(default_factory=set)
-    # Issue 82:仅允许读取已通过归属校验的历史会话所引用的文档资源。
-    authorized_document_ids: set[str] = field(default_factory=set)
     # Bug 2:签发时记录的 TTL,供 touch() 滑动过期时沿用(避免调用方每次都传 ttl_seconds)。
     ttl_seconds: int = 300
 
@@ -121,7 +133,6 @@ class TokenStore:
 
     def __init__(self):
         self._tokens: dict = {}
-        self._reference_image_tickets: dict[str, ReferenceImageTicket] = {}
 
     def issue(self, portal_user_id: str, share_page_id: str, ttl_seconds: int, scope: str = "standard") -> str:
         """签发短期 T_short:随机字符串,绑定用户与分享页,设过期时间。
@@ -186,12 +197,16 @@ class TokenStore:
         return self._tokens.get(token)
 
     def revoke(self, token: str) -> bool:
-        """撤销 T_short(撤销后同令牌请求 → 401)。"""
+        """撤销 T_short(撤销后同令牌请求 → 401)。
+
+        Issue 98:引用票据不再在此同步移除 — ReferenceAccessStore 校验票据时
+        实时复核 T_short 有效性(validate),撤销后票据即时语义失效,
+        残留项由 prune 惰性清理。
+        """
         record = self._tokens.get(token)
         if record is None:
             return False
         record.revoked = True
-        self._remove_reference_image_tickets_for_token(token)
         return True
 
     def revoke_tokens_for_user_share_page(self, portal_user_id: str, share_page_id: str) -> int:
@@ -205,26 +220,45 @@ class TokenStore:
         for record in self._tokens.values():
             if record.portal_user_id == portal_user_id and record.share_page_id == share_page_id and not record.revoked:
                 record.revoked = True
-                self._remove_reference_image_tickets_for_token(record.token)
                 count += 1
         return count
 
+
+class ReferenceAccessStore:
+    """引用资源授权表(Issue 98 从 TokenStore 拆出)。
+
+    管「已验证历史/SSE 引用的文档 ID 集合」与 ``pit_`` 图片票据的
+    签发/校验/prune;通过 t_short 值与 TokenStore 关联(组合持有,
+    令牌有效性经 token_store.validate 实时复核 — 撤销/过期后授权与票据
+    即时失效,与拆分前行为一致)。内存存储与 T_short 同生命周期:
+    进程重启全部失效。
+
+    职责边界:TokenStore 只管 T_short 生命周期(issue/validate/touch/revoke),
+    本类只管引用资源授权(authorize_documents/documents_are_authorized/
+    issue_reference_image_ticket/get_reference_image_ticket)。
+    """
+
+    def __init__(self, token_store: TokenStore):
+        self._token_store = token_store
+        self._authorized_documents: dict[str, set[str]] = {}
+        self._reference_image_tickets: dict[str, ReferenceImageTicket] = {}
+
     def authorize_documents(self, token: str, document_ids: set[str]) -> None:
         """把已验证历史响应中的文档 ID 绑定到对应短期令牌。"""
-        record = self.validate(token)
+        record = self._token_store.validate(token)
         if record is not None:
-            record.authorized_document_ids.update(document_ids)
+            self._authorized_documents.setdefault(token, set()).update(document_ids)
 
     def documents_are_authorized(self, token: str, document_ids: set[str]) -> bool:
         """请求的文档 ID 必须全部来自该令牌已验证过的历史引用。"""
-        record = self.validate(token)
-        return record is not None and document_ids.issubset(record.authorized_document_ids)
+        record = self._token_store.validate(token)
+        return record is not None and document_ids.issubset(self._authorized_documents.get(token, set()))
 
     def issue_reference_image_ticket(self, token: str, document_id: str, image_id: str) -> str:
         """为已授权文档对应的单个图片签发不超过 T_short 寿命的票据。"""
         self._prune_reference_image_tickets()
-        record = self.validate(token)
-        if record is None or document_id not in record.authorized_document_ids:
+        record = self._token_store.validate(token)
+        if record is None or document_id not in self._authorized_documents.get(token, set()):
             raise ValueError("document is not authorized")
         ticket = "pit_" + secrets.token_urlsafe(24)
         self._reference_image_tickets[ticket] = ReferenceImageTicket(
@@ -241,7 +275,7 @@ class TokenStore:
         record = self._reference_image_tickets.get(ticket)
         if record is None:
             return None
-        if time.time() > record.expires_at or self.validate(record.portal_token) is None:
+        if time.time() > record.expires_at or self._token_store.validate(record.portal_token) is None:
             self._reference_image_tickets.pop(ticket, None)
             return None
         return record
@@ -252,17 +286,7 @@ class TokenStore:
         stale = [
             ticket
             for ticket, record in self._reference_image_tickets.items()
-            if now > record.expires_at or self.validate(record.portal_token) is None
-        ]
-        for ticket in stale:
-            self._reference_image_tickets.pop(ticket, None)
-
-    def _remove_reference_image_tickets_for_token(self, token: str) -> None:
-        """基础令牌撤销时同步清除其派生图片票据。"""
-        stale = [
-            ticket
-            for ticket, record in self._reference_image_tickets.items()
-            if record.portal_token == token
+            if now > record.expires_at or self._token_store.validate(record.portal_token) is None
         ]
         for ticket in stale:
             self._reference_image_tickets.pop(ticket, None)
@@ -461,12 +485,19 @@ def _build_upstream_headers(beta_token: str, content_type: str | None = None) ->
     return headers
 
 
-def _build_upstream_client(*, timeout: float | None = 30.0) -> httpx.AsyncClient:
+def _build_upstream_client(settings, *, timeout: float | None = 30.0) -> httpx.AsyncClient:
     """构造 httpx.AsyncClient(trust_env=False,网关连内部 RAGFlow 不走系统代理环境变量)。
+
+    settings.upstream_transport 为 Issue 97 的测试注入点:生产始终 None(httpx 默认
+    真实网络);测试注入 httpx.MockTransport 在 transport 层 mock 上游响应。
 
     调用方需用 `async with` 管理生命周期。
     """
-    return httpx.AsyncClient(timeout=httpx.Timeout(timeout=timeout, connect=10.0), trust_env=False)
+    return httpx.AsyncClient(
+        timeout=httpx.Timeout(timeout=timeout, connect=10.0),
+        trust_env=False,
+        transport=settings.upstream_transport,
+    )
 
 
 def _ragflow_http_error(resp, action: str) -> HTTPException:
@@ -672,7 +703,7 @@ async def precreate_session_via_ragflow(settings, dialog_id: str, ragflow_type: 
     # 空 question 触发 RAGFlow 创建 session 返回 prologue(NOTES.md H4 验证)
     body = json.dumps({"question": "", "stream": True, "quote": True}).encode("utf-8")
     err_action = "预创建 agent session" if ragflow_type == "agent" else "预创建 session"
-    async with _build_upstream_client(timeout=30.0) as client:
+    async with _build_upstream_client(settings, timeout=30.0) as client:
         async with client.stream("POST", upstream_url, content=body, headers=upstream_headers) as resp:
             if resp.status_code != 200:
                 raise _ragflow_http_error(resp, f"RAGFlow {err_action} 失败")
@@ -697,15 +728,6 @@ async def precreate_session_via_ragflow(settings, dialog_id: str, ragflow_type: 
     raise HTTPException(status_code=502, detail=f"RAGFlow {err_action} 未返回 session_id")
 
 
-async def precreate_agent_session_via_ragflow(settings, agent_id: str) -> str:
-    """调 RAGFlow Agent 创建空 session(Slice 16 — agent 预创建)。
-
-    TD15:thin wrapper,委托给 precreate_session_via_ragflow(ragflow_type='agent')。
-    保留独立函数名供测试 monkeypatch(patch portal.routes.precreate_agent_session_via_ragflow)。
-    """
-    return await precreate_session_via_ragflow(settings, agent_id, ragflow_type="agent")
-
-
 async def fetch_session_history_via_ragflow(
     settings, dialog_id: str, session_id: str, ragflow_type: str = "chat"
 ) -> dict:
@@ -726,7 +748,7 @@ async def fetch_session_history_via_ragflow(
     upstream_url = f"{settings.ragflow_host.rstrip('/')}/api/v1/{bot_segment}/{dialog_id}/sessions/{session_id}"
     upstream_headers = _build_upstream_headers(settings.ragflow_beta_token)
     err_action = "取回 agent 会话" if ragflow_type == "agent" else "取回会话"
-    async with _build_upstream_client(timeout=30.0) as client:
+    async with _build_upstream_client(settings, timeout=30.0) as client:
         resp = await client.get(upstream_url, headers=upstream_headers)
         if resp.status_code != 200:
             raise _ragflow_http_error(resp, f"RAGFlow {err_action}失败")
@@ -734,15 +756,6 @@ async def fetch_session_history_via_ragflow(
         # RAGFlow get_result 包裹结构:{"code":0,"data":{...}}
         data = body.get("data", body) if isinstance(body, dict) else body
         return data
-
-
-async def fetch_agent_session_history_via_ragflow(settings, agent_id: str, session_id: str) -> dict:
-    """调 RAGFlow Agent GET 端点取回 agent 会话消息与引用(Slice 16 — agent 类型)。
-
-    TD15:thin wrapper,委托给 fetch_session_history_via_ragflow(ragflow_type='agent')。
-    保留独立函数名供测试 monkeypatch。
-    """
-    return await fetch_session_history_via_ragflow(settings, agent_id, session_id, ragflow_type="agent")
 
 
 async def rename_session_via_ragflow(
@@ -764,19 +777,10 @@ async def rename_session_via_ragflow(
     upstream_url = f"{settings.ragflow_host.rstrip('/')}/api/v1/{bot_segment}/{dialog_id}/sessions/{session_id}"
     upstream_headers = _build_upstream_headers(settings.ragflow_beta_token, content_type="application/json")
     err_action = "重命名 agent 会话" if ragflow_type == "agent" else "重命名会话"
-    async with _build_upstream_client(timeout=30.0) as client:
+    async with _build_upstream_client(settings, timeout=30.0) as client:
         resp = await client.patch(upstream_url, headers=upstream_headers, json={"name": name})
         if resp.status_code != 200:
             raise _ragflow_http_error(resp, f"RAGFlow {err_action}失败")
-
-
-async def rename_agent_session_via_ragflow(settings, agent_id: str, session_id: str, name: str) -> None:
-    """调 RAGFlow Agent PATCH 端点更新 agent 会话标题(Slice 16 — agent 类型重命名)。
-
-    TD15:thin wrapper,委托给 rename_session_via_ragflow(ragflow_type='agent')。
-    保留独立函数名供测试 monkeypatch。
-    """
-    return await rename_session_via_ragflow(settings, agent_id, session_id, name, ragflow_type="agent")
 
 
 async def delete_session_via_ragflow(settings, dialog_id: str, session_id: str, ragflow_type: str = "chat") -> None:
@@ -795,19 +799,10 @@ async def delete_session_via_ragflow(settings, dialog_id: str, session_id: str, 
     upstream_url = f"{settings.ragflow_host.rstrip('/')}/api/v1/{bot_segment}/{dialog_id}/sessions/{session_id}"
     upstream_headers = _build_upstream_headers(settings.ragflow_beta_token)
     err_action = "删除 agent 会话" if ragflow_type == "agent" else "删除会话"
-    async with _build_upstream_client(timeout=30.0) as client:
+    async with _build_upstream_client(settings, timeout=30.0) as client:
         resp = await client.delete(upstream_url, headers=upstream_headers)
         if resp.status_code != 200:
             raise _ragflow_http_error(resp, f"RAGFlow {err_action}失败")
-
-
-async def delete_agent_session_via_ragflow(settings, agent_id: str, session_id: str) -> None:
-    """调 RAGFlow Agent DELETE 端点删除 agent 会话(Slice 16 — agent 类型删除)。
-
-    TD15:thin wrapper,委托给 delete_session_via_ragflow(ragflow_type='agent')。
-    保留独立函数名供测试 monkeypatch(patch portal.routes 与 portal.gateway 两处)。
-    """
-    return await delete_session_via_ragflow(settings, agent_id, session_id, ragflow_type="agent")
 
 
 # ---------------------------------------------------------------------------
@@ -817,8 +812,7 @@ async def delete_agent_session_via_ragflow(settings, agent_id: str, session_id: 
 # 方法(Issue 94 上移,models.py 回归纯持久化,不再延迟 import gateway);
 # _dual_delete_session 原为 routes.py 私有函数(Issue 95 下沉,routes 恢复薄适配)。
 # 首参数均为 session_store/store;其余签名与原实现一致。
-# 测试 mock 接缝不变:内部调用按名解析本模块 globals
-# (patch ``portal.gateway.delete_session_via_ragflow`` 等仍生效)。
+# Issue 97:内部直接调统一函数带 ragflow_type 参数,不再按名分发。
 # ---------------------------------------------------------------------------
 
 
@@ -888,10 +882,9 @@ async def sync_message_count_from_history(
     错误处理(SSE 路径用 try/except + logger.warning;routes 路径用 _invoke_upstream)。
     """
     if history is None:
-        if ragflow_type == "agent":
-            history = await fetch_agent_session_history_via_ragflow(settings, dialog_id, session_id)
-        else:
-            history = await fetch_session_history_via_ragflow(settings, dialog_id, session_id)
+        history = await fetch_session_history_via_ragflow(
+            settings, dialog_id, session_id, ragflow_type=ragflow_type
+        )
     if isinstance(history, dict):
         messages = history.get("messages", [])
         # 仅当 count 变化时才写库(恢复原 resume_session 守卫,SSE/admin 路径同享优化)
@@ -917,17 +910,13 @@ async def _dual_delete_session(
 
     Slice 16:``ragflow_type`` 参数,agent 类型调 agentbot 端点,chat 类型调 chatbot 端点。
     Issue 95:从 routes.py 下沉至网关层(双删编排属权限业务,§4 硬约束:routes 只注册
-    路由 + 薄适配)。分发按名解析本模块 globals,测试 patch
-    ``portal.gateway.delete_session_via_ragflow`` / ``delete_agent_session_via_ragflow`` 仍生效。
+    路由 + 薄适配)。Issue 97:直接调统一函数带 ``ragflow_type=`` 参数,不再按名分发。
 
     返回 True 表示 RAGFlow 删除成功(门户侧已硬删除);
     返回 False 表示 RAGFlow 失败(门户侧已标记 deleted_at,记录保留待重试)。
     """
     try:
-        if ragflow_type == "agent":
-            await delete_agent_session_via_ragflow(settings, dialog_id, session_id)
-        else:
-            await delete_session_via_ragflow(settings, dialog_id, session_id)
+        await delete_session_via_ragflow(settings, dialog_id, session_id, ragflow_type=ragflow_type)
         store.delete(session_id)
         return True
     except HTTPException:
@@ -983,7 +972,6 @@ async def proxy_sse_to_ragflow(request: Request, dialog_id: str, ragflow_type: s
     本函数只保留 routing(透传/公开/标准)+ session 归属 + SSE 流编排。
     """
     settings = request.app.state.settings
-    token_store = request.app.state.token_store
     # 统一校验链:取令牌记录 → pt_ 前缀判定 → scope 分支校验(cookie/grant/有效性/is_public)
     # → share_page 解析 + 滑动续期(touch=True,仅 SSE 路径)
     resolved = await resolve_token_and_share_page(request, dialog_id, touch=True)
@@ -999,6 +987,8 @@ async def proxy_sse_to_ragflow(request: Request, dialog_id: str, ragflow_type: s
     request_question = _parse_question_from_body(body)
     # Issue 93:fail-closed — session_store 缺失即 AttributeError(不再静默跳过归属校验)
     session_store = request.app.state.session_store
+    # Issue 98:fail-closed — reference_access_store 同样直接属性访问
+    reference_access_store = request.app.state.reference_access_store
     # Slice 15:公开 T_short 走公开链后半段(session 归属 u_anonymous,公开仅 chat 类型)
     if record.scope == "public":
         if request_session_id:
@@ -1017,8 +1007,8 @@ async def proxy_sse_to_ragflow(request: Request, dialog_id: str, ragflow_type: s
             request_question,
             session_store,
             ragflow_type="chat",
-            authorize_reference_documents=partial(token_store.authorize_documents, record.token),
-            token_store=token_store,
+            authorize_reference_documents=partial(reference_access_store.authorize_documents, record.token),
+            reference_access_store=reference_access_store,
             t_short=record.token,
             # Issue 91:公开问答同样记账,subject 为匿名锚点(record.portal_user_id=u_anonymous)
             usage_context=UsageAccountingContext(
@@ -1053,8 +1043,8 @@ async def proxy_sse_to_ragflow(request: Request, dialog_id: str, ragflow_type: s
         portal_user_id=record.portal_user_id,
         share_page_id=record.share_page_id,
         org_id=share_page.org_id,
-        authorize_reference_documents=partial(token_store.authorize_documents, record.token),
-        token_store=token_store,
+        authorize_reference_documents=partial(reference_access_store.authorize_documents, record.token),
+        reference_access_store=reference_access_store,
         t_short=record.token,
         # Issue 91:标准链问答记账(subject 为当前登录用户)
         usage_context=UsageAccountingContext(
@@ -1085,7 +1075,7 @@ def _proxy_public_sse_stream(
     参数 ``fallback_session_id`` 供公开端点传入 URL 中的 session_id(body 无法解析时的回退)。
     """
     settings = request.app.state.settings
-    token_store = request.app.state.token_store
+    reference_access_store = request.app.state.reference_access_store
     # Issue 93:fail-closed — session_store 缺失即 AttributeError(不再静默跳过归属校验)
     session_store = request.app.state.session_store
     request_session_id = _parse_session_id_from_body(body) or fallback_session_id
@@ -1110,8 +1100,8 @@ def _proxy_public_sse_stream(
         request_question,
         session_store,
         ragflow_type="chat",
-        authorize_reference_documents=partial(token_store.authorize_documents, record.token),
-        token_store=token_store,
+        authorize_reference_documents=partial(reference_access_store.authorize_documents, record.token),
+        reference_access_store=reference_access_store,
         t_short=record.token,
         usage_context=UsageAccountingContext(
             request.app.state.usage_store,
@@ -1149,7 +1139,7 @@ def _build_sse_streaming_response(
     share_page_id: str = "",
     org_id: str = "default",
     authorize_reference_documents: Callable[[set[str]], None] | None = None,
-    token_store: TokenStore | None = None,
+    reference_access_store: "ReferenceAccessStore | None" = None,
     t_short: str = "",
     usage_context: "UsageAccountingContext | None" = None,
 ) -> StreamingResponse:
@@ -1187,9 +1177,9 @@ def _build_sse_streaming_response(
         final_usage: tuple[int, int] | None = None
         last_answer_text = ""
         event_parser = SSEJSONEventParser()
-        can_rewrite = token_store is not None and bool(t_short)
+        can_rewrite = reference_access_store is not None and bool(t_short)
         try:
-            async with _build_upstream_client(timeout=None) as client:
+            async with _build_upstream_client(settings, timeout=None) as client:
                 async with client.stream("POST", upstream_url, content=body, headers=upstream_headers) as upstream:
                     async for chunk in upstream.aiter_bytes():
                         events = event_parser.feed_with_raw(chunk)
@@ -1214,7 +1204,7 @@ def _build_sse_streaming_response(
                                     break
                         for payload, raw_bytes in events:
                             if payload is not None and can_rewrite:
-                                if _rewrite_reference_chunk_image_ids(payload, token_store, t_short):
+                                if _rewrite_reference_chunk_image_ids(payload, reference_access_store, t_short):
                                     yield _serialize_sse_event(payload)
                                     continue
                             yield raw_bytes
@@ -1522,7 +1512,7 @@ def _requested_document_ids(request: Request) -> set[str]:
     return document_ids
 
 
-def _rewrite_thumbnail_image_urls(response_body: bytes, token_store: TokenStore, t_short: str) -> bytes:
+def _rewrite_thumbnail_image_urls(response_body: bytes, reference_access_store: "ReferenceAccessStore", t_short: str) -> bytes:
     """把上游图片路径改写为带单资源短期票据的同源 Portal 路径。"""
     try:
         payload = json.loads(response_body)
@@ -1539,7 +1529,7 @@ def _rewrite_thumbnail_image_urls(response_body: bytes, token_store: TokenStore,
         if not image_id:
             continue
         try:
-            ticket = token_store.issue_reference_image_ticket(t_short, str(document_id), image_id)
+            ticket = reference_access_store.issue_reference_image_ticket(t_short, str(document_id), image_id)
         except ValueError:
             continue
         separator = "&" if "?" in image_url else "?"
@@ -1547,7 +1537,7 @@ def _rewrite_thumbnail_image_urls(response_body: bytes, token_store: TokenStore,
     return json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
 
-def _rewrite_reference_chunk_image_ids(payload: dict, token_store: TokenStore, t_short: str) -> bool:
+def _rewrite_reference_chunk_image_ids(payload: dict, reference_access_store: "ReferenceAccessStore", t_short: str) -> bool:
     """为 reference.chunks 中的 image_id 签发单资源票据并就地改写。
 
     与 ``_rewrite_thumbnail_image_urls`` 对称:前者处理 thumbnails 响应中的图片 URL,
@@ -1588,7 +1578,7 @@ def _rewrite_reference_chunk_image_ids(payload: dict, token_store: TokenStore, t
             if "portal_ticket=" in image_id:
                 continue
             try:
-                ticket = token_store.issue_reference_image_ticket(t_short, document_id, image_id)
+                ticket = reference_access_store.issue_reference_image_ticket(t_short, document_id, image_id)
             except ValueError:
                 continue
             separator = "&" if "?" in image_id else "?"
@@ -1607,13 +1597,13 @@ async def proxy_document_thumbnails_to_ragflow(request: Request):
     from fastapi.responses import Response
 
     settings = request.app.state.settings
-    token_store = request.app.state.token_store
+    reference_access_store = request.app.state.reference_access_store
     upstream_url = f"{settings.ragflow_host.rstrip('/')}/api/v1/thumbnails"
     # Issue 93:统一校验链(reference_access=True);原生 RAGFlow 鉴权 → None 透传
     resolved = await resolve_token_and_share_page(request, reference_access=True)
     if resolved is None:
         try:
-            async with _build_upstream_client() as client:
+            async with _build_upstream_client(settings) as client:
                 resp = await client.get(
                     upstream_url,
                     params=request.query_params.multi_items(),
@@ -1631,11 +1621,11 @@ async def proxy_document_thumbnails_to_ragflow(request: Request):
     document_ids = _requested_document_ids(request)
     if not document_ids:
         raise HTTPException(status_code=400, detail="缺少文档 ID")
-    if not token_store.documents_are_authorized(record.token, document_ids):
+    if not reference_access_store.documents_are_authorized(record.token, document_ids):
         raise HTTPException(status_code=403, detail="文档不在当前会话引用范围内")
 
     try:
-        async with _build_upstream_client() as client:
+        async with _build_upstream_client(settings) as client:
             resp = await client.get(
                 upstream_url,
                 params=request.query_params.multi_items(),
@@ -1643,7 +1633,7 @@ async def proxy_document_thumbnails_to_ragflow(request: Request):
             )
         body = resp.content
         if resp.status_code == 200:
-            body = _rewrite_thumbnail_image_urls(body, token_store, record.token)
+            body = _rewrite_thumbnail_image_urls(body, reference_access_store, record.token)
         return Response(
             content=body,
             status_code=resp.status_code,
@@ -1666,12 +1656,12 @@ async def proxy_document_preview_to_ragflow(request: Request, document_id: str):
         upstream_headers = _build_passthrough_headers(request)
     else:
         record, _share_page = resolved
-        if not request.app.state.token_store.documents_are_authorized(record.token, {document_id}):
+        if not request.app.state.reference_access_store.documents_are_authorized(record.token, {document_id}):
             raise HTTPException(status_code=403, detail="文档不在当前会话引用范围内")
         upstream_headers = _build_upstream_headers(settings.ragflow_beta_token)
 
     try:
-        async with _build_upstream_client() as client:
+        async with _build_upstream_client(settings) as client:
             resp = await client.get(upstream_url, headers=upstream_headers)
         response_headers = {}
         if content_disposition := resp.headers.get("content-disposition"):
@@ -1691,16 +1681,16 @@ async def proxy_document_image_to_ragflow(request: Request, image_id: str):
     from fastapi.responses import Response
 
     settings = request.app.state.settings
-    token_store = request.app.state.token_store
+    reference_access_store = request.app.state.reference_access_store
     upstream_url = f"{settings.ragflow_host.rstrip('/')}/api/v1/documents/images/{image_id}"
     ticket_value = request.query_params.get("portal_ticket", "")
-    ticket = token_store.get_reference_image_ticket(ticket_value) if ticket_value else None
+    ticket = reference_access_store.get_reference_image_ticket(ticket_value) if ticket_value else None
 
     if ticket is None:
         if ticket_value:
             raise HTTPException(status_code=401, detail="图片票据无效或已过期")
         try:
-            async with _build_upstream_client() as client:
+            async with _build_upstream_client(settings) as client:
                 resp = await client.get(upstream_url, headers=_build_passthrough_headers(request))
             return Response(
                 content=resp.content,
@@ -1717,11 +1707,11 @@ async def proxy_document_image_to_ragflow(request: Request, image_id: str):
     record, _share_page = await resolve_token_and_share_page(
         request, token=ticket.portal_token, reference_access=True
     )
-    if ticket.document_id not in record.authorized_document_ids:
+    if not reference_access_store.documents_are_authorized(record.token, {ticket.document_id}):
         raise HTTPException(status_code=403, detail="图片不在当前会话引用范围内")
 
     try:
-        async with _build_upstream_client() as client:
+        async with _build_upstream_client(settings) as client:
             resp = await client.get(upstream_url, headers=_build_upstream_headers(settings.ragflow_beta_token))
         return Response(
             content=resp.content,
@@ -1755,7 +1745,7 @@ def _build_sse_passthrough_response(
 
     async def stream_generator():
         try:
-            async with _build_upstream_client(timeout=None) as client:
+            async with _build_upstream_client(settings, timeout=None) as client:
                 async with client.stream("POST", upstream_url, content=body, headers=passthrough_headers) as upstream:
                     async for chunk in upstream.aiter_bytes():
                         yield chunk
@@ -1797,7 +1787,7 @@ async def proxy_bot_json_to_ragflow(
     if resolved is None:
         passthrough_headers = _build_passthrough_headers(request)
         try:
-            async with _build_upstream_client() as client:
+            async with _build_upstream_client(settings) as client:
                 resp = await client.get(upstream_url, headers=passthrough_headers)
             return Response(
                 content=resp.content,
@@ -1812,7 +1802,7 @@ async def proxy_bot_json_to_ragflow(
     # 校验通过 → 用 beta Token 调 RAGFlow
     upstream_headers = _build_upstream_headers(settings.ragflow_beta_token)
     try:
-        async with _build_upstream_client() as client:
+        async with _build_upstream_client(settings) as client:
             resp = await client.get(upstream_url, headers=upstream_headers)
         # Slice 42:RAGFlow /info 响应的 data.title 是 dialog.name(如内部知识库名 law-test-01),
         # iframe 内 EmbedContainer 头部会显示此值。用 portal 分享页名称替换,避免泄露内部
@@ -1849,7 +1839,7 @@ async def proxy_session_history_to_ragflow(
     from fastapi.responses import Response
 
     settings = request.app.state.settings
-    token_store = request.app.state.token_store
+    reference_access_store = request.app.state.reference_access_store
     # Slice 30:sessions 端点路径段用 _ragflow_sessions_segment(agent → 'agents',
     # 非 'agentbots'),与 fetch/rename/delete_session_via_ragflow 一致。
     bot_segment = _ragflow_sessions_segment(ragflow_type)
@@ -1860,7 +1850,7 @@ async def proxy_session_history_to_ragflow(
     resolved = await resolve_token_and_share_page(request, resource_id, reference_access=True)
     if resolved is None:
         try:
-            async with _build_upstream_client() as client:
+            async with _build_upstream_client(settings) as client:
                 resp = await client.get(upstream_url, headers=_build_passthrough_headers(request))
             return Response(
                 content=resp.content,
@@ -1882,15 +1872,15 @@ async def proxy_session_history_to_ragflow(
     )
 
     try:
-        async with _build_upstream_client() as client:
+        async with _build_upstream_client(settings) as client:
             resp = await client.get(upstream_url, headers=_build_upstream_headers(settings.ragflow_beta_token))
         body = resp.content
         if resp.status_code == 200:
-            token_store.authorize_documents(validated.token, _reference_document_ids(body))
+            reference_access_store.authorize_documents(validated.token, _reference_document_ids(body))
             # 为 reference.chunks 中的 image_id 签发票据并改写,使 <img> 凭 cookie+票据加载
             try:
                 payload = json.loads(body)
-                if isinstance(payload, dict) and _rewrite_reference_chunk_image_ids(payload, token_store, validated.token):
+                if isinstance(payload, dict) and _rewrite_reference_chunk_image_ids(payload, reference_access_store, validated.token):
                     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             except (json.JSONDecodeError, UnicodeDecodeError):
                 pass  # 非 JSON 或解析失败,原样回传

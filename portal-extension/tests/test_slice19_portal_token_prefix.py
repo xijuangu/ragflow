@@ -44,53 +44,43 @@ async def _login_and_get_t_short(client, share_page_id="sp_default"):
     return qs["auth"][0], qs["shared_id"][0]
 
 
-def _mock_upstream_json(monkeypatch, status_code=200, json_body=None, capture=None):
-    """辅助:mock 网关 httpx.AsyncClient,让非 SSE GET 请求返回 JSON 响应。"""
+def _mock_upstream_json(app, status_code=200, json_body=None, capture=None):
+    """辅助:配置上游 transport,让非 SSE GET 请求返回 JSON 响应(Issue 97)。"""
     import json
 
     body = json.dumps(json_body or {"code": 0, "data": {"title": "测试对话"}}).encode("utf-8")
 
-    class _MockAsyncClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            def handler(req: httpx.Request) -> httpx.Response:
-                if capture is not None:
-                    capture.append({
-                        "url": str(req.url),
-                        "authorization": req.headers.get("Authorization", ""),
-                    })
-                return httpx.Response(
-                    status_code,
-                    content=body,
-                    headers={"content-type": "application/json"},
-                )
+    def handler(req: httpx.Request) -> httpx.Response:
+        if capture is not None:
+            capture.append({
+                "url": str(req.url),
+                "authorization": req.headers.get("Authorization", ""),
+            })
+        return httpx.Response(
+            status_code,
+            content=body,
+            headers={"content-type": "application/json"},
+        )
 
-            kwargs["transport"] = httpx.MockTransport(handler)
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr("portal.gateway.httpx.AsyncClient", _MockAsyncClient)
+    app.state.settings.upstream_transport = httpx.MockTransport(handler)
 
 
-def _mock_upstream_sse(monkeypatch, capture=None):
-    """辅助:mock 网关 httpx.AsyncClient,让 SSE POST 请求返回流式响应。"""
+def _mock_upstream_sse(app, capture=None):
+    """辅助:配置上游 transport,让 SSE POST 请求返回流式响应(Issue 97)。"""
 
-    class _MockAsyncClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            def handler(req: httpx.Request) -> httpx.Response:
-                if capture is not None:
-                    capture.append({
-                        "url": str(req.url),
-                        "authorization": req.headers.get("Authorization", ""),
-                    })
-                return httpx.Response(
-                    200,
-                    content=b'data: {"answer":"ok"}\n\n',
-                    headers={"content-type": "text/event-stream"},
-                )
+    def handler(req: httpx.Request) -> httpx.Response:
+        if capture is not None:
+            capture.append({
+                "url": str(req.url),
+                "authorization": req.headers.get("Authorization", ""),
+            })
+        return httpx.Response(
+            200,
+            content=b'data: {"answer":"ok"}\n\n',
+            headers={"content-type": "text/event-stream"},
+        )
 
-            kwargs["transport"] = httpx.MockTransport(handler)
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr("portal.gateway.httpx.AsyncClient", _MockAsyncClient)
+    app.state.settings.upstream_transport = httpx.MockTransport(handler)
 
 
 # ===========================================================================
@@ -111,14 +101,14 @@ async def test_issued_t_short_has_pt_prefix(client):
 # ===========================================================================
 
 
-async def test_sse_pt_prefix_not_in_store_returns_401(client, app, monkeypatch):
+async def test_sse_pt_prefix_not_in_store_returns_401(client, app):
     """SSE /completions:`pt_` 前缀但不在 TokenStore → 401(过期/重启后残留的旧 T_short)。
 
     场景:portal 重启后 TokenStore 清空,iframe URL 里残留的旧 T_short(带 pt_ 前缀)
     调 /completions。网关识别为 portal 自有令牌但已失效 → 401(触发 iframe 重新申请 T_short),
     而非透传给 RAGFlow(透传会让 RAGFlow 返回 109,前端 x.find 崩溃)。
     """
-    _mock_upstream_sse(monkeypatch)  # 若误透传,mock 会返回 200(测试断言 401 会失败)
+    _mock_upstream_sse(app)  # 若误透传,mock 会返回 200(测试断言 401 会失败)
 
     resp = await client.post(
         "/api/v1/chatbots/some-dialog-id/completions",
@@ -131,14 +121,14 @@ async def test_sse_pt_prefix_not_in_store_returns_401(client, app, monkeypatch):
     )
 
 
-async def test_sse_no_prefix_token_passthrough(client, app, monkeypatch):
+async def test_sse_no_prefix_token_passthrough(client, app):
     """SSE /completions:无 `pt_` 前缀(原生 beta Token)→ 透传 RAGFlow,保留原始 Authorization。
 
     场景:原生 RAGFlow 分享页用户带的 beta Token(非 portal 签发,无 pt_ 前缀)
     调 /completions。网关识别为非 portal 令牌 → 透传,由 RAGFlow 自身 auth 处理。
     """
     captured = []
-    _mock_upstream_sse(monkeypatch, captured)
+    _mock_upstream_sse(app, captured)
 
     resp = await client.post(
         "/api/v1/chatbots/some-dialog-id/completions",
@@ -158,14 +148,14 @@ async def test_sse_no_prefix_token_passthrough(client, app, monkeypatch):
 # ===========================================================================
 
 
-async def test_json_info_pt_prefix_not_in_store_returns_401(client, app, monkeypatch):
+async def test_json_info_pt_prefix_not_in_store_returns_401(client, app):
     """JSON /info:`pt_` 前缀但不在 TokenStore → 401(非透传)。
 
     场景:iframe 挂载调 /info,带残留的旧 T_short(pt_ 前缀但 portal 已重启)。
     网关返回 401,iframe 前端据此重新申请 T_short,而非拿到 RAGFlow 的 109 错误体
     导致下游 doc_aggs.find 崩溃。
     """
-    _mock_upstream_json(monkeypatch, 200)  # 若误透传,mock 返回 200,断言 401 失败
+    _mock_upstream_json(app, 200)  # 若误透传,mock 返回 200,断言 401 失败
 
     resp = await client.get(
         "/api/v1/chatbots/some-dialog-id/info",
@@ -176,11 +166,11 @@ async def test_json_info_pt_prefix_not_in_store_returns_401(client, app, monkeyp
     )
 
 
-async def test_json_info_no_prefix_token_passthrough(client, app, monkeypatch):
+async def test_json_info_no_prefix_token_passthrough(client, app):
     """JSON /info:无 `pt_` 前缀 → 透传 RAGFlow,保留原始 Authorization。"""
     captured = []
     _mock_upstream_json(
-        monkeypatch,
+        app,
         200,
         {"code": 0, "data": {"title": "原生分享页"}},
         captured,
@@ -202,7 +192,7 @@ async def test_json_info_no_prefix_token_passthrough(client, app, monkeypatch):
 # ===========================================================================
 
 
-async def test_pt_prefix_valid_t_short_swaps_beta_token(client, app, monkeypatch):
+async def test_pt_prefix_valid_t_short_swaps_beta_token(client, app):
     """`pt_` 前缀且在 TokenStore 有效 → 网关换 beta Token 调 RAGFlow(非透传)。
 
     场景:正常 portal iframe 用户,带 fresh T_short(有 pt_ 前缀,在 TokenStore)。
@@ -211,7 +201,7 @@ async def test_pt_prefix_valid_t_short_swaps_beta_token(client, app, monkeypatch
     t_short, dialog_id = await _login_and_get_t_short(client)
     captured = []
     _mock_upstream_json(
-        monkeypatch,
+        app,
         200,
         {"code": 0, "data": {"title": "portal iframe 对话"}},
         captured,
@@ -234,10 +224,10 @@ async def test_pt_prefix_valid_t_short_swaps_beta_token(client, app, monkeypatch
 # ===========================================================================
 
 
-async def test_no_auth_header_still_passthrough(client, app, monkeypatch):
+async def test_no_auth_header_still_passthrough(client, app):
     """无 Authorization header → 透传 RAGFlow(原生分享页未注入 auth 的场景)。"""
     captured = []
-    _mock_upstream_json(monkeypatch, 200, {"code": 0, "data": {}}, captured)
+    _mock_upstream_json(app, 200, {"code": 0, "data": {}}, captured)
 
     resp = await client.get("/api/v1/chatbots/some-dialog-id/info")
     assert resp.status_code == 200
@@ -250,7 +240,7 @@ async def test_no_auth_header_still_passthrough(client, app, monkeypatch):
 # ===========================================================================
 
 
-async def test_sse_pt_prefix_valid_t_short_swaps_beta_token(client, app, monkeypatch):
+async def test_sse_pt_prefix_valid_t_short_swaps_beta_token(client, app):
     """SSE /completions:`pt_` 前缀且在 TokenStore 有效 → 换 beta Token(非透传)。
 
     补 SSE 路径的 pt_ + 有效 → 换 beta Token 覆盖(JSON 路径由
@@ -258,7 +248,7 @@ async def test_sse_pt_prefix_valid_t_short_swaps_beta_token(client, app, monkeyp
     """
     t_short, dialog_id = await _login_and_get_t_short(client)
     captured = []
-    _mock_upstream_sse(monkeypatch, captured)
+    _mock_upstream_sse(app, captured)
 
     resp = await client.post(
         f"/api/v1/chatbots/{dialog_id}/completions",
@@ -279,7 +269,7 @@ async def test_sse_pt_prefix_valid_t_short_swaps_beta_token(client, app, monkeyp
 # ===========================================================================
 
 
-async def test_json_info_response_body_passthrough_byte_for_byte(client, app, monkeypatch):
+async def test_json_info_response_body_passthrough_byte_for_byte(client, app):
     """JSON /info 响应体回传,Slice 42 起 data.title 用 share_page.name 替换;其余字段(doc_aggs 等)保留。
 
     回归锚点:确保 portal 代理除 title 替换外不改写 RAGFlow 响应体(无额外包装、无字段丢失)。
@@ -290,19 +280,14 @@ async def test_json_info_response_body_passthrough_byte_for_byte(client, app, mo
     upstream_body = b'{"code":0,"data":{"title":"test","doc_aggs":[{"doc_id":"d1","doc_name":"doc.pdf","count":3}]}}'
     import json
 
-    class _MockAsyncClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            def handler(req: httpx.Request) -> httpx.Response:
-                return httpx.Response(
-                    200,
-                    content=upstream_body,
-                    headers={"content-type": "application/json"},
-                )
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=upstream_body,
+            headers={"content-type": "application/json"},
+        )
 
-            kwargs["transport"] = httpx.MockTransport(handler)
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr("portal.gateway.httpx.AsyncClient", _MockAsyncClient)
+    app.state.settings.upstream_transport = httpx.MockTransport(handler)
 
     resp = await client.get(
         f"/api/v1/chatbots/{dialog_id}/info",

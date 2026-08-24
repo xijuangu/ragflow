@@ -63,7 +63,7 @@ portal-extension/
 ├── portal/                   # 后端(FastAPI)
 │   ├── main.py               # app = create_app(),中间件装配
 │   ├── routes.py             # 路由(用户/组/分享页/会话/管理/公开);薄适配 — 归属校验收敛在 _get_owned_session_or_404,双删编排 _dual_delete_session 在 gateway.py(Issue 95)
-│   ├── gateway.py            # 网关:SSE 代理/TokenStore(含 touch 滑动过期)/SessionStore/上游 RAGFlow 调用/reference.chunks image_id 票据改写;令牌/分享页校验链收敛在 resolve_token_and_share_page(Issue 93,全仓唯一实现)
+│   ├── gateway.py            # 网关:SSE 代理/TokenStore(T_short 生命周期)/ReferenceAccessStore(引用文档授权+pit_ 票据,Issue 98)/SessionStore/上游 RAGFlow 调用/reference.chunks image_id 票据改写;令牌/分享页校验链收敛在 resolve_token_and_share_page(Issue 93,全仓唯一实现)
 │   ├── models.py             # ORM 模型(User/Group/SharePage/Grant/SessionOwner/...);纯持久化 — 含 RAGFlow 调用的编排方法(cascade_delete_for_user/sync_message_count_from_history)已上移 gateway.py(Issue 94),models 不 import gateway
 │   ├── auth.py               # 鉴权依赖(get_current_user/require_org_admin)
 │   ├── password.py           # 密码哈希(argon2)
@@ -88,8 +88,8 @@ portal-extension/
 │   ├── tests/                # Vitest(89 tests,2026-07-13)
 │   ├── vite.config.ts        # base='/portal/'
 │   └── vitest.config.ts
-├── tests/                    # 后端 pytest(451 passed + 5 skipped,2026-07-22)
-│   ├── conftest.py
+├── tests/                    # 后端 pytest(474 passed + 5 skipped,2026-08-24)
+│   ├── conftest.py           # FakeRagflow transport 层假实现(Issue 97)+ 统一 mock fixture
 │   └── test_slice*.py        # 按 slice 组织的 E2E + 单测
 └── docs/
     ├── README.md             # 文档目录
@@ -127,6 +127,7 @@ portal-extension/
 - Portal 嵌入主题使用 RAGFlow 独立 localStorage key `ragflow-portal-embed-ui-theme`;无 `default_theme` 的独立 RAGFlow 页面继续使用 `ragflow-ui-theme`
 - 部署 rsync 必须排除 `--exclude='*.db'` 与 `--exclude='.env'`(数据文件与配置不得被 `--delete` 清掉)
 - CSS flex column 容器内的滚动子元素需显式 `flex-shrink: 0`,否则会话增多时被压缩而非触发滚动条(Slice 31 修复)
+- **测试对 RAGFlow/IdP 上游的 mock 一律在 httpx transport 层**(Issue 97):`Settings.upstream_transport` 是唯一注入点(生产始终 None),conftest `FakeRagflow` 装到 `app.state.settings.upstream_transport`;不得按名 patch 模块命名空间或 patch 全局 `httpx.AsyncClient`(穿模块边界);自建 app 的测试必须把 fake 装到该 app(`get_fake_ragflow(app)`),fixture 工厂只对 conftest 的 app 生效。保留的非 HTTP patch 例外:`secrets.token_urlsafe`(确定性随机)、oidc 路由层 seam(`get_authorization_url`/`exchange_code_for_claims`)、`_build_passthrough_headers`(纯函数)、`time.time`(过期语义控制)
 
 ## 6. 关键技术决策
 
@@ -157,7 +158,7 @@ portal 网关 `_ragflow_bot_segment` 用于 completions(agent → "agentbots"),s
 
 Issue 82/84 的引用资源链：成功恢复且通过归属校验的 history 响应，以及新回答中已完整解析的 SSE 引用事件，都会把引用 `doc_id` 绑定到当前 `pt_`；SSE 授权发生在对应事件转发给浏览器之前，解析不依赖网络 chunk 边界。`/api/v1/thumbnails` 只能查询 history/SSE 形成的集合。非 base64 缩略图路径会附加绑定 token/doc/image 的 `pit_` 票据，`<img>` 请求凭同源 Portal cookie + 票据取图，不需要 RAGFlow 登录态。无 Portal token/票据的原生 RAGFlow 请求保持透传。
 
-Issue 93 起,所有「取令牌记录 → `pt_` 前缀判定 → cookie/grant 或 is_public 校验 → 令牌有效性 → share_page 解析」链路收敛为 gateway.py 的 `resolve_token_and_share_page(request, resource_id, *, token, touch, reference_access)` 单一入口(SSE/JSON/history/thumbnail/preview/image 共用;公开/私有差异由 `record.scope` 决定,reference 端点差异由 `reference_access=True` 表达;图片票据场景用 `token=` 显式传令牌)。「先查 grant 再 validate(撤权返 403 而非 401)」的顺序不变量只存在于该函数。网关对 `app.state` 关键服务(session_store/rate_limiter/audit_store)一律直接属性访问(fail-closed),缺失即 AttributeError,不再 `getattr(..., None)` 静默跳过校验。
+Issue 93 起,所有「取令牌记录 → `pt_` 前缀判定 → cookie/grant 或 is_public 校验 → 令牌有效性 → share_page 解析」链路收敛为 gateway.py 的 `resolve_token_and_share_page(request, resource_id, *, token, touch, reference_access)` 单一入口(SSE/JSON/history/thumbnail/preview/image 共用;公开/私有差异由 `record.scope` 决定,reference 端点差异由 `reference_access=True` 表达;图片票据场景用 `token=` 显式传令牌)。「先查 grant 再 validate(撤权返 403 而非 401)」的顺序不变量只存在于该函数。网关对 `app.state` 关键服务(session_store/rate_limiter/audit_store/reference_access_store)一律直接属性访问(fail-closed),缺失即 AttributeError,不再 `getattr(..., None)` 静默跳过校验。Issue 98 起「引用资源授权」(已验证引用文档集合 + `pit_` 图片票据)从 TokenStore 拆到 `ReferenceAccessStore`(app.state.reference_access_store,组合持有 token_store,令牌有效性实时复核,撤销/过期即失效);TokenStore 回归纯 T_short 生命周期,`pending_greeting_session_ids` 留在 TokenRecord(与令牌同生命周期的会话绑定上下文)。
 
 ### 6.4.1 引用 chunks 的 image_id 票据改写(Bug 1 修复,2026-07-22)
 
@@ -477,7 +478,7 @@ ssh 172.16.10.180 'tail -5 ~/portal-extension/portal.log | grep -i preview || ec
 
 ## 10. 测试策略
 
-- **后端**:pytest,按 slice/issue 组织(`tests/test_slice*.py`、`tests/test_issue*.py`),基线 451 passed + 5 skipped(2026-07-22)
+- **后端**:pytest,按 slice/issue 组织(`tests/test_slice*.py`、`tests/test_issue*.py`),基线 474 passed + 5 skipped(2026-08-24)
 - **前端**:Vitest,按页面/组件组织(`frontend/tests/*.test.tsx`),基线 89 passed(2026-07-13)
 - **RAGFlow web**:Jest + esbuild transformer,基线 27 passed(2026-07-14);生产构建使用 `npm run build`
 - **E2E**:Playwright + 浏览器手动验收结合。`test/playwright/portal_extension/` 覆盖 portal 实际使用主路径、6 个管理后台 tab、Slice 44 缓存回归、Issue 82 全新浏览器恢复“劳动法”含引用历史会话、Issue 83 新/历史会话浅色及引用预览、临时用户 CRUD、用户组成员和分享页表单;`PORTAL_E2E_RUN_CHAT=1` 时额外发送真实 RAGFlow 问题并等待回复完成;`PORTAL_E2E_RUN_REFERENCE_CHAT=1` 时验证 Issue 84“劳动法”新回答的缩略图与交互引用;acceptance criteria 记录在 `docs/archive/ISSUES.md`
@@ -510,7 +511,7 @@ uv run pytest -q test/playwright/portal_extension -s --junitxml=/tmp/playwright-
 cd ragflow/portal-extension
 uv run pytest -q
 ```
-- 基线:451 passed + 5 skipped(2026-07-22)
+- 基线:474 passed + 5 skipped(2026-08-24)
 - 前置:无(测试用临时 SQLite,不连真实 MySQL/RAGFlow)
 - 失败处理:看 `tests/test_slice*.py` 对应 slice 的断言
 

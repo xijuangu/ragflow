@@ -31,6 +31,10 @@
 
 import os
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import httpx
 
 
 @dataclass
@@ -73,6 +77,10 @@ class Settings:
     # 生产建议配置为具体域名列表,如 https://example.com https://app.example.com)。
     # 仅对 /widget/* 路径生效,其他路径保持 X-Frame-Options: SAMEORIGIN(D10)。
     widget_frame_ancestors: str = "*"
+    # Issue 97:网关调 RAGFlow 的 httpx transport 注入点。
+    # 生产始终为 None(httpx 默认真实网络);测试注入 httpx.MockTransport,
+    # 在 transport 层 mock 上游响应,不再按名 patch 模块命名空间。
+    upstream_transport: "httpx.AsyncBaseTransport | None" = None
 
 
 def _env_bool(name: str, default: bool) -> bool:

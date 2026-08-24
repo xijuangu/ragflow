@@ -27,6 +27,7 @@ from portal.config import load_settings
 from portal.db import create_session_maker, init_db
 from portal.main import create_app
 from portal.models import SharePage, build_seed_data
+from tests.conftest import get_fake_ragflow
 
 # ---------------------------------------------------------------------------
 # 辅助函数
@@ -362,19 +363,23 @@ async def limited_client(limited_app):
         yield c
 
 
-async def test_public_rate_limit_returns_429(limited_client, mock_precreate, mock_ragflow_sse):
+async def test_public_rate_limit_returns_429(limited_client, limited_app):
     """验收点 3:公开 SSE 按 IP 限流,超限返回 429。"""
     await _login_admin(limited_client)
     await _mark_public(limited_client, "sp_default", is_public=True)
     limited_client.cookies.clear()
 
-    mock_precreate("fake-session")
+    # fake 必须装到 limited_app(而非 conftest 的 app)— transport 层 mock 绑定具体 app
+    fake = get_fake_ragflow(limited_app)
+    fake.precreate_session_id = "fake-session"
     await limited_client.post("/public/sp_default/sessions")
 
     resp = await limited_client.get("/public/sp_default/embed-url")
     t_short = _extract_params(resp.json()["iframe_url"])["auth"][0]
 
-    mock_ragflow_sse(session_id="fake-session", message_id="msg-1")
+    fake.sse_body = (
+        'data: {"answer":"公开回答","session_id":"fake-session","id":"msg-1","final":true}\n\n'
+    ).encode("utf-8")
 
     # 3 次请求(限流内)
     for i in range(3):
@@ -394,20 +399,24 @@ async def test_public_rate_limit_returns_429(limited_client, mock_precreate, moc
     assert resp.status_code == 429
 
 
-async def test_login_user_not_rate_limited(limited_client, mock_precreate, mock_ragflow_sse):
+async def test_login_user_not_rate_limited(limited_client, limited_app):
     """验收点 3:登录用户不限流(限流只对公开端点生效)。"""
     await _login_admin(limited_client)
     await _mark_public(limited_client, "sp_default", is_public=True)
     # 不 clear cookies,保持登录状态
 
-    mock_precreate("fake-session")
+    # fake 必须装到 limited_app(而非 conftest 的 app)— transport 层 mock 绑定具体 app
+    fake = get_fake_ragflow(limited_app)
+    fake.precreate_session_id = "fake-session"
     await limited_client.post("/share-pages/sp_default/sessions")
 
     resp = await limited_client.get("/share-pages/sp_default/embed-url")
     t_short = _extract_params(resp.json()["iframe_url"])["auth"][0]
     dialog_id = _extract_params(resp.json()["iframe_url"])["shared_id"][0]
 
-    mock_ragflow_sse(session_id="fake-session", message_id="msg-1")
+    fake.sse_body = (
+        'data: {"answer":"登录回答","session_id":"fake-session","id":"msg-1","final":true}\n\n'
+    ).encode("utf-8")
 
     # 5 次请求(超过公开限流 3,但登录用户不限流)
     for i in range(5):

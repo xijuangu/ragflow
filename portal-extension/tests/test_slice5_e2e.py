@@ -11,12 +11,13 @@
 """
 
 import json
-from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlparse
 
 import httpx
 import pytest
 from fastapi import HTTPException
+
+from tests.conftest import get_fake_ragflow
 
 
 def _extract_iframe_params(url: str) -> dict:
@@ -30,18 +31,15 @@ async def _login(client, username="admin", password="testpass123"):
     assert resp.status_code == 200, f"登录失败: {resp.text}"
 
 
-def _mock_precreate(monkeypatch, session_id: str):
-    """辅助:mock 网关的 precreate_session_via_ragflow 返回给定 session_id。"""
-    monkeypatch.setattr(
-        "portal.routes.precreate_session_via_ragflow",
-        AsyncMock(return_value=session_id),
-    )
+def _mock_precreate(app, session_id: str):
+    """辅助:配置 FakeRagflow 预创建路由返回给定 session_id(Issue 97:transport 层 mock)。"""
+    get_fake_ragflow(app).precreate_session_id = session_id
 
 
-async def _precreate_session(client, monkeypatch, session_id: str):
+async def _precreate_session(client, app, session_id: str):
     """辅助:登录 + 预创建 session,返回响应体。"""
     await _login(client)
-    _mock_precreate(monkeypatch, session_id)
+    _mock_precreate(app, session_id)
     resp = await client.post("/share-pages/sp_default/sessions")
     assert resp.status_code == 200, f"预创建失败: {resp.text}"
     return resp.json()
@@ -71,11 +69,9 @@ async def _create_user_and_grant(client, username="alice"):
 async def test_rename_own_session_updates_title_and_calls_ragflow(client, app, monkeypatch):
     """用户重命名自己的会话:chat_session_owner.title 更新;RAGFlow PATCH 被调用。"""
     fake_session_id = "slice5-rename-001"
-    await _precreate_session(client, monkeypatch, fake_session_id)
+    await _precreate_session(client, app, fake_session_id)
 
-    # mock RAGFlow PATCH 成功
-    mock_rename = AsyncMock(return_value=None)
-    monkeypatch.setattr("portal.routes.rename_session_via_ragflow", mock_rename)
+    # RAGFlow PATCH 默认成功(FakeRagflow rename_status=200)
 
     resp = await client.patch(
         f"/share-pages/sp_default/sessions/{fake_session_id}",
@@ -88,11 +84,10 @@ async def test_rename_own_session_updates_title_and_calls_ragflow(client, app, m
     assert owner is not None
     assert owner.title == "我的新标题"
 
-    # RAGFlow PATCH 被调用
-    mock_rename.assert_awaited_once()
-    call_args = mock_rename.call_args
-    all_args = list(call_args.args) + list(call_args.kwargs.values())
-    assert fake_session_id in all_args, "rename_session_via_ragflow 应传入 session_id"
+    # RAGFlow PATCH 被调用(transport 层记录)
+    patch_reqs = [r for r in get_fake_ragflow(app).requests if r.method == "PATCH"]
+    assert len(patch_reqs) == 1, "rename_session_via_ragflow 应被调用一次"
+    assert fake_session_id in str(patch_reqs[0].url), "rename 应传入 session_id"
 
 
 async def test_rename_session_ragflow_failure_returns_502_and_keeps_title(client, app, monkeypatch):
@@ -103,16 +98,13 @@ async def test_rename_session_ragflow_failure_returns_502_and_keeps_title(client
     改为同步策略:RAGFlow 成功才更新门户 title;失败则 502,两侧都不变。
     """
     fake_session_id = "slice5-rename-001b"
-    await _precreate_session(client, monkeypatch, fake_session_id)
+    await _precreate_session(client, app, fake_session_id)
 
     # 记录原标题,验证失败后不变
     original_title = app.state.session_store.get(fake_session_id).title
 
-    # mock RAGFlow PATCH 失败(抛 502)
-    monkeypatch.setattr(
-        "portal.routes.rename_session_via_ragflow",
-        AsyncMock(side_effect=HTTPException(status_code=502, detail="上游失败")),
-    )
+    # mock RAGFlow PATCH 失败(上游 500,网关包装为 502)
+    get_fake_ragflow(app).rename_status = 500
 
     resp = await client.patch(
         f"/share-pages/sp_default/sessions/{fake_session_id}",
@@ -136,7 +128,7 @@ async def test_rename_other_users_session_returns_403(client, app, monkeypatch):
     """用户重命名他人会话 → 403(归属校验失败)。"""
     fake_session_id = "slice5-rename-002"
     # admin 预创建 session(归属 admin)
-    await _precreate_session(client, monkeypatch, fake_session_id)
+    await _precreate_session(client, app, fake_session_id)
 
     # user2 登录并尝试重命名 admin 的 session
     transport = httpx.ASGITransport(app=app)
@@ -158,13 +150,9 @@ async def test_rename_other_users_session_returns_403(client, app, monkeypatch):
 async def test_delete_own_session_dual_delete_success(client, app, monkeypatch):
     """用户删除自己的会话:chat_session_owner 删除;RAGFlow DELETE 被调用。"""
     fake_session_id = "slice5-delete-003"
-    await _precreate_session(client, monkeypatch, fake_session_id)
+    await _precreate_session(client, app, fake_session_id)
 
-    # mock RAGFlow DELETE 成功
-    # Issue 95:双删编排(_dual_delete_session)已下沉 gateway.py,需 patch gateway 命名空间
-    mock_delete = AsyncMock(return_value=None)
-    monkeypatch.setattr("portal.gateway.delete_session_via_ragflow", mock_delete)
-
+    # RAGFlow DELETE 默认成功(FakeRagflow delete_status=200)
     resp = await client.delete(f"/share-pages/sp_default/sessions/{fake_session_id}")
     assert resp.status_code == 200, f"删除失败: {resp.text}"
 
@@ -172,8 +160,10 @@ async def test_delete_own_session_dual_delete_success(client, app, monkeypatch):
     owner = app.state.session_store.get(fake_session_id)
     assert owner is None, "chat_session_owner 应被删除"
 
-    # RAGFlow DELETE 被调用
-    mock_delete.assert_awaited_once()
+    # RAGFlow DELETE 被调用(transport 层记录)
+    delete_reqs = [r for r in get_fake_ragflow(app).requests if r.method == "DELETE"]
+    assert len(delete_reqs) == 1, "delete_session_via_ragflow 应被调用一次"
+    assert fake_session_id in str(delete_reqs[0].url)
 
 
 # ---------------------------------------------------------------------------
@@ -184,14 +174,10 @@ async def test_delete_own_session_dual_delete_success(client, app, monkeypatch):
 async def test_delete_own_session_ragflow_failure_marks_deleted_at(client, app, monkeypatch):
     """双删 RAGFlow 失败:chat_session_owner.deleted_at 标记;记录仍在;返回 200(不暴露失败)。"""
     fake_session_id = "slice5-delete-004"
-    await _precreate_session(client, monkeypatch, fake_session_id)
+    await _precreate_session(client, app, fake_session_id)
 
-    # mock RAGFlow DELETE 失败
-    # Issue 95:双删编排(_dual_delete_session)已下沉 gateway.py,需 patch gateway 命名空间
-    monkeypatch.setattr(
-        "portal.gateway.delete_session_via_ragflow",
-        AsyncMock(side_effect=HTTPException(status_code=502, detail="上游失败")),
-    )
+    # mock RAGFlow DELETE 失败(上游 500,网关包装为 502)
+    get_fake_ragflow(app).delete_status = 500
 
     resp = await client.delete(f"/share-pages/sp_default/sessions/{fake_session_id}")
     assert resp.status_code == 200, f"RAGFlow 失败应返回 200 不暴露错误: {resp.text}"
@@ -205,7 +191,7 @@ async def test_delete_own_session_ragflow_failure_marks_deleted_at(client, app, 
 async def test_deleted_session_not_in_user_list(client, app, monkeypatch):
     """deleted_at 标记的会话不在用户列表显示(但记录保留供重试)。"""
     fake_session_id = "slice5-delete-004b"
-    await _precreate_session(client, monkeypatch, fake_session_id)
+    await _precreate_session(client, app, fake_session_id)
 
     # 标记 deleted_at
     app.state.session_store.mark_deleted(fake_session_id)
@@ -229,13 +215,9 @@ async def test_admin_delete_any_session(client, app, monkeypatch):
     """管理员删除任意用户的会话(双删,不校验归属)。"""
     fake_session_id = "slice5-admin-delete-005"
     # admin 预创建 session(归属 admin)
-    await _precreate_session(client, monkeypatch, fake_session_id)
+    await _precreate_session(client, app, fake_session_id)
 
-    # mock RAGFlow DELETE 成功
-    # Issue 95:双删编排(_dual_delete_session)已下沉 gateway.py,需 patch gateway 命名空间
-    mock_delete = AsyncMock(return_value=None)
-    monkeypatch.setattr("portal.gateway.delete_session_via_ragflow", mock_delete)
-
+    # RAGFlow DELETE 默认成功(FakeRagflow delete_status=200)
     # admin 删除该 session(管理员专用端点,不校验归属)
     resp = await client.delete(f"/admin/share-pages/sp_default/sessions/{fake_session_id}")
     assert resp.status_code == 200, f"管理员删除失败: {resp.text}"
@@ -248,7 +230,7 @@ async def test_admin_delete_any_session(client, app, monkeypatch):
 async def test_non_admin_cannot_delete_any_session(client, app, monkeypatch):
     """普通用户调管理员删除会话端点 → 403。"""
     fake_session_id = "slice5-acl-005b"
-    await _precreate_session(client, monkeypatch, fake_session_id)
+    await _precreate_session(client, app, fake_session_id)
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client_b:
@@ -267,7 +249,7 @@ async def test_admin_delete_session_rejects_share_page_mismatch(client, app, mon
     await _login(client)
     # admin 预创建 session(归属 sp_default)
     fake_session_id = "slice5-admin-mismatch"
-    await _precreate_session(client, monkeypatch, fake_session_id)
+    await _precreate_session(client, app, fake_session_id)
 
     # 管理员创建另一个分享页,然后用它的 id 去 delete sp_default 的 session
     resp = await client.post(
@@ -297,7 +279,7 @@ async def test_hard_delete_user_cascades_sessions(client, app, monkeypatch):
 
     # alice 登录并预创建 session
     fake_session_id = "slice5-cascade-006"
-    _mock_precreate(monkeypatch, fake_session_id)
+    _mock_precreate(app, fake_session_id)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as alice_client:
         resp = await alice_client.post("/login", json={"username": "alice", "password": "alicepass123"})
@@ -310,11 +292,7 @@ async def test_hard_delete_user_cascades_sessions(client, app, monkeypatch):
     assert owner is not None
     assert owner.portal_user_id == alice["id"]
 
-    # mock RAGFlow DELETE 成功
-    # 注:cascade_delete_for_user 在 models.py 内延迟导入 portal.gateway.delete_session_via_ragflow,
-    # 故 mock gateway 模块的绑定(而非 routes 模块)
-    mock_delete = AsyncMock(return_value=None)
-    monkeypatch.setattr("portal.gateway.delete_session_via_ragflow", mock_delete)
+    # RAGFlow DELETE 默认成功(FakeRagflow delete_status=200)
 
     # 管理员硬删除 alice
     resp = await client.delete(f"/admin/users/{alice['id']}")
@@ -328,8 +306,9 @@ async def test_hard_delete_user_cascades_sessions(client, app, monkeypatch):
     owner_after = app.state.session_store.get(fake_session_id)
     assert owner_after is None, "硬删除用户应级联删除其会话"
 
-    # RAGFlow DELETE 被调用(对应 session)
-    mock_delete.assert_awaited()
+    # RAGFlow DELETE 被调用(对应 session,transport 层记录)
+    delete_reqs = [r for r in get_fake_ragflow(app).requests if r.method == "DELETE"]
+    assert any(fake_session_id in str(r.url) for r in delete_reqs)
 
 
 async def test_admin_delete_user_cleans_all_sessions_even_if_ragflow_fails(client, app, monkeypatch):
@@ -346,13 +325,13 @@ async def test_admin_delete_user_cleans_all_sessions_even_if_ragflow_fails(clien
     # alice 预创建两个 session,其中一个先标记 deleted_at(pending deletion)
     fake_session_ok = "slice5-cascade-ok"
     fake_session_fail = "slice5-cascade-fail"
-    _mock_precreate(monkeypatch, fake_session_ok)
+    _mock_precreate(app, fake_session_ok)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as alice_client:
         await alice_client.post("/login", json={"username": "alice", "password": "alicepass123"})
         await alice_client.post("/share-pages/sp_default/sessions")
     # 第二个 session(也归属 alice)
-    _mock_precreate(monkeypatch, fake_session_fail)
+    _mock_precreate(app, fake_session_fail)
     transport_b = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport_b, base_url="http://testserver") as alice_client_b:
         await alice_client_b.post("/login", json={"username": "alice", "password": "alicepass123"})
@@ -362,14 +341,8 @@ async def test_admin_delete_user_cleans_all_sessions_even_if_ragflow_fails(clien
     app.state.session_store.mark_deleted(fake_session_fail)
     assert app.state.session_store.get(fake_session_fail).deleted_at is not None
 
-    # mock RAGFlow DELETE:对 fail session 抛 502,对 ok session 成功
-    # 注:cascade_delete_for_user 在 models.py 内延迟导入 portal.gateway.delete_session_via_ragflow,
-    # 故 mock gateway 模块的绑定(而非 routes 模块)
-    async def _fake_delete(settings, dialog_id, session_id):
-        if session_id == fake_session_fail:
-            raise HTTPException(status_code=502, detail="上游失败")
-
-    monkeypatch.setattr("portal.gateway.delete_session_via_ragflow", AsyncMock(side_effect=_fake_delete))
+    # mock RAGFlow DELETE:对 fail session 返回 500(网关包装 502),对 ok session 成功
+    get_fake_ragflow(app).delete_status_by_session[fake_session_fail] = 500
 
     # 硬删除 alice(RAGFlow 部分失败)
     resp = await client.delete(f"/admin/users/{alice['id']}")
@@ -397,7 +370,7 @@ async def test_disable_user_preserves_sessions(client, app, monkeypatch):
     alice = await _create_user_and_grant(client, username="alice")
 
     fake_session_id = "slice5-disable-007"
-    _mock_precreate(monkeypatch, fake_session_id)
+    _mock_precreate(app, fake_session_id)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as alice_client:
         await alice_client.post("/login", json={"username": "alice", "password": "alicepass123"})
@@ -456,24 +429,18 @@ def _make_dummy_settings():
     )
 
 
-async def test_rename_session_via_ragflow_calls_patch(monkeypatch):
+async def test_rename_session_via_ragflow_calls_patch():
     """rename_session_via_ragflow 调 RAGFlow PATCH 端点(验证 URL 与方法)。"""
     from portal.gateway import rename_session_via_ragflow
 
     captured_requests = []
 
-    class _MockAsyncClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            def handler(req):
-                captured_requests.append(req)
-                return httpx.Response(200, json={"code": 0, "data": {"id": "s1", "name": "新名"}})
-
-            kwargs["transport"] = httpx.MockTransport(handler)
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr("portal.gateway.httpx.AsyncClient", _MockAsyncClient)
+    def handler(req):
+        captured_requests.append(req)
+        return httpx.Response(200, json={"code": 0, "data": {"id": "s1", "name": "新名"}})
 
     settings = _make_dummy_settings()
+    settings.upstream_transport = httpx.MockTransport(handler)
     await rename_session_via_ragflow(settings, "dialog-1", "session-1", "新标题")
 
     assert len(captured_requests) == 1
@@ -485,24 +452,18 @@ async def test_rename_session_via_ragflow_calls_patch(monkeypatch):
     assert body["name"] == "新标题"
 
 
-async def test_delete_session_via_ragflow_calls_delete(monkeypatch):
+async def test_delete_session_via_ragflow_calls_delete():
     """delete_session_via_ragflow 调 RAGFlow DELETE 端点(验证 URL 与方法)。"""
     from portal.gateway import delete_session_via_ragflow
 
     captured_requests = []
 
-    class _MockAsyncClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            def handler(req):
-                captured_requests.append(req)
-                return httpx.Response(200, json={"code": 0})
-
-            kwargs["transport"] = httpx.MockTransport(handler)
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr("portal.gateway.httpx.AsyncClient", _MockAsyncClient)
+    def handler(req):
+        captured_requests.append(req)
+        return httpx.Response(200, json={"code": 0})
 
     settings = _make_dummy_settings()
+    settings.upstream_transport = httpx.MockTransport(handler)
     await delete_session_via_ragflow(settings, "dialog-1", "session-1")
 
     assert len(captured_requests) == 1
@@ -511,35 +472,23 @@ async def test_delete_session_via_ragflow_calls_delete(monkeypatch):
     assert "/chatbots/dialog-1/sessions/session-1" in str(req.url)
 
 
-async def test_rename_session_via_ragflow_raises_on_failure(monkeypatch):
+async def test_rename_session_via_ragflow_raises_on_failure():
     """RAGFlow PATCH 非 200 → 抛 HTTPException(502)。"""
     from portal.gateway import rename_session_via_ragflow
 
-    class _MockAsyncClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            kwargs["transport"] = httpx.MockTransport(lambda req: httpx.Response(500, json={"code": 500}))
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr("portal.gateway.httpx.AsyncClient", _MockAsyncClient)
-
     settings = _make_dummy_settings()
+    settings.upstream_transport = httpx.MockTransport(lambda req: httpx.Response(500, json={"code": 500}))
     with pytest.raises(HTTPException) as exc_info:
         await rename_session_via_ragflow(settings, "dialog-1", "session-1", "新标题")
     assert exc_info.value.status_code == 502
 
 
-async def test_delete_session_via_ragflow_raises_on_failure(monkeypatch):
+async def test_delete_session_via_ragflow_raises_on_failure():
     """RAGFlow DELETE 非 200 → 抛 HTTPException(502)。"""
     from portal.gateway import delete_session_via_ragflow
 
-    class _MockAsyncClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            kwargs["transport"] = httpx.MockTransport(lambda req: httpx.Response(500, json={"code": 500}))
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr("portal.gateway.httpx.AsyncClient", _MockAsyncClient)
-
     settings = _make_dummy_settings()
+    settings.upstream_transport = httpx.MockTransport(lambda req: httpx.Response(500, json={"code": 500}))
     with pytest.raises(HTTPException) as exc_info:
         await delete_session_via_ragflow(settings, "dialog-1", "session-1")
     assert exc_info.value.status_code == 502

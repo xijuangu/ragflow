@@ -7,11 +7,10 @@
          已存在 session 不改 title(保护手动重命名);
          RAGFlow 失败只 warning,不抛 502(SSE 已成功)。
 """
+import json
 import time
-from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlparse
 
-import httpx
 import pytest
 
 # ---------------------------------------------------------------------------
@@ -35,23 +34,25 @@ async def _get_t_short(client, share_page_id="sp_default"):
     return qs["auth"][0], qs["shared_id"][0]
 
 
-def _mock_ragflow_sse_with_session_id(monkeypatch, session_id: str, message_id: str = "msg-001"):
-    """辅助:mock 网关的 httpx.AsyncClient,让上游 SSE 返回含指定 session_id 的成功流。"""
+def _mock_ragflow_sse_with_session_id(app, session_id: str, message_id: str = "msg-001"):
+    """辅助:配置 FakeRagflow SSE 路由,返回含指定 session_id 的成功流(Issue 97)。"""
+    from tests.conftest import get_fake_ragflow
 
-    class _MockAsyncClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            payload = (
-                f'{{"answer":"流式","session_id":"{session_id}","id":"{message_id}","final":true}}'
-            )
-            sse_body = f"data: {payload}\n\n".encode("utf-8")
-            kwargs["transport"] = httpx.MockTransport(
-                lambda req: httpx.Response(
-                    200, content=sse_body, headers={"content-type": "text/event-stream"}
-                )
-            )
-            super().__init__(*args, **kwargs)
+    payload = (
+        f'{{"answer":"流式","session_id":"{session_id}","id":"{message_id}","final":true}}'
+    )
+    get_fake_ragflow(app).sse_body = f"data: {payload}\n\n".encode("utf-8")
 
-    monkeypatch.setattr("portal.gateway.httpx.AsyncClient", _MockAsyncClient)
+
+def _rename_calls(app, session_id: str) -> list:
+    """收集 fake 收到的对该 session 的 PATCH rename 请求(替代原 AsyncMock 断言)。"""
+    from tests.conftest import get_fake_ragflow
+
+    return [
+        r
+        for r in get_fake_ragflow(app).requests
+        if r.method == "PATCH" and r.url.path.endswith(f"/sessions/{session_id}")
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -101,15 +102,12 @@ def test_list_for_user_orders_by_last_active_at_desc_multiple_users(app):
 # ---------------------------------------------------------------------------
 
 
-async def test_sse_bind_uses_first_question_as_title(client, app, monkeypatch):
+async def test_sse_bind_uses_first_question_as_title(client, app):
     """首次 bind 后,session_store.rename 与 rename_session_via_ragflow 被调用,title 是首问截断。"""
     t_short, dialog_id = await _get_t_short(client)
     ragflow_session_id = "slice40-first-bind-title-001"
-    _mock_ragflow_sse_with_session_id(monkeypatch, ragflow_session_id, message_id="msg-001")
-
-    # mock rename_session_via_ragflow(避免真实 HTTP 调用)
-    mock_rename = AsyncMock(return_value=None)
-    monkeypatch.setattr("portal.gateway.rename_session_via_ragflow", mock_rename)
+    _mock_ragflow_sse_with_session_id(app, ragflow_session_id, message_id="msg-001")
+    # FakeRagflow PATCH rename 路由默认 200(成功)
 
     # 真实首问(无 session_id,RAGFlow 在 SSE 中返回 session_id)
     question = "如何配置 OAuth2 单点登录?"
@@ -126,23 +124,23 @@ async def test_sse_bind_uses_first_question_as_title(client, app, monkeypatch):
     assert owner is not None, "首次 bind 后应绑定 session"
     assert owner.title == question, f"title 应为首问内容,实际: {owner.title}"
 
-    # 验证 RAGFlow 侧也被调用(双侧同步)
-    mock_rename.assert_awaited_once()
-    call_args = mock_rename.call_args
-    # call_args: (settings, dialog_id, session_id, name, ragflow_type)
-    assert call_args.args[1] == dialog_id, "rename 应传 dialog_id"
-    assert call_args.args[2] == ragflow_session_id, "rename 应传 session_id"
-    assert call_args.args[3] == question, f"rename 应传 title=首问,实际: {call_args.args[3]}"
-    assert call_args.args[4] == "chat", "rename 应传 ragflow_type=chat"
+    # 验证 RAGFlow 侧也被调用(双侧同步):恰一次 PATCH,URL 含 dialog_id/session_id
+    # (chat 类型走 /chatbots/ 段,URL 断言隐含 ragflow_type=chat),body 的 name 为首问
+    renames = _rename_calls(app, ragflow_session_id)
+    assert len(renames) == 1, "rename 应被调用一次"
+    assert f"/api/v1/chatbots/{dialog_id}/sessions/{ragflow_session_id}" in str(renames[0].url), (
+        f"rename URL 应含 dialog_id 与 session_id,实际: {renames[0].url}"
+    )
+    assert json.loads(renames[0].content)["name"] == question, (
+        f"rename 应传 title=首问,实际: {renames[0].content}"
+    )
 
 
-async def test_sse_bind_truncates_long_first_question(client, app, monkeypatch):
+async def test_sse_bind_truncates_long_first_question(client, app):
     """首问超 50 字符时,title 截断到 50 字符 + 省略号。"""
     t_short, dialog_id = await _get_t_short(client)
     ragflow_session_id = "slice40-truncate-title-002"
-    _mock_ragflow_sse_with_session_id(monkeypatch, ragflow_session_id, message_id="msg-002")
-    mock_rename = AsyncMock(return_value=None)
-    monkeypatch.setattr("portal.gateway.rename_session_via_ragflow", mock_rename)
+    _mock_ragflow_sse_with_session_id(app, ragflow_session_id, message_id="msg-002")
 
     long_question = "请详细说明如何在多租户 SaaS 应用中实现细粒度的基于角色的访问控制 RBAC," \
                     "包括权限继承、角色层级、资源粒度隔离以及与 OIDC 集成的最佳实践?"
@@ -161,17 +159,16 @@ async def test_sse_bind_truncates_long_first_question(client, app, monkeypatch):
     assert owner.title == expected_title, (
         f"长首问应截断到 50 字符 + 省略号,实际: {owner.title!r}"
     )
-    mock_rename.assert_awaited_once()
-    assert mock_rename.call_args.args[3] == expected_title
+    renames = _rename_calls(app, ragflow_session_id)
+    assert len(renames) == 1
+    assert json.loads(renames[0].content)["name"] == expected_title
 
 
-async def test_sse_bind_uses_first_line_of_multiline_question(client, app, monkeypatch):
+async def test_sse_bind_uses_first_line_of_multiline_question(client, app):
     """首问含换行时,title 取首行(不截断到换行处之外)。"""
     t_short, dialog_id = await _get_t_short(client)
     ragflow_session_id = "slice40-multiline-title-003"
-    _mock_ragflow_sse_with_session_id(monkeypatch, ragflow_session_id, message_id="msg-003")
-    mock_rename = AsyncMock(return_value=None)
-    monkeypatch.setattr("portal.gateway.rename_session_via_ragflow", mock_rename)
+    _mock_ragflow_sse_with_session_id(app, ragflow_session_id, message_id="msg-003")
 
     multiline_question = "这是首行标题\n这是第二行详细说明\n还有第三行"
     resp = await client.post(
@@ -185,16 +182,14 @@ async def test_sse_bind_uses_first_line_of_multiline_question(client, app, monke
     owner = app.state.session_store.get(ragflow_session_id)
     assert owner is not None
     assert owner.title == "这是首行标题", f"多行首问应取首行,实际: {owner.title!r}"
-    mock_rename.assert_awaited_once()
+    assert len(_rename_calls(app, ragflow_session_id)) == 1
 
 
-async def test_sse_existing_session_not_renamed(client, app, monkeypatch):
+async def test_sse_existing_session_not_renamed(client, app):
     """已存在 session 走 else 分支(只 update_last_active),不调 rename(保护手动重命名)。"""
     t_short, dialog_id = await _get_t_short(client)
     ragflow_session_id = "slice40-existing-not-renamed-004"
-    _mock_ragflow_sse_with_session_id(monkeypatch, ragflow_session_id, message_id="msg-004")
-    mock_rename = AsyncMock(return_value=None)
-    monkeypatch.setattr("portal.gateway.rename_session_via_ragflow", mock_rename)
+    _mock_ragflow_sse_with_session_id(app, ragflow_session_id, message_id="msg-004")
 
     # 预先绑定 session 并设置自定义 title(模拟用户手动重命名)
     app.state.session_store.bind(
@@ -219,19 +214,19 @@ async def test_sse_existing_session_not_renamed(client, app, monkeypatch):
     assert owner.title == "我手动命名的标题", (
         f"已存在 session 的 title 不应被覆盖,实际: {owner.title!r}"
     )
-    mock_rename.assert_not_awaited()
+    assert _rename_calls(app, ragflow_session_id) == [], "已存在 session 不应被 rename"
 
 
-async def test_sse_title_sync_ragflow_failure_does_not_break_stream(client, app, monkeypatch):
+async def test_sse_title_sync_ragflow_failure_does_not_break_stream(client, app):
     """RAGFlow rename 失败只 warning,不抛 502(SSE 已成功);portal 侧 title 仍被更新。"""
     t_short, dialog_id = await _get_t_short(client)
     ragflow_session_id = "slice40-ragflow-fail-005"
-    _mock_ragflow_sse_with_session_id(monkeypatch, ragflow_session_id, message_id="msg-005")
-    # mock RAGFlow rename 失败(抛异常)
-    monkeypatch.setattr(
-        "portal.gateway.rename_session_via_ragflow",
-        AsyncMock(side_effect=RuntimeError("RAGFlow 网络抖动")),
-    )
+    _mock_ragflow_sse_with_session_id(app, ragflow_session_id, message_id="msg-005")
+    # 配置 PATCH rename 路由失败(500 → 网关 rename_session_via_ragflow 抛 HTTPException,
+    # SSE 路径的 title 同步 try/except + warning 兜底,与原先 patch 抛 RuntimeError 语义一致)
+    from tests.conftest import get_fake_ragflow
+
+    get_fake_ragflow(app).rename_status = 500
 
     question = "首问内容"
     resp = await client.post(

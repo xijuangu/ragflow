@@ -17,10 +17,8 @@
 """
 
 import time
-from unittest.mock import AsyncMock
 
 import httpx
-from fastapi import HTTPException
 
 # ---------------------------------------------------------------------------
 # 辅助函数(与 test_slice5_e2e.py 一致的模式)
@@ -33,18 +31,17 @@ async def _login(client, username="admin", password="testpass123"):
     assert resp.status_code == 200, f"登录失败: {resp.text}"
 
 
-def _mock_precreate(monkeypatch, session_id: str):
-    """辅助:mock 网关的 precreate_session_via_ragflow 返回给定 session_id。"""
-    monkeypatch.setattr(
-        "portal.routes.precreate_session_via_ragflow",
-        AsyncMock(return_value=session_id),
-    )
+def _mock_precreate(app, session_id: str):
+    """辅助:配置 FakeRagflow 预创建路由返回给定 session_id(Issue 97)。"""
+    from tests.conftest import get_fake_ragflow
+
+    get_fake_ragflow(app).precreate_session_id = session_id
 
 
-async def _precreate_session(client, monkeypatch, session_id: str):
+async def _precreate_session(client, app, session_id: str):
     """辅助:登录 + 预创建 session,返回响应体。"""
     await _login(client)
-    _mock_precreate(monkeypatch, session_id)
+    _mock_precreate(app, session_id)
     resp = await client.post("/share-pages/sp_default/sessions")
     assert resp.status_code == 200, f"预创建失败: {resp.text}"
     return resp.json()
@@ -131,13 +128,11 @@ async def test_audit_grant_revoke(client, app):
     assert "grant_revoke" in actions, f"grant_revoke 未记审计: {actions}"
 
 
-async def test_audit_session_delete_user(client, app, monkeypatch):
+async def test_audit_session_delete_user(client, app):
     """session_delete:用户删自己的会话(RAGFlow 成功)后审计日志有 session_delete 记录。"""
     fake_session_id = "slice6-session-delete-001"
-    await _precreate_session(client, monkeypatch, fake_session_id)
-    # mock RAGFlow DELETE 成功
-    # Issue 95:双删编排(_dual_delete_session)已下沉 gateway.py,需 patch gateway 命名空间
-    monkeypatch.setattr("portal.gateway.delete_session_via_ragflow", AsyncMock(return_value=None))
+    await _precreate_session(client, app, fake_session_id)
+    # FakeRagflow DELETE 路由默认 200(成功)
     resp = await client.delete(f"/share-pages/sp_default/sessions/{fake_session_id}")
     assert resp.status_code == 200, f"删除失败: {resp.text}"
     actions = _audit_actions(app)
@@ -147,16 +142,14 @@ async def test_audit_session_delete_user(client, app, monkeypatch):
     assert any(log.target_id == fake_session_id for log in delete_logs)
 
 
-async def test_audit_session_delete_not_recorded_on_ragflow_failure(client, app, monkeypatch):
+async def test_audit_session_delete_not_recorded_on_ragflow_failure(client, app):
     """RAGFlow 删除失败(标记 deleted_at)时不记 session_delete(会话未真正删除,仍待重试)。"""
     fake_session_id = "slice6-session-delete-fail"
-    await _precreate_session(client, monkeypatch, fake_session_id)
-    # mock RAGFlow DELETE 失败
-    # Issue 95:双删编排(_dual_delete_session)已下沉 gateway.py,需 patch gateway 命名空间
-    monkeypatch.setattr(
-        "portal.gateway.delete_session_via_ragflow",
-        AsyncMock(side_effect=HTTPException(status_code=502, detail="上游失败")),
-    )
+    await _precreate_session(client, app, fake_session_id)
+    # 配置 FakeRagflow DELETE 失败(500 → 网关包装为 HTTPException 502)
+    from tests.conftest import get_fake_ragflow
+
+    get_fake_ragflow(app).delete_status = 500
     resp = await client.delete(f"/share-pages/sp_default/sessions/{fake_session_id}")
     assert resp.status_code == 200  # 不暴露失败
     # session_delete 不应被记(会话未真正删除,标记 deleted_at 待重试)
@@ -164,16 +157,14 @@ async def test_audit_session_delete_not_recorded_on_ragflow_failure(client, app,
     assert "session_delete" not in actions, f"RAGFlow 失败不应记 session_delete: {actions}"
 
 
-async def test_audit_session_view_elevated(client, app, monkeypatch):
+async def test_audit_session_view_elevated(client, app):
     """session_view_elevated:管理员 elevated=true 查正文后审计日志有 session_view_elevated 记录。"""
     fake_session_id = "slice6-elevated-001"
-    await _precreate_session(client, monkeypatch, fake_session_id)
-    # mock RAGFlow GET 成功
-    fake_history = {"messages": [{"role": "user", "content": "hi"}], "reference": {"chunks": []}}
-    monkeypatch.setattr(
-        "portal.routes.fetch_session_history_via_ragflow",
-        AsyncMock(return_value=fake_history),
-    )
+    await _precreate_session(client, app, fake_session_id)
+    # 配置 FakeRagflow GET history 路由
+    from tests.conftest import get_fake_ragflow
+
+    get_fake_ragflow(app).history = {"messages": [{"role": "user", "content": "hi"}], "reference": {"chunks": []}}
     resp = await client.get(f"/admin/sessions/{fake_session_id}?elevated=true")
     assert resp.status_code == 200, f"elevated 查正文失败: {resp.text}"
     actions = _audit_actions(app)
@@ -222,10 +213,13 @@ async def test_audit_user_password_change(client, app):
     assert any(log.target_id == alice["id"] and log.target_type == "user" for log in password_logs)
 
 
-async def test_all_9_audit_actions_covered(client, app, monkeypatch):
+async def test_all_9_audit_actions_covered(client, app):
     """综合:9 类敏感操作全部触发 → 审计日志全部覆盖。"""
+    from tests.conftest import get_fake_ragflow
+
+    fake = get_fake_ragflow(app)
     fake_session_id = "slice6-all-001"
-    await _precreate_session(client, monkeypatch, fake_session_id)
+    await _precreate_session(client, app, fake_session_id)
     alice = await _create_user_and_grant(client, username="alice_all8")
 
     # 1. login_success(已通过 _login 触发)
@@ -239,18 +233,13 @@ async def test_all_9_audit_actions_covered(client, app, monkeypatch):
         "/admin/share-pages/sp_default/grants",
         json={"subject_type": "user", "subject_id": alice["id"], "permission": "use"},
     )
-    # 5. session_delete(RAGFlow 成功)
-    # Issue 95:双删编排(_dual_delete_session)已下沉 gateway.py,需 patch gateway 命名空间
-    monkeypatch.setattr("portal.gateway.delete_session_via_ragflow", AsyncMock(return_value=None))
+    # 5. session_delete(FakeRagflow DELETE 默认 200)
     await client.delete(f"/share-pages/sp_default/sessions/{fake_session_id}")
     # 6. session_view_elevated(需先预创建另一个 session)
     fake_session_id_2 = "slice6-all-002"
-    _mock_precreate(monkeypatch, fake_session_id_2)
+    fake.precreate_session_id = fake_session_id_2
     await client.post("/share-pages/sp_default/sessions")
-    monkeypatch.setattr(
-        "portal.routes.fetch_session_history_via_ragflow",
-        AsyncMock(return_value={"messages": [], "reference": {}}),
-    )
+    fake.history = {"messages": [], "reference": {}}
     await client.get(f"/admin/sessions/{fake_session_id_2}?elevated=true")
     # 7. user_password_change
     await client.patch(f"/admin/users/{alice['id']}/password", json={"password": "newpass123"})
@@ -280,15 +269,15 @@ async def test_all_9_audit_actions_covered(client, app, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-async def test_admin_list_all_sessions(client, app, monkeypatch):
+async def test_admin_list_all_sessions(client, app):
     """管理员列出所有会话(跨用户,返回元数据列表)。"""
     await _login(client)
     # admin 预创建一个 session
-    _mock_precreate(monkeypatch, "slice6-list-001")
+    _mock_precreate(app, "slice6-list-001")
     await client.post("/share-pages/sp_default/sessions")
     # alice 预创建另一个 session
     await _create_user_and_grant(client, username="alice_list")
-    _mock_precreate(monkeypatch, "slice6-list-002")
+    _mock_precreate(app, "slice6-list-002")
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as alice_client:
         await alice_client.post("/login", json={"username": "alice_list", "password": "alicepass123"})
@@ -302,13 +291,13 @@ async def test_admin_list_all_sessions(client, app, monkeypatch):
     assert "slice6-list-002" in ids
 
 
-async def test_admin_list_sessions_filter_by_user(client, app, monkeypatch):
+async def test_admin_list_sessions_filter_by_user(client, app):
     """管理员按 user_id 过滤会话。"""
     await _login(client)
-    _mock_precreate(monkeypatch, "slice6-filter-u-001")
+    _mock_precreate(app, "slice6-filter-u-001")
     await client.post("/share-pages/sp_default/sessions")
     alice = await _create_user_and_grant(client, username="alice_filter")
-    _mock_precreate(monkeypatch, "slice6-filter-u-002")
+    _mock_precreate(app, "slice6-filter-u-002")
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as alice_client:
         await alice_client.post("/login", json={"username": "alice_filter", "password": "alicepass123"})
@@ -323,7 +312,7 @@ async def test_admin_list_sessions_filter_by_user(client, app, monkeypatch):
     assert "slice6-filter-u-001" not in ids, "按 user_id 过滤不应返回其他用户的会话"
 
 
-async def test_admin_list_sessions_filter_by_share_page(client, app, monkeypatch):
+async def test_admin_list_sessions_filter_by_share_page(client, app):
     """管理员按 share_page_id 过滤会话。"""
     await _login(client)
     # 创建第二个分享页
@@ -339,10 +328,10 @@ async def test_admin_list_sessions_filter_by_share_page(client, app, monkeypatch
         json={"subject_type": "user", "subject_id": "u_admin", "permission": "use"},
     )
     # 在 sp_default 预创建
-    _mock_precreate(monkeypatch, "slice6-filter-sp-001")
+    _mock_precreate(app, "slice6-filter-sp-001")
     await client.post("/share-pages/sp_default/sessions")
     # 在 other_sp 预创建
-    _mock_precreate(monkeypatch, "slice6-filter-sp-002")
+    _mock_precreate(app, "slice6-filter-sp-002")
     await client.post(f"/share-pages/{other_sp_id}/sessions")
 
     # 按 sp_default 过滤
@@ -353,11 +342,11 @@ async def test_admin_list_sessions_filter_by_share_page(client, app, monkeypatch
     assert "slice6-filter-sp-002" not in ids
 
 
-async def test_admin_list_sessions_filter_by_time(client, app, monkeypatch):
+async def test_admin_list_sessions_filter_by_time(client, app):
     """管理员按时间范围过滤会话(since/until)。"""
     await _login(client)
     t_before = time.time()
-    _mock_precreate(monkeypatch, "slice6-filter-t-001")
+    _mock_precreate(app, "slice6-filter-t-001")
     await client.post("/share-pages/sp_default/sessions")
     t_mid = time.time()
     # since=t_mid 应排除第一个 session(其 created_at < t_mid)
@@ -373,16 +362,18 @@ async def test_admin_list_sessions_filter_by_time(client, app, monkeypatch):
     assert "slice6-filter-t-001" not in ids
 
 
-async def test_admin_list_sessions_by_keyword(client, app, monkeypatch):
+async def test_admin_list_sessions_by_keyword(client, app):
     """管理员按关键词搜索会话(按 title 模糊匹配,大小写不敏感)。"""
     await _login(client)
     # 预创建两个会话,分别重命名为含「合同」和「侵权」的标题
-    _mock_precreate(monkeypatch, "slice6-kw-001")
+    _mock_precreate(app, "slice6-kw-001")
     await client.post("/share-pages/sp_default/sessions")
-    _mock_precreate(monkeypatch, "slice6-kw-002")
+    _mock_precreate(app, "slice6-kw-002")
     await client.post("/share-pages/sp_default/sessions")
-    # 重命名(mock RAGFlow PATCH 成功)
-    monkeypatch.setattr("portal.routes.rename_session_via_ragflow", AsyncMock(return_value=None))
+    # 重命名(FakeRagflow PATCH rename 路由默认 200)
+    from tests.conftest import get_fake_ragflow
+
+    get_fake_ragflow(app)
     await client.patch(
         "/share-pages/sp_default/sessions/slice6-kw-001",
         json={"title": "合同纠纷咨询"},
@@ -447,10 +438,10 @@ def test_session_store_list_all_keyword_filter(app):
 # ---------------------------------------------------------------------------
 
 
-async def test_admin_get_session_returns_metadata_only(client, app, monkeypatch):
+async def test_admin_get_session_returns_metadata_only(client, app):
     """管理员默认查会话只返回元数据(不含 messages/reference,不写审计)。"""
     fake_session_id = "slice6-meta-001"
-    await _precreate_session(client, monkeypatch, fake_session_id)
+    await _precreate_session(client, app, fake_session_id)
     # 不传 elevated(默认 false)
     resp = await client.get(f"/admin/sessions/{fake_session_id}")
     assert resp.status_code == 200, f"查元数据失败: {resp.text}"
@@ -473,10 +464,10 @@ async def test_admin_get_session_returns_metadata_only(client, app, monkeypatch)
     assert "session_view_elevated" not in actions, "默认查元数据不应记 session_view_elevated 审计"
 
 
-async def test_admin_list_sessions_includes_message_count(client, app, monkeypatch):
+async def test_admin_list_sessions_includes_message_count(client, app):
     """管理员列出会话时元数据含 message_count 字段(spec 要求「元数据含消息数」)。"""
     await _login(client)
-    _mock_precreate(monkeypatch, "slice6-msgcount-001")
+    _mock_precreate(app, "slice6-msgcount-001")
     await client.post("/share-pages/sp_default/sessions")
     resp = await client.get("/admin/sessions")
     assert resp.status_code == 200
@@ -487,10 +478,10 @@ async def test_admin_list_sessions_includes_message_count(client, app, monkeypat
     assert target[0]["message_count"] == 0, "预创建会话的 message_count 应为 0"
 
 
-async def test_message_count_updated_on_resume(client, app, monkeypatch):
+async def test_message_count_updated_on_resume(client, app):
     """恢复会话(GET history)后 message_count 用 len(messages) 更新(简化实现)。"""
     fake_session_id = "slice6-msgcount-resume"
-    await _precreate_session(client, monkeypatch, fake_session_id)
+    await _precreate_session(client, app, fake_session_id)
     # 预创建后 message_count 为 0
     owner = app.state.session_store.get(fake_session_id)
     assert owner.message_count == 0
@@ -503,10 +494,9 @@ async def test_message_count_updated_on_resume(client, app, monkeypatch):
         ],
         "reference": {},
     }
-    monkeypatch.setattr(
-        "portal.routes.fetch_session_history_via_ragflow",
-        AsyncMock(return_value=fake_history),
-    )
+    from tests.conftest import get_fake_ragflow
+
+    get_fake_ragflow(app).history = fake_history
     # 普通用户恢复会话
     resp = await client.get(f"/share-pages/sp_default/sessions/{fake_session_id}")
     assert resp.status_code == 200, f"恢复会话失败: {resp.text}"
@@ -519,10 +509,10 @@ async def test_message_count_updated_on_resume(client, app, monkeypatch):
     assert target["message_count"] == 3
 
 
-async def test_message_count_updated_on_elevated_view(client, app, monkeypatch):
+async def test_message_count_updated_on_elevated_view(client, app):
     """管理员 elevated=true 查正文后 message_count 也用 len(messages) 更新。"""
     fake_session_id = "slice6-msgcount-elevated"
-    await _precreate_session(client, monkeypatch, fake_session_id)
+    await _precreate_session(client, app, fake_session_id)
     # mock RAGFlow GET 返回 2 条消息
     fake_history = {
         "messages": [
@@ -531,10 +521,9 @@ async def test_message_count_updated_on_elevated_view(client, app, monkeypatch):
         ],
         "reference": {"chunks": []},
     }
-    monkeypatch.setattr(
-        "portal.routes.fetch_session_history_via_ragflow",
-        AsyncMock(return_value=fake_history),
-    )
+    from tests.conftest import get_fake_ragflow
+
+    get_fake_ragflow(app).history = fake_history
     resp = await client.get(f"/admin/sessions/{fake_session_id}?elevated=true")
     assert resp.status_code == 200
     # message_count 已更新为 2
@@ -554,17 +543,19 @@ async def test_admin_get_session_unknown_returns_404(client):
 # ---------------------------------------------------------------------------
 
 
-async def test_admin_get_session_elevated_returns_messages_and_writes_audit(client, app, monkeypatch):
-    """管理员 elevated=true 查正文:写审计 + 返回 messages+reference(mock RAGFlow GET)。"""
+async def test_admin_get_session_elevated_returns_messages_and_writes_audit(client, app):
+    """管理员 elevated=true 查正文:写审计 + 返回 messages+reference(FakeRagflow GET history)。"""
+    from tests.conftest import get_fake_ragflow
+
     fake_session_id = "slice6-elevated-002"
-    await _precreate_session(client, monkeypatch, fake_session_id)
-    # mock RAGFlow GET 成功
+    await _precreate_session(client, app, fake_session_id)
+    # 配置 FakeRagflow GET history 路由
     fake_history = {
         "messages": [{"role": "user", "content": "你好"}, {"role": "assistant", "content": "你好!"}],
         "reference": {"chunks": [{"id": "c1", "content": "片段1"}], "doc_aggs": []},
     }
-    mock_fetch = AsyncMock(return_value=fake_history)
-    monkeypatch.setattr("portal.routes.fetch_session_history_via_ragflow", mock_fetch)
+    fake = get_fake_ragflow(app)
+    fake.history = fake_history
 
     resp = await client.get(f"/admin/sessions/{fake_session_id}?elevated=true")
     assert resp.status_code == 200, f"elevated 查正文失败: {resp.text}"
@@ -574,7 +565,7 @@ async def test_admin_get_session_elevated_returns_messages_and_writes_audit(clie
     assert body["messages"] == fake_history["messages"]
     assert body["reference"] == fake_history["reference"]
     # RAGFlow GET 被调用
-    mock_fetch.assert_awaited_once()
+    assert len(fake.history_calls) == 1
     # 审计日志写入
     actions = _audit_actions(app)
     assert "session_view_elevated" in actions
@@ -582,15 +573,24 @@ async def test_admin_get_session_elevated_returns_messages_and_writes_audit(clie
     assert any(log.target_id == fake_session_id for log in elevated_logs)
 
 
-async def test_admin_get_session_elevated_ragflow_failure_returns_502(client, app, monkeypatch):
+async def test_admin_get_session_elevated_ragflow_failure_returns_502(client, app):
     """elevated=true 时 RAGFlow GET 失败 → 502(但审计日志已写,因为 elevated 是管理员意图)。"""
+    import httpx as httpx_mod
+
+    from tests.conftest import get_fake_ragflow
+
     fake_session_id = "slice6-elevated-fail"
-    await _precreate_session(client, monkeypatch, fake_session_id)
-    # mock RAGFlow GET 失败
-    monkeypatch.setattr(
-        "portal.routes.fetch_session_history_via_ragflow",
-        AsyncMock(side_effect=HTTPException(status_code=502, detail="上游失败")),
-    )
+    await _precreate_session(client, app, fake_session_id)
+    # 配置 GET history 路由抛 ConnectError(网关不捕获 → 502 语义与原 patch 抛 HTTPException 一致)
+    fake = get_fake_ragflow(app)
+    inner_handler = fake.handler
+
+    def handler(req: httpx_mod.Request) -> httpx_mod.Response:
+        if req.method == "GET" and "/sessions/" in req.url.path:
+            raise httpx_mod.ConnectError("mock: 上游失败", request=req)
+        return inner_handler(req)
+
+    app.state.settings.upstream_transport = httpx_mod.MockTransport(handler)
     resp = await client.get(f"/admin/sessions/{fake_session_id}?elevated=true")
     assert resp.status_code == 502
     # 审计日志仍写入(管理员意图已表达,留痕)
@@ -603,7 +603,7 @@ async def test_admin_get_session_elevated_ragflow_failure_returns_502(client, ap
 # ---------------------------------------------------------------------------
 
 
-async def test_admin_list_audit_logs(client, app, monkeypatch):
+async def test_admin_list_audit_logs(client, app):
     """管理员查看审计日志(无过滤,返回全部最新的 limit 条)。"""
     await _login(client)  # 触发 login_success
     resp = await client.get("/admin/audit-logs")
@@ -615,7 +615,7 @@ async def test_admin_list_audit_logs(client, app, monkeypatch):
     assert "login_success" in actions
 
 
-async def test_admin_list_audit_logs_filter_by_action(client, app, monkeypatch):
+async def test_admin_list_audit_logs_filter_by_action(client, app):
     """管理员按 action 过滤审计日志。"""
     await _login(client)  # login_success
     await _create_user_and_grant(client, username="alice_audit_action")  # grant_create
@@ -627,7 +627,7 @@ async def test_admin_list_audit_logs_filter_by_action(client, app, monkeypatch):
     assert len(actions) >= 1
 
 
-async def test_admin_list_audit_logs_filter_by_actor(client, app, monkeypatch):
+async def test_admin_list_audit_logs_filter_by_actor(client, app):
     """管理员按 actor_user_id 过滤审计日志。"""
     await _login(client)
     alice = await _create_user_and_grant(client, username="alice_audit_actor")
@@ -646,7 +646,7 @@ async def test_admin_list_audit_logs_filter_by_actor(client, app, monkeypatch):
     assert "login_success" in actions
 
 
-async def test_admin_list_audit_logs_filter_by_time(client, app, monkeypatch):
+async def test_admin_list_audit_logs_filter_by_time(client, app):
     """管理员按时间范围过滤审计日志(since/until)。"""
     t_before = time.time()
     await _login(client)  # login_success 在 t_before 之后
@@ -668,7 +668,7 @@ async def test_admin_list_audit_logs_filter_by_time(client, app, monkeypatch):
     assert "login_success" in actions
 
 
-async def test_audit_log_meta_json_parsed_to_dict(client, app, monkeypatch):
+async def test_audit_log_meta_json_parsed_to_dict(client, app):
     """审计日志响应中 meta 字段是从 meta_json 解析回的 dict(便于前端读取)。"""
     await _login(client)
     resp = await client.get("/admin/audit-logs?action=login_success")
@@ -686,11 +686,11 @@ async def test_audit_log_meta_json_parsed_to_dict(client, app, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-async def test_admin_list_pending_deletion(client, app, monkeypatch):
+async def test_admin_list_pending_deletion(client, app):
     """管理员查看待重试删除的会话(deleted_at 非空的记录)。"""
     await _login(client)
     fake_session_id = "slice6-pending-001"
-    await _precreate_session(client, monkeypatch, fake_session_id)
+    await _precreate_session(client, app, fake_session_id)
     # 标记 deleted_at
     app.state.session_store.mark_deleted(fake_session_id)
 
@@ -704,38 +704,39 @@ async def test_admin_list_pending_deletion(client, app, monkeypatch):
     assert target["deleted_at"] is not None
 
 
-async def test_admin_retry_delete_success(client, app, monkeypatch):
+async def test_admin_retry_delete_success(client, app):
     """管理员手动触发清理:RAGFlow DELETE 成功 → 门户记录删除 + 审计。"""
+    from tests.conftest import get_fake_ragflow
+
     await _login(client)
     fake_session_id = "slice6-retry-ok"
-    await _precreate_session(client, monkeypatch, fake_session_id)
+    await _precreate_session(client, app, fake_session_id)
     app.state.session_store.mark_deleted(fake_session_id)
-    # mock RAGFlow DELETE 成功
-    mock_delete = AsyncMock(return_value=None)
-    monkeypatch.setattr("portal.routes.delete_session_via_ragflow", mock_delete)
+    # FakeRagflow DELETE 路由默认 200(成功)
+    fake = get_fake_ragflow(app)
 
     resp = await client.post(f"/admin/sessions/{fake_session_id}/retry-delete")
     assert resp.status_code == 200, f"重试删除失败: {resp.text}"
     # 门户记录已删除
     assert app.state.session_store.get(fake_session_id) is None
     # RAGFlow DELETE 被调用
-    mock_delete.assert_awaited_once()
+    delete_calls = [r for r in fake.requests if r.method == "DELETE" and r.url.path.endswith(f"/sessions/{fake_session_id}")]
+    assert len(delete_calls) == 1
     # 审计日志写入 session_delete
     actions = _audit_actions(app)
     assert "session_delete" in actions
 
 
-async def test_admin_retry_delete_ragflow_failure_returns_502(client, app, monkeypatch):
+async def test_admin_retry_delete_ragflow_failure_returns_502(client, app):
     """管理员手动触发清理:RAGFlow DELETE 失败 → 502,门户记录保留(仍待重试)。"""
+    from tests.conftest import get_fake_ragflow
+
     await _login(client)
     fake_session_id = "slice6-retry-fail"
-    await _precreate_session(client, monkeypatch, fake_session_id)
+    await _precreate_session(client, app, fake_session_id)
     app.state.session_store.mark_deleted(fake_session_id)
-    # mock RAGFlow DELETE 失败
-    monkeypatch.setattr(
-        "portal.routes.delete_session_via_ragflow",
-        AsyncMock(side_effect=HTTPException(status_code=502, detail="上游失败")),
-    )
+    # 配置 FakeRagflow DELETE 失败(500 → 网关包装为 502)
+    get_fake_ragflow(app).delete_status = 500
 
     resp = await client.post(f"/admin/sessions/{fake_session_id}/retry-delete")
     assert resp.status_code == 502, f"RAGFlow 失败应返回 502: {resp.text}"
@@ -745,11 +746,11 @@ async def test_admin_retry_delete_ragflow_failure_returns_502(client, app, monke
     assert owner.deleted_at is not None
 
 
-async def test_admin_retry_delete_rejects_non_pending(client, app, monkeypatch):
+async def test_admin_retry_delete_rejects_non_pending(client, app):
     """重试删除非待重试状态(deleted_at 为空)的会话 → 400。"""
     await _login(client)
     fake_session_id = "slice6-retry-not-pending"
-    await _precreate_session(client, monkeypatch, fake_session_id)
+    await _precreate_session(client, app, fake_session_id)
     # 不标记 deleted_at(正常状态)
     resp = await client.post(f"/admin/sessions/{fake_session_id}/retry-delete")
     assert resp.status_code == 400, f"非待重试状态应返回 400: {resp.text}"
@@ -787,10 +788,10 @@ async def test_non_admin_cannot_list_pending_deletion(client, app):
         assert resp.status_code == 403
 
 
-async def test_non_admin_cannot_get_session(client, app, monkeypatch):
+async def test_non_admin_cannot_get_session(client, app):
     """普通用户调 GET /admin/sessions/{id} → 403(默认与 elevated 均拒绝)。"""
     fake_session_id = "slice6-acl-session-001"
-    await _precreate_session(client, monkeypatch, fake_session_id)
+    await _precreate_session(client, app, fake_session_id)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as user2_client:
         await user2_client.post("/login", json={"username": "user2", "password": "testpass123"})
@@ -800,10 +801,10 @@ async def test_non_admin_cannot_get_session(client, app, monkeypatch):
         assert resp.status_code == 403
 
 
-async def test_non_admin_cannot_retry_delete(client, app, monkeypatch):
+async def test_non_admin_cannot_retry_delete(client, app):
     """普通用户调 POST /admin/sessions/{id}/retry-delete → 403。"""
     fake_session_id = "slice6-acl-retry-001"
-    await _precreate_session(client, monkeypatch, fake_session_id)
+    await _precreate_session(client, app, fake_session_id)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as user2_client:
         await user2_client.post("/login", json={"username": "user2", "password": "testpass123"})
@@ -839,20 +840,19 @@ async def test_unauthenticated_cannot_access_admin_endpoints(client):
 # ---------------------------------------------------------------------------
 
 
-async def test_normal_user_operations_not_audited(client, app, monkeypatch):
+async def test_normal_user_operations_not_audited(client, app):
     """普通用户的日常操作(列自己的会话、继续对话)不写审计日志(PR D7b)。"""
+    from tests.conftest import get_fake_ragflow
+
     fake_session_id = "slice6-no-audit-001"
-    await _precreate_session(client, monkeypatch, fake_session_id)
+    await _precreate_session(client, app, fake_session_id)
     # 记录当前审计日志数量(Slice 8:经公开 API list 查询,DB 后端)
     count_before = len(app.state.audit_store.list(limit=10000))
     # 普通操作:列自己的会话(不应写审计)
     resp = await client.get("/share-pages/sp_default/sessions")
     assert resp.status_code == 200
-    # 重新打开会话(mock RAGFlow GET)
-    monkeypatch.setattr(
-        "portal.routes.fetch_session_history_via_ragflow",
-        AsyncMock(return_value={"messages": [], "reference": {}}),
-    )
+    # 重新打开会话(配置 FakeRagflow GET history 路由)
+    get_fake_ragflow(app).history = {"messages": [], "reference": {}}
     resp = await client.get(f"/share-pages/sp_default/sessions/{fake_session_id}")
     assert resp.status_code == 200
     # 审计日志数量不应增加(普通操作不记审计)

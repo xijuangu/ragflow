@@ -13,12 +13,12 @@
   10. 网关 ACL:用户仅通过组授权时,调 embed-url / SSE 代理成功(组 grant 生效)。
 """
 
-from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlparse
 
 import httpx
 
 from portal.models import ChatSessionOwner
+from tests.conftest import get_fake_ragflow
 
 
 def _extract_iframe_params(url: str) -> dict:
@@ -59,17 +59,9 @@ async def _create_share_page(client, name="财务对话", ragflow_resource_id="d
     return resp.json()
 
 
-def _mock_ragflow_sse_success(monkeypatch, sse_body: bytes = b'data: {"code":0}\n\n'):
-    """辅助:mock 网关 httpx.AsyncClient 让上游 SSE 返回成功流。"""
-
-    class _MockAsyncClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            kwargs["transport"] = httpx.MockTransport(
-                lambda req: httpx.Response(200, content=sse_body, headers={"content-type": "text/event-stream"})
-            )
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr("portal.gateway.httpx.AsyncClient", _MockAsyncClient)
+def _mock_ragflow_sse_success(app, sse_body: bytes = b'data: {"code":0}\n\n'):
+    """辅助:配置 FakeRagflow 上游 SSE 返回成功流(Issue 97:transport 层 mock)。"""
+    get_fake_ragflow(app).sse_body = sse_body
 
 
 # ---------------------------------------------------------------------------
@@ -565,10 +557,7 @@ async def test_disable_user_blocks_login_and_preserves_session(client, app, monk
 
     # alice 预创建 session
     fake_session_id = "slice4-disabled-user-session-001"
-    monkeypatch.setattr(
-        "portal.routes.precreate_session_via_ragflow",
-        AsyncMock(return_value=fake_session_id),
-    )
+    get_fake_ragflow(app).precreate_session_id = fake_session_id
     async with httpx.ASGITransport(app=app) as transport2:
         async with httpx.AsyncClient(transport=transport2, base_url="http://testserver") as alice_client:
             resp = await alice_client.post("/login", json={"username": "alice", "password": "alicepass123"})
@@ -699,7 +688,7 @@ async def test_gateway_acl_group_grant_allows_sse_proxy(client, app, monkeypatch
             t_short = _extract_iframe_params(resp.json()["iframe_url"])["auth"][0]
             dialog_id = page["ragflow_resource_id"]
             # mock 上游 SSE 返回成功流(在创建 alice_client 之后应用,避免影响登录与 embed-url)
-            _mock_ragflow_sse_success(monkeypatch)
+            _mock_ragflow_sse_success(app)
             # alice 用 T_short 调 SSE(组 grant 生效,通过网关 ACL 校验)
             resp = await alice_client.post(
                 f"/api/v1/chatbots/{dialog_id}/completions",

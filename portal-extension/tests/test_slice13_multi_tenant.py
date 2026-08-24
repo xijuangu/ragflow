@@ -562,7 +562,7 @@ async def test_user_cross_org_share_page_access_returns_403(client_multi_org):
     assert resp.status_code == 403, f"跨 org 访问应 403,实际: {resp.status_code} {resp.text}"
 
 
-async def test_user_cross_org_session_access_returns_403(client_multi_org):
+async def test_user_cross_org_session_access_returns_403(client_multi_org, app_multi_org):
     """跨 org 访问他人会话 → 403。
 
     user2(default)预创建一个 session;user_a(acme)尝试访问 → 403。
@@ -570,13 +570,11 @@ async def test_user_cross_org_session_access_returns_403(client_multi_org):
     """
     # user2 登录预创建 session
     await _login(client_multi_org, "user2")
-    from unittest.mock import AsyncMock
+    # 配置 FakeRagflow 预创建路由(避免真实 RAGFlow 调用;Issue 97 迁移,
+    # 原直接赋值 patch 不经 monkeypatch 恢复,会污染后续测试文件)
+    from tests.conftest import get_fake_ragflow
 
-    client_multi_org._app = client_multi_org._app if hasattr(client_multi_org, "_app") else None
-    # mock 预创建(避免真实 RAGFlow 调用)
-    import portal.routes
-
-    portal.routes.precreate_session_via_ragflow = AsyncMock(return_value="sid_user2")
+    get_fake_ragflow(app_multi_org).precreate_session_id = "sid_user2"
     resp = await client_multi_org.post("/share-pages/sp_default/sessions")
     assert resp.status_code == 200, resp.text
     sid = resp.json()["session_id"]

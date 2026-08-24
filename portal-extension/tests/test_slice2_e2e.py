@@ -12,13 +12,13 @@
 
 import os
 import time
-from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlparse
 
 import httpx
 import pytest
 
 from portal.password import hash_password
+from tests.conftest import get_fake_ragflow
 
 
 def _extract_iframe_params(url: str) -> dict:
@@ -32,29 +32,18 @@ async def _login(client, username="admin", password="testpass123"):
     assert resp.status_code == 200, f"登录失败: {resp.text}"
 
 
-def _mock_precreate(monkeypatch, session_id: str):
-    """辅助:mock 网关的 precreate_session_via_ragflow 返回给定 session_id。"""
-    monkeypatch.setattr(
-        "portal.routes.precreate_session_via_ragflow",
-        AsyncMock(return_value=session_id),
-    )
+def _mock_precreate(app, session_id: str):
+    """辅助:配置 FakeRagflow 预创建路由返回给定 session_id(Issue 97:transport 层 mock)。"""
+    get_fake_ragflow(app).precreate_session_id = session_id
 
 
-def _mock_ragflow_sse_success(monkeypatch, sse_body: bytes = b'data: {"code":0}\n\n'):
-    """辅助:mock 网关内的 httpx.AsyncClient,让上游 SSE 返回 200 成功流。
+def _mock_ragflow_sse_success(app, sse_body: bytes = b'data: {"code":0}\n\n'):
+    """辅助:配置 FakeRagflow 上游 SSE 返回 200 成功流(Issue 97:transport 层 mock)。
 
     用于 last_active_at 更新测试:stream_generator 完整消费成功流后才更新时间戳
-    (修复项 2:仅在成功流后更新)。不 mock 时上游 ragflow-mock.invalid 不可达(失败流)。
+    (修复项 2:仅在成功流后更新)。不配置时上游路由未启用 → ConnectError(失败流)。
     """
-
-    class _MockAsyncClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            kwargs["transport"] = httpx.MockTransport(
-                lambda req: httpx.Response(200, content=sse_body, headers={"content-type": "text/event-stream"})
-            )
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr("portal.gateway.httpx.AsyncClient", _MockAsyncClient)
+    get_fake_ragflow(app).sse_body = sse_body
 
 
 # ---------------------------------------------------------------------------
@@ -66,7 +55,7 @@ async def test_precreate_session_binds_to_user(client, app, monkeypatch):
     """预创建 session → chat_session_owner 有记录,绑定到当前用户。"""
     await _login(client)
     fake_session_id = "fake-ragflow-session-001"
-    _mock_precreate(monkeypatch, fake_session_id)
+    _mock_precreate(app, fake_session_id)
 
     resp = await client.post("/share-pages/sp_default/sessions")
     assert resp.status_code == 200
@@ -100,11 +89,11 @@ async def test_precreate_unknown_share_page(client):
 # ---------------------------------------------------------------------------
 
 
-async def test_precreate_returns_iframe_url_with_session_id(client, monkeypatch):
+async def test_precreate_returns_iframe_url_with_session_id(client, app):
     """预创建 session 返回的 iframe URL 含 session_id 参数,不含真实 beta Token。"""
     await _login(client)
     fake_session_id = "fake-ragflow-session-002"
-    _mock_precreate(monkeypatch, fake_session_id)
+    _mock_precreate(app, fake_session_id)
 
     resp = await client.post("/share-pages/sp_default/sessions")
     assert resp.status_code == 200
@@ -126,11 +115,11 @@ async def test_precreate_returns_iframe_url_with_session_id(client, monkeypatch)
 # ---------------------------------------------------------------------------
 
 
-async def test_list_sessions_returns_user_sessions(client, monkeypatch):
+async def test_list_sessions_returns_user_sessions(client, app):
     """用户能在「我的会话」看到预创建的 session(标题、最后活跃时间)。"""
     await _login(client)
     fake_session_id = "fake-ragflow-session-003"
-    _mock_precreate(monkeypatch, fake_session_id)
+    _mock_precreate(app, fake_session_id)
 
     await client.post("/share-pages/sp_default/sessions")
 
@@ -156,11 +145,11 @@ async def test_list_sessions_requires_login(client):
 # ---------------------------------------------------------------------------
 
 
-async def test_resume_session_returns_messages_and_references(client, monkeypatch):
+async def test_resume_session_returns_messages_and_references(client, app):
     """重新打开 session 返回消息正文 + 引用片段(chunks + doc_aggs)。"""
     await _login(client)
     fake_session_id = "fake-ragflow-session-004"
-    _mock_precreate(monkeypatch, fake_session_id)
+    _mock_precreate(app, fake_session_id)
     await client.post("/share-pages/sp_default/sessions")
 
     # mock RAGFlow GET 端点(基于 NOTES.md H3 验证的真实响应结构)
@@ -192,10 +181,7 @@ async def test_resume_session_returns_messages_and_references(client, monkeypatc
             },
         ],
     }
-    monkeypatch.setattr(
-        "portal.routes.fetch_session_history_via_ragflow",
-        AsyncMock(return_value=fake_history),
-    )
+    get_fake_ragflow(app).history = fake_history
 
     resp = await client.get(f"/share-pages/sp_default/sessions/{fake_session_id}")
     assert resp.status_code == 200
@@ -239,7 +225,7 @@ async def test_user_cannot_access_other_users_session(client, app, monkeypatch):
     # admin 登录并预创建 session
     await _login(client)
     fake_session_id = "fake-ragflow-session-005"
-    _mock_precreate(monkeypatch, fake_session_id)
+    _mock_precreate(app, fake_session_id)
     resp = await client.post("/share-pages/sp_default/sessions")
     assert resp.status_code == 200
 
@@ -279,7 +265,7 @@ async def test_sse_rejects_other_users_session(client, app, monkeypatch):
     # admin 登录并预创建 session(归属 admin)
     await _login(client)
     fake_session_id = "fake-ragflow-session-009"
-    _mock_precreate(monkeypatch, fake_session_id)
+    _mock_precreate(app, fake_session_id)
     resp = await client.post("/share-pages/sp_default/sessions")
     assert resp.status_code == 200
 
@@ -315,8 +301,8 @@ async def test_sse_updates_last_active_at(client, app, monkeypatch):
     """
     await _login(client)
     fake_session_id = "fake-ragflow-session-006"
-    _mock_precreate(monkeypatch, fake_session_id)
-    _mock_ragflow_sse_success(monkeypatch)
+    _mock_precreate(app, fake_session_id)
+    _mock_ragflow_sse_success(app)
     await client.post("/share-pages/sp_default/sessions")
 
     owner_before = app.state.session_store.get(fake_session_id)
@@ -352,8 +338,8 @@ async def test_sse_updates_last_active_at_with_known_session(client, app, monkey
     """SSE 代理对请求中的已知 session_id 更新 last_active_at(未带 session_id 不更新)。"""
     await _login(client)
     fake_session_id = "fake-ragflow-session-007"
-    _mock_precreate(monkeypatch, fake_session_id)
-    _mock_ragflow_sse_success(monkeypatch)
+    _mock_precreate(app, fake_session_id)
+    _mock_ragflow_sse_success(app)
     await client.post("/share-pages/sp_default/sessions")
 
     owner_before = app.state.session_store.get(fake_session_id)
@@ -395,7 +381,7 @@ async def test_sse_failed_stream_does_not_update_last_active_at(client, app, mon
     """
     await _login(client)
     fake_session_id = "fake-ragflow-session-008"
-    _mock_precreate(monkeypatch, fake_session_id)
+    _mock_precreate(app, fake_session_id)
     # 不 mock 上游:ragflow-mock.invalid 不可达,stream_generator 走 RequestError 分支(失败流)
     await client.post("/share-pages/sp_default/sessions")
 
