@@ -810,7 +810,8 @@ async def delete_session_via_ragflow(settings, dialog_id: str, session_id: str, 
 #
 # cascade_delete_for_user / sync_message_count_from_history 原为 SessionStore
 # 方法(Issue 94 上移,models.py 回归纯持久化,不再延迟 import gateway);
-# _dual_delete_session 原为 routes.py 私有函数(Issue 95 下沉,routes 恢复薄适配)。
+# dual_delete_session 原为 routes.py 私有函数 _dual_delete_session(Issue 95 下沉,routes 恢复
+# 薄适配;2026-08-24 评审后去下划线 — 跨模块导入即事实公共 API,命名与之对齐)。
 # 首参数均为 session_store/store;其余签名与原实现一致。
 # Issue 97:内部直接调统一函数带 ragflow_type 参数,不再按名分发。
 # ---------------------------------------------------------------------------
@@ -819,7 +820,7 @@ async def delete_session_via_ragflow(settings, dialog_id: str, session_id: str, 
 async def cascade_delete_for_user(session_store, portal_user_id: str, settings) -> list:
     """级联删除用户的所有会话(含 deleted_at 非空),用于用户硬删除场景。
 
-    与单会话双删策略(``_dual_delete_session``)的关键区别:
+    与单会话双删策略(``dual_delete_session``)的关键区别:
       用户硬删除后无法后续重试(无用户上下文),所以 RAGFlow 失败的会话也
       **硬删除**门户侧记录(避免 portal_user_id 指向不存在用户的孤儿记录);
       RAGFlow 侧的 API4Conversation 残留由管理员后续手动清理(脚本/管理界面)。
@@ -894,7 +895,7 @@ async def sync_message_count_from_history(
     return history
 
 
-async def _dual_delete_session(
+async def dual_delete_session(
     settings,
     store,
     dialog_id: str,
@@ -991,33 +992,7 @@ async def proxy_sse_to_ragflow(request: Request, dialog_id: str, ragflow_type: s
     reference_access_store = request.app.state.reference_access_store
     # Slice 15:公开 T_short 走公开链后半段(session 归属 u_anonymous,公开仅 chat 类型)
     if record.scope == "public":
-        if request_session_id:
-            _assert_session_ownership(
-                session_store,
-                request_session_id,
-                record.portal_user_id,
-                dialog_id,
-                record.share_page_id,
-            )
-        return _build_sse_streaming_response(
-            settings,
-            body,
-            dialog_id,
-            request_session_id,
-            request_question,
-            session_store,
-            ragflow_type="chat",
-            authorize_reference_documents=partial(reference_access_store.authorize_documents, record.token),
-            reference_access_store=reference_access_store,
-            t_short=record.token,
-            # Issue 91:公开问答同样记账,subject 为匿名锚点(record.portal_user_id=u_anonymous)
-            usage_context=UsageAccountingContext(
-                request.app.state.usage_store,
-                record.portal_user_id,
-                record.share_page_id,
-                share_page.org_id,
-            ),
-        )
+        return _proxy_public_sse_stream(request, record, dialog_id, body, share_page=share_page)
     # 标准链后半段:归属隔离(若请求体含 session_id,校验其归属当前 T_short 持有用户)
     if request_session_id:
         _assert_or_allow_first_real_message(
@@ -1063,6 +1038,7 @@ def _proxy_public_sse_stream(
     body: bytes,
     *,
     fallback_session_id: str = "",
+    share_page: "SharePage | None" = None,
 ) -> StreamingResponse:
     """公开 T_short 的 SSE 代理后半段(公开端点与标准路径公开分支共用,Issue 93)。
 
@@ -1072,7 +1048,8 @@ def _proxy_public_sse_stream(
     → 构造 SSE 流式响应。公开分享页当前仅 chat 类型,ragflow_type 固定为 'chat'。
 
     此函数不处理限流与审计(由调用方决定是否加)。
-    参数 ``fallback_session_id`` 供公开端点传入 URL 中的 session_id(body 无法解析时的回退)。
+    参数 ``fallback_session_id`` 供公开端点传入 URL 中的 session_id(body 无法解析时的回退);
+    ``share_page`` 由已持有它的调用方直传(避免重复查询);None 时本函数自查。
     """
     settings = request.app.state.settings
     reference_access_store = request.app.state.reference_access_store
@@ -1091,7 +1068,12 @@ def _proxy_public_sse_stream(
         )
     # 公开分享页当前仅 chat 类型,ragflow_type 固定为 'chat'
     # Issue 91:公开问答记账(subject 为匿名锚点 record.portal_user_id=u_anonymous)
-    share_page = request.app.state.seed.get_share_page(record.share_page_id)
+    # share_page 由调用方直传(resolve_token_and_share_page 已保证存在);
+    # 未传时自查(调用方必须保证能取到,取不到即 KeyError — fail-closed)
+    if share_page is None:
+        share_page = request.app.state.seed.get_share_page(record.share_page_id)
+        if share_page is None:
+            raise KeyError(f"分享页不存在: {record.share_page_id}")
     return _build_sse_streaming_response(
         settings,
         body,
@@ -1107,7 +1089,7 @@ def _proxy_public_sse_stream(
             request.app.state.usage_store,
             record.portal_user_id,
             record.share_page_id,
-            share_page.org_id if share_page else "default",
+            share_page.org_id,
         ),
     )
 
@@ -1964,8 +1946,12 @@ async def proxy_sse_public_to_ragflow(request: Request, share_page_id: str, sess
         body = json.dumps({"session_id": session_id, "stream": True}).encode("utf-8")
 
     # Issue 93:统一校验链(T_short 有效性 + is_public + enabled + dialog_id 一致 + touch 续期);
-    # 上方已确认令牌记录存在且 scope='public',resolved 必非 None。
+    # 上方已确认令牌记录存在且 scope='public',resolved 正常必非 None —
+    # 仍显式判空(assert 在 python -O 下会被剥落,resolve 内部校验语义变化时兜底 401)
     resolved = await resolve_token_and_share_page(request, dialog_id, touch=True)
-    assert resolved is not None, "routing 已确认令牌记录存在"
+    if resolved is None:
+        raise HTTPException(status_code=401, detail="令牌无效或已过期")
     record, _share_page = resolved
-    return _proxy_public_sse_stream(request, record, dialog_id, body, fallback_session_id=session_id)
+    return _proxy_public_sse_stream(
+        request, record, dialog_id, body, fallback_session_id=session_id, share_page=share_page
+    )

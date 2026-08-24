@@ -155,42 +155,43 @@ export default function GroupsAdminPage() {
     [creating, groupName, setGroups, setError],
   );
 
+  // Issue 88/89:成员增删共用的乐观更新原语 — add 与 remove 互为对方的回滚,
+  // 抽成一个 helper 消除四处镜像的 setGroups 块(已在组内时 add 幂等跳过,
+  // 移除时 member_count 不低于 0)
+  const mutateMember = useCallback(
+    (groupId: string, userId: string, add: boolean) => {
+      setGroups((prev) =>
+        prev
+          ? prev.map((g) => {
+              if (g.id !== groupId) return g;
+              const has = g.members.includes(userId);
+              if (add === has) return g;
+              return {
+                ...g,
+                members: add ? [...g.members, userId] : g.members.filter((id) => id !== userId),
+                member_count: add ? g.member_count + 1 : Math.max(0, g.member_count - 1),
+              };
+            })
+          : prev,
+      );
+    },
+    [setGroups],
+  );
+
   // Issue 88:添加成员支持一次多选(combobox chips),逐个乐观更新 + 调后端
   const handleAddMember = useCallback(
     async (groupId: string, userIds: string[]) => {
       for (const userId of userIds) {
         await run({
           id: `${groupId}:add:${userId}`,
-          optimistic: () =>
-            setGroups((prev) =>
-              prev
-                ? prev.map((g) =>
-                    g.id === groupId && !g.members.includes(userId)
-                      ? { ...g, members: [...g.members, userId], member_count: g.member_count + 1 }
-                      : g,
-                  )
-                : prev,
-            ),
-          rollback: () =>
-            setGroups((prev) =>
-              prev
-                ? prev.map((g) =>
-                    g.id === groupId
-                      ? {
-                          ...g,
-                          members: g.members.filter((id) => id !== userId),
-                          member_count: Math.max(0, g.member_count - 1),
-                        }
-                      : g,
-                  )
-                : prev,
-            ),
+          optimistic: () => mutateMember(groupId, userId, true),
+          rollback: () => mutateMember(groupId, userId, false),
           action: () => api.addAdminGroupMember(groupId, userId),
           errorMessage: '添加成员失败',
         });
       }
     },
-    [run, setGroups],
+    [run, mutateMember],
   );
 
   // Issue 89:移除成员需确认(ConfirmDialog)
@@ -203,34 +204,12 @@ export default function GroupsAdminPage() {
     setRemoveTarget(null);
     await run({
       id: `${groupId}:remove:${userId}`,
-      optimistic: () =>
-        setGroups((prev) =>
-          prev
-            ? prev.map((g) =>
-                g.id === groupId
-                  ? {
-                      ...g,
-                      members: g.members.filter((id) => id !== userId),
-                      member_count: Math.max(0, g.member_count - 1),
-                    }
-                  : g,
-              )
-            : prev,
-        ),
-      rollback: () =>
-        setGroups((prev) =>
-          prev
-            ? prev.map((g) =>
-                g.id === groupId && !g.members.includes(userId)
-                  ? { ...g, members: [...g.members, userId], member_count: g.member_count + 1 }
-                  : g,
-              )
-            : prev,
-        ),
+      optimistic: () => mutateMember(groupId, userId, false),
+      rollback: () => mutateMember(groupId, userId, true),
       action: () => api.removeAdminGroupMember(groupId, userId),
       errorMessage: '移除成员失败',
     });
-  }, [run, setGroups, selectedGroup, removeTarget]);
+  }, [run, mutateMember, selectedGroup, removeTarget]);
 
   return (
     <section>

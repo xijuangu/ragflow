@@ -33,13 +33,13 @@ from pydantic import BaseModel
 
 from portal.auth import LoginError, authenticate, get_current_user, require_org_admin
 from portal.gateway import (
-    _dual_delete_session,
     build_agent_iframe_url,
     build_iframe_url,
     build_widget_snippet,
     build_widget_url,
     cascade_delete_for_user,
     delete_session_via_ragflow,
+    dual_delete_session,
     fetch_session_history_via_ragflow,
     precreate_session_via_ragflow,
     proxy_bot_json_to_ragflow,
@@ -568,7 +568,7 @@ def _build_iframe_url(ragflow_browser_origin: str, resource_id: str, t_short: st
     return build_iframe_url(ragflow_browser_origin, resource_id, t_short, session_id)
 
 
-# Issue 95:_delete_session 分发与 _dual_delete_session 双删编排已下沉至 gateway.py
+# Issue 95:_delete_session 分发与 dual_delete_session 双删编排已下沉至 gateway.py
 # (routes 恢复「只注册路由 + 薄适配」);chat/agent 分发由 gateway 统一函数的
 # ragflow_type 参数承担(Issue 97 起测试改在 transport 层 mock 上游)。
 
@@ -819,7 +819,7 @@ async def rename_session(
 async def delete_session(share_page_id: str, session_id: str, request: Request, user=Depends(get_current_user)):
     """删除会话(对应 Slice 5 验收点 3-4:用户删除自己的会话,双删协调)。
 
-    双删事务策略(``_dual_delete_session``):
+    双删事务策略(``dual_delete_session``):
       - 先调 RAGFlow DELETE;成功 → 门户侧硬删除 chat_session_owner。
       - RAGFlow 失败 → 标记 deleted_at(记录保留待重试),返回 200(不暴露失败)。
     归属校验:session 必须归属当前用户且属于该分享页;不匹配 → 403/404。
@@ -834,9 +834,9 @@ async def delete_session(share_page_id: str, session_id: str, request: Request, 
     )
     # 双删:RAGFlow DELETE 成功 → 门户硬删除;失败 → 标记 deleted_at(返回 200 不暴露失败)
     # Slice 16:agent 类型走 agentbot 端点,chat 类型走 chatbot 端点
-    # Issue 95:_dual_delete_session 已下沉至 gateway.py(本层只做薄适配调用)
+    # Issue 95:dual_delete_session 已下沉至 gateway.py(本层只做薄适配调用)
     settings = request.app.state.settings
-    deleted = await _dual_delete_session(
+    deleted = await dual_delete_session(
         settings,
         request.app.state.session_store,
         share_page.ragflow_resource_id,
@@ -1317,7 +1317,7 @@ async def admin_update_share_page(
 async def admin_delete_session(share_page_id: str, session_id: str, request: Request, user=Depends(require_org_admin)):
     """管理员删除任意用户的会话(对应 Slice 5 验收点 5:管理员双删,不校验归属)。
 
-    双删策略与普通用户删除一致(``_dual_delete_session``):RAGFlow 成功 → 门户硬删除;
+    双删策略与普通用户删除一致(``dual_delete_session``):RAGFlow 成功 → 门户硬删除;
     失败 → 标记 deleted_at。
     校验:share_page_id 存在 + session 属于该分享页(与 rename_session/delete_session
     校验链一致,不匹配 → 403);管理员不校验 portal_user_id 归属(可删任意用户的会话)。
@@ -1337,10 +1337,10 @@ async def admin_delete_session(share_page_id: str, session_id: str, request: Req
     )
     # 双删:RAGFlow DELETE(管理员不校验 portal_user_id 归属,可删任意用户的会话)
     # Slice 16:agent 类型走 agentbot 端点,chat 类型走 chatbot 端点
-    # Issue 95:_dual_delete_session 已下沉至 gateway.py(本层只做薄适配调用)
+    # Issue 95:dual_delete_session 已下沉至 gateway.py(本层只做薄适配调用)
     settings = request.app.state.settings
     share_page = seed.get_share_page(share_page_id)
-    deleted = await _dual_delete_session(
+    deleted = await dual_delete_session(
         settings,
         request.app.state.session_store,
         owner.ragflow_resource_id,
