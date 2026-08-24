@@ -23,34 +23,29 @@ from portal.models import ANONYMOUS_USER_ID
 
 
 def _mock_ragflow_sse(
-    monkeypatch,
+    app,
     *,
     chunks: list[bytes] | None = None,
     drop_after_chunks: bool = False,
 ):
-    """mock 网关的 httpx.AsyncClient,让上游 SSE 返回指定 chunk 序列。
+    """配置上游 transport,让 SSE 返回指定 chunk 序列(Issue 97)。
 
     drop_after_chunks=True 时在 chunks 用尽后抛 httpx.ReadError,模拟断流。
     """
 
-    class _MockAsyncClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            async def _agen():
-                for chunk in chunks or []:
-                    yield chunk
-                if drop_after_chunks:
-                    raise httpx.ReadError("upstream connection dropped mid-stream")
+    async def _agen():
+        for chunk in chunks or []:
+            yield chunk
+        if drop_after_chunks:
+            raise httpx.ReadError("upstream connection dropped mid-stream")
 
-            kwargs["transport"] = httpx.MockTransport(
-                lambda req: httpx.Response(
-                    200,
-                    content=_agen(),
-                    headers={"content-type": "text/event-stream"},
-                )
-            )
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr("portal.gateway.httpx.AsyncClient", _MockAsyncClient)
+    app.state.settings.upstream_transport = httpx.MockTransport(
+        lambda req: httpx.Response(
+            200,
+            content=_agen(),
+            headers={"content-type": "text/event-stream"},
+        )
+    )
 
 
 def _sse_frame(payload: str) -> bytes:
@@ -207,11 +202,11 @@ def test_usage_store_list_filters(app):
 # ===========================================================================
 
 
-async def test_sse_records_real_usage_from_final_frame(client, app, monkeypatch):
+async def test_sse_records_real_usage_from_final_frame(client, app):
     t_short, dialog_id = await _get_t_short(client)
     _bind_session(app, "s-normal", dialog_id)
     _mock_ragflow_sse(
-        monkeypatch,
+        app,
         chunks=[
             _sse_frame('{"data":{"answer":"你","session_id":"s-normal"}}'),
             _sse_frame(
@@ -244,11 +239,11 @@ async def test_sse_records_real_usage_from_final_frame(client, app, monkeypatch)
 # ===========================================================================
 
 
-async def test_sse_records_estimated_usage_on_disconnect(client, app, monkeypatch):
+async def test_sse_records_estimated_usage_on_disconnect(client, app):
     t_short, dialog_id = await _get_t_short(client)
     _bind_session(app, "s-drop", dialog_id)
     _mock_ragflow_sse(
-        monkeypatch,
+        app,
         chunks=[_sse_frame('{"data":{"answer":"部分回答","session_id":"s-drop"}}')],
         drop_after_chunks=True,
     )
@@ -278,11 +273,11 @@ async def test_sse_records_estimated_usage_on_disconnect(client, app, monkeypatc
 # ===========================================================================
 
 
-async def test_sse_records_estimated_usage_when_final_frame_lacks_usage(client, app, monkeypatch):
+async def test_sse_records_estimated_usage_when_final_frame_lacks_usage(client, app):
     t_short, dialog_id = await _get_t_short(client)
     _bind_session(app, "s-legacy", dialog_id)
     _mock_ragflow_sse(
-        monkeypatch,
+        app,
         chunks=[
             _sse_frame('{"data":{"answer":"完整回答","session_id":"s-legacy","final":true}}'),
         ],
@@ -310,10 +305,10 @@ async def test_sse_records_estimated_usage_when_final_frame_lacks_usage(client, 
 # ===========================================================================
 
 
-async def test_greeting_request_not_recorded(client, app, monkeypatch):
+async def test_greeting_request_not_recorded(client, app):
     t_short, dialog_id = await _get_t_short(client)
     _mock_ragflow_sse(
-        monkeypatch,
+        app,
         chunks=[_sse_frame('{"data":{"answer":"","session_id":"s-greet","final":true}}')],
     )
     resp = await client.post(
@@ -325,11 +320,11 @@ async def test_greeting_request_not_recorded(client, app, monkeypatch):
     assert app.state.usage_store.list() == []
 
 
-async def test_session_deletion_does_not_affect_usage_records(client, app, monkeypatch):
+async def test_session_deletion_does_not_affect_usage_records(client, app):
     t_short, dialog_id = await _get_t_short(client)
     _bind_session(app, "s-del", dialog_id)
     _mock_ragflow_sse(
-        monkeypatch,
+        app,
         chunks=[
             _sse_frame(
                 '{"code":0,"data":{"answer":"答","session_id":"s-del","final":true,'
@@ -352,7 +347,7 @@ async def test_session_deletion_does_not_affect_usage_records(client, app, monke
     assert records[0].session_id == "s-del"
 
 
-async def test_public_anonymous_chat_recorded_with_anonymous_subject(client, app, monkeypatch):
+async def test_public_anonymous_chat_recorded_with_anonymous_subject(client, app):
     """公开分享页问答同样记账,subject 为匿名标识 u_anonymous(§12.2)。"""
     seed = app.state.seed
     assert seed.set_share_page_public("sp_default", True) is True
@@ -367,7 +362,7 @@ async def test_public_anonymous_chat_recorded_with_anonymous_subject(client, app
     # 公开会话归属匿名锚点(与 public_precreate_session 行为一致)
     _bind_session(app, "s-pub", dialog_id, portal_user_id=ANONYMOUS_USER_ID)
     _mock_ragflow_sse(
-        monkeypatch,
+        app,
         chunks=[
             _sse_frame(
                 '{"code":0,"data":{"answer":"公开回答","session_id":"s-pub","final":true,'

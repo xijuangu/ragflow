@@ -240,7 +240,17 @@ admin sidebar 新增「用量统计」tab，仅 admin 可见。汇总视图：�
 
 ## Issue 97：测试 mock 迁移到 httpx transport 层，删除为 monkeypatch 保留的薄模块
 
-> 状态：待实施。无阻塞。需独立 slice（测试迁移量大，约 30 处 monkeypatch）。
+> 状态：✅ 已完成（2026-08-24，分支 impl/97-98，worktree impl-cleanup）。
+>
+> 实施记录：生产代码侧 — `Settings` 新增 `upstream_transport` 注入点（生产始终 None，行为零变化）；`_build_upstream_client(settings, ...)` 经该点注入 `httpx.MockTransport`；gateway.py 删除 4 个 `*_agent_session_*_via_ragflow` 透传 wrapper（原 docstring 自认"保留函数名供测试 monkeypatch"）；routes.py 删除 `_precreate_session`/`_fetch_session_history`/`_rename_session` 3 个按名 dispatcher（调用点直接调统一函数带 `ragflow_type=`，`_delete_session` 已在 Issue 95 下沉、`_build_iframe_url` 保留为纯 URL 构造非 mock 接缝）；oidc.py `OIDCConfig` 加 `transport` 字段（`from_settings` 读 `settings.upstream_transport`，`_build_client(config)` 同模式注入，消除测试 patch 全局 `httpx.AsyncClient`）。
+>
+> 测试侧 — conftest 新增 `FakeRagflow` transport 层假实现：`install(app)` 把 `MockTransport(handler)` 装到 `app.state.settings.upstream_transport`，按 method+path 分发（POST */completions question=="" → 预创建、GET */sessions/<id> → history/history_queue、PATCH → rename_status、DELETE → delete_status/delete_status_by_session），未配置路由 raise `httpx.ConnectError` 保持「未 mock 即不可达」语义；`requests`/`history_calls` 全量记录（替代 AsyncMock 的 assert_awaited_once 类断言）。14 个测试文件完成迁移：slice1-5（前会话已迁）、slice6/12×2/13/14/15/16/18/19/22/23/30/40、issue91、reference_resources、e2e_regression；AsyncMock 断言等价改写（call_args 断言 → fake.requests 的 URL/body 断言；抛异常 side_effect → handler 抛 `httpx.ConnectError`/路由返回 500，经网关既有异常路径语义一致）。
+>
+> 迁移中发现并修复两处顺序污染/绑定缺陷：① test_slice13:579 直接赋值 `portal.routes.precreate_session_via_ragflow = AsyncMock(...)`（不经 monkeypatch 恢复）污染字母序在后的全部测试文件（全量跑 35 failed、单文件跑全绿的根因），已迁 FakeRagflow；② slice15 限流两用例的 `mock_precreate`/`mock_ragflow_sse` fixture 把 fake 装到 conftest app，而请求走自建 `limited_app`（monkeypatch 时代 patch 全局故能过，transport 层必须绑定对应 app），已改为 `get_fake_ragflow(limited_app)`。
+>
+> 保留的非 HTTP 目标 patch（逐个判断，不属于本票）：`portal.routes.secrets.token_urlsafe` ×9（固定 state/nonce 确定性，非 HTTP）；`portal.routes.get_authorization_url`/`exchange_code_for_claims` ×3（oidc.py docstring 声明的路由层测试 seam，mock 的是 oidc 高层接口而非 HTTP 细节）；`portal.gateway._build_passthrough_headers` ×2（请求头构造纯函数）；`portal.gateway.time.time` ×3（TokenStore 过期语义的时间确定性控制）。
+>
+> 基线 474 passed + 5 skipped 不回归，ruff 净。
 
 ## What to build
 
@@ -248,9 +258,9 @@ admin sidebar 新增「用量统计」tab，仅 admin 可见。汇总视图：�
 
 ## Acceptance criteria
 
-- [ ] 生产代码中不再存在"为测试保留"的函数；dispatch 不依赖运行时模块 globals 解析。
-- [ ] 测试只 patch transport 层，不再穿模块边界 patch `httpx.AsyncClient` 属性或双重命名空间。
-- [ ] 后端测试基线全绿；行为零变化。
+- [x] 生产代码中不再存在"为测试保留"的函数；dispatch 不依赖运行时模块 globals 解析。
+- [x] 测试只 patch transport 层，不再穿模块边界 patch `httpx.AsyncClient` 属性或双重命名空间。
+- [x] 后端测试基线全绿；行为零变化。
 
 ## Issue 98：TokenStore 拆出 ReferenceAccessStore
 

@@ -88,8 +88,8 @@ portal-extension/
 │   ├── tests/                # Vitest(89 tests,2026-07-13)
 │   ├── vite.config.ts        # base='/portal/'
 │   └── vitest.config.ts
-├── tests/                    # 后端 pytest(451 passed + 5 skipped,2026-07-22)
-│   ├── conftest.py
+├── tests/                    # 后端 pytest(474 passed + 5 skipped,2026-08-24)
+│   ├── conftest.py           # FakeRagflow transport 层假实现(Issue 97)+ 统一 mock fixture
 │   └── test_slice*.py        # 按 slice 组织的 E2E + 单测
 └── docs/
     ├── README.md             # 文档目录
@@ -127,6 +127,7 @@ portal-extension/
 - Portal 嵌入主题使用 RAGFlow 独立 localStorage key `ragflow-portal-embed-ui-theme`;无 `default_theme` 的独立 RAGFlow 页面继续使用 `ragflow-ui-theme`
 - 部署 rsync 必须排除 `--exclude='*.db'` 与 `--exclude='.env'`(数据文件与配置不得被 `--delete` 清掉)
 - CSS flex column 容器内的滚动子元素需显式 `flex-shrink: 0`,否则会话增多时被压缩而非触发滚动条(Slice 31 修复)
+- **测试对 RAGFlow/IdP 上游的 mock 一律在 httpx transport 层**(Issue 97):`Settings.upstream_transport` 是唯一注入点(生产始终 None),conftest `FakeRagflow` 装到 `app.state.settings.upstream_transport`;不得按名 patch 模块命名空间或 patch 全局 `httpx.AsyncClient`(穿模块边界);自建 app 的测试必须把 fake 装到该 app(`get_fake_ragflow(app)`),fixture 工厂只对 conftest 的 app 生效。保留的非 HTTP patch 例外:`secrets.token_urlsafe`(确定性随机)、oidc 路由层 seam(`get_authorization_url`/`exchange_code_for_claims`)、`_build_passthrough_headers`(纯函数)、`time.time`(过期语义控制)
 
 ## 6. 关键技术决策
 
@@ -477,7 +478,7 @@ ssh 172.16.10.180 'tail -5 ~/portal-extension/portal.log | grep -i preview || ec
 
 ## 10. 测试策略
 
-- **后端**:pytest,按 slice/issue 组织(`tests/test_slice*.py`、`tests/test_issue*.py`),基线 451 passed + 5 skipped(2026-07-22)
+- **后端**:pytest,按 slice/issue 组织(`tests/test_slice*.py`、`tests/test_issue*.py`),基线 474 passed + 5 skipped(2026-08-24)
 - **前端**:Vitest,按页面/组件组织(`frontend/tests/*.test.tsx`),基线 89 passed(2026-07-13)
 - **RAGFlow web**:Jest + esbuild transformer,基线 27 passed(2026-07-14);生产构建使用 `npm run build`
 - **E2E**:Playwright + 浏览器手动验收结合。`test/playwright/portal_extension/` 覆盖 portal 实际使用主路径、6 个管理后台 tab、Slice 44 缓存回归、Issue 82 全新浏览器恢复“劳动法”含引用历史会话、Issue 83 新/历史会话浅色及引用预览、临时用户 CRUD、用户组成员和分享页表单;`PORTAL_E2E_RUN_CHAT=1` 时额外发送真实 RAGFlow 问题并等待回复完成;`PORTAL_E2E_RUN_REFERENCE_CHAT=1` 时验证 Issue 84“劳动法”新回答的缩略图与交互引用;acceptance criteria 记录在 `docs/archive/ISSUES.md`
@@ -510,7 +511,7 @@ uv run pytest -q test/playwright/portal_extension -s --junitxml=/tmp/playwright-
 cd ragflow/portal-extension
 uv run pytest -q
 ```
-- 基线:451 passed + 5 skipped(2026-07-22)
+- 基线:474 passed + 5 skipped(2026-08-24)
 - 前置:无(测试用临时 SQLite,不连真实 MySQL/RAGFlow)
 - 失败处理:看 `tests/test_slice*.py` 对应 slice 的断言
 

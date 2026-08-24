@@ -123,7 +123,7 @@ async def _login_and_get_t_short(client):
 # ---------------------------------------------------------------------------
 
 
-async def test_proxy_passthrough_no_token(client, app, monkeypatch):
+async def test_proxy_passthrough_no_token(client, app):
     """Slice 18:无 Authorization header → 透传 RAGFlow(原生分享页场景)。
 
     旧行为(Slice 1-17):无 T_short → 401。
@@ -133,20 +133,15 @@ async def test_proxy_passthrough_no_token(client, app, monkeypatch):
 
     captured_urls = []
 
-    class _MockAsyncClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            def handler(req: httpx.Request) -> httpx.Response:
-                captured_urls.append(str(req.url))
-                return httpx.Response(
-                    200,
-                    content=b'data: {"code":0}\n\n',
-                    headers={"content-type": "text/event-stream"},
-                )
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured_urls.append(str(req.url))
+        return httpx.Response(
+            200,
+            content=b'data: {"code":0}\n\n',
+            headers={"content-type": "text/event-stream"},
+        )
 
-            kwargs["transport"] = httpx.MockTransport(handler)
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr("portal.gateway.httpx.AsyncClient", _MockAsyncClient)
+    app.state.settings.upstream_transport = httpx.MockTransport(handler)
 
     resp = await client.post(
         "/api/v1/chatbots/test-dialog-id-12345/completions",
@@ -160,7 +155,7 @@ async def test_proxy_passthrough_no_token(client, app, monkeypatch):
     )
 
 
-async def test_proxy_passthrough_unknown_token(client, app, monkeypatch):
+async def test_proxy_passthrough_unknown_token(client, app):
     """Slice 18:未知的 Bearer token(非 portal T_short)→ 透传 RAGFlow。
 
     旧行为:任意 Bearer token 不在 TokenStore → 401。
@@ -171,20 +166,15 @@ async def test_proxy_passthrough_unknown_token(client, app, monkeypatch):
 
     captured_auth = []
 
-    class _MockAsyncClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            def handler(req: httpx.Request) -> httpx.Response:
-                captured_auth.append(req.headers.get("Authorization", ""))
-                return httpx.Response(
-                    200,
-                    content=b'data: {"code":0}\n\n',
-                    headers={"content-type": "text/event-stream"},
-                )
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured_auth.append(req.headers.get("Authorization", ""))
+        return httpx.Response(
+            200,
+            content=b'data: {"code":0}\n\n',
+            headers={"content-type": "text/event-stream"},
+        )
 
-            kwargs["transport"] = httpx.MockTransport(handler)
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr("portal.gateway.httpx.AsyncClient", _MockAsyncClient)
+    app.state.settings.upstream_transport = httpx.MockTransport(handler)
 
     resp = await client.post(
         "/api/v1/chatbots/test-dialog-id-12345/completions",

@@ -39,12 +39,18 @@ _discovery_cache: dict[str, dict] = {}
 
 @dataclass
 class OIDCConfig:
-    """OIDC 配置切片(从 Settings 提取,便于独立测试与传参)。"""
+    """OIDC 配置切片(从 Settings 提取,便于独立测试与传参)。
+
+    transport 为 Issue 97 的测试注入点:生产为 None(httpx 默认真实网络);
+    测试注入 httpx.MockTransport 在 transport 层 mock IdP(与 gateway 的
+    settings.upstream_transport 同一模式)。非身份配置,仅供 _build_client 使用。
+    """
 
     issuer: str
     client_id: str
     client_secret: str
     redirect_uri: str
+    transport: "httpx.AsyncBaseTransport | None" = None
 
     @classmethod
     def from_settings(cls, settings) -> "OIDCConfig":
@@ -54,12 +60,20 @@ class OIDCConfig:
             client_id=settings.oidc_client_id,
             client_secret=settings.oidc_client_secret,
             redirect_uri=settings.oidc_redirect_uri,
+            transport=settings.upstream_transport,
         )
 
 
-def _build_client(*, timeout: float = 15.0) -> httpx.AsyncClient:
-    """构造 httpx.AsyncClient(trust_env=False,与 gateway 一致)。"""
-    return httpx.AsyncClient(timeout=httpx.Timeout(timeout=timeout, connect=10.0), trust_env=False)
+def _build_client(config: OIDCConfig, *, timeout: float = 15.0) -> httpx.AsyncClient:
+    """构造 httpx.AsyncClient(trust_env=False,与 gateway 一致)。
+
+    config.transport 为测试注入点(生产 None → 真实网络)。
+    """
+    return httpx.AsyncClient(
+        timeout=httpx.Timeout(timeout=timeout, connect=10.0),
+        trust_env=False,
+        transport=config.transport,
+    )
 
 
 async def _fetch_discovery(config: OIDCConfig) -> dict:
@@ -74,7 +88,7 @@ async def _fetch_discovery(config: OIDCConfig) -> dict:
         return cached
     discovery_url = f"{config.issuer.rstrip('/')}/.well-known/openid-configuration"
     try:
-        async with _build_client() as client:
+        async with _build_client(config) as client:
             resp = await client.get(discovery_url)
     except httpx.RequestError as e:
         raise HTTPException(status_code=502, detail=f"SSO IdP 不可达: {e}")
@@ -106,10 +120,10 @@ async def get_authorization_url(config: OIDCConfig, state: str, nonce: str) -> s
     return f"{auth_endpoint}?{urlencode(params)}"
 
 
-async def _fetch_jwks(jwks_uri: str) -> dict:
+async def _fetch_jwks(config: OIDCConfig, jwks_uri: str) -> dict:
     """获取 IdP JWKS(用于 id_token 签名验证)。"""
     try:
-        async with _build_client() as client:
+        async with _build_client(config) as client:
             resp = await client.get(jwks_uri)
     except httpx.RequestError as e:
         raise HTTPException(status_code=502, detail=f"SSO JWKS 不可达: {e}")
@@ -131,7 +145,7 @@ async def _exchange_code(config: OIDCConfig, disc: dict, code: str) -> dict:
         "client_secret": config.client_secret,
     }
     try:
-        async with _build_client() as client:
+        async with _build_client(config) as client:
             resp = await client.post(token_endpoint, data=data)
     except httpx.RequestError as e:
         raise HTTPException(status_code=502, detail=f"SSO token 端点不可达: {e}")
@@ -165,7 +179,7 @@ async def _verify_id_token(config: OIDCConfig, disc: dict, id_token: str, nonce:
     jwks_uri = disc.get("jwks_uri")
     if not jwks_uri:
         raise HTTPException(status_code=502, detail="SSO discovery 缺少 jwks_uri")
-    jwks = await _fetch_jwks(jwks_uri)
+    jwks = await _fetch_jwks(config, jwks_uri)
     try:
         claims = jwt.decode(
             id_token,

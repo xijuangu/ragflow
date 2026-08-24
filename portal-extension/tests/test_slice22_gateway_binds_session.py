@@ -16,29 +16,23 @@
 import httpx
 
 
-def _mock_ragflow_sse_with_session_id(monkeypatch, session_id: str, message_id: str = "msg-001", nested: bool = False):
-    """辅助:mock 网关的 httpx.AsyncClient,让上游 SSE 返回含指定 session_id 的成功流。
+def _mock_ragflow_sse_with_session_id(app, session_id: str, message_id: str = "msg-001", nested: bool = False):
+    """辅助:配置上游 transport,让 SSE 返回含指定 session_id 的成功流(Issue 97)。
 
     模拟 RAGFlow fetchSessionId 响应:首帧含 session_id(RAGFlow 新建的 session)。
     nested=True 时用嵌套结构 {data:{session_id}}(RAGFlow 部分端点的返回格式),
     nested=False 时用扁平结构 {session_id}(precreate_session_via_ragflow 解析的格式)。
     """
-
-    class _MockAsyncClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            if nested:
-                payload = f'{{"data":{{"session_id":"{session_id}","id":"{message_id}"}},"final":true}}'
-            else:
-                payload = f'{{"answer":"流式","session_id":"{session_id}","id":"{message_id}","final":true}}'
-            sse_body = f"data: {payload}\n\n".encode("utf-8")
-            kwargs["transport"] = httpx.MockTransport(
-                lambda req: httpx.Response(
-                    200, content=sse_body, headers={"content-type": "text/event-stream"}
-                )
-            )
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr("portal.gateway.httpx.AsyncClient", _MockAsyncClient)
+    if nested:
+        payload = f'{{"data":{{"session_id":"{session_id}","id":"{message_id}"}},"final":true}}'
+    else:
+        payload = f'{{"answer":"流式","session_id":"{session_id}","id":"{message_id}","final":true}}'
+    sse_body = f"data: {payload}\n\n".encode("utf-8")
+    app.state.settings.upstream_transport = httpx.MockTransport(
+        lambda req: httpx.Response(
+            200, content=sse_body, headers={"content-type": "text/event-stream"}
+        )
+    )
 
 
 async def _login(client, username="admin", password="testpass123"):
@@ -65,11 +59,11 @@ async def _get_t_short(client, share_page_id="sp_default"):
 # ---------------------------------------------------------------------------
 
 
-async def test_gateway_binds_session_id_from_sse_response_when_request_has_none(client, app, monkeypatch):
+async def test_gateway_binds_session_id_from_sse_response_when_request_has_none(client, app):
     """greeting 请求(question='')不绑定响应 session_id,避免刷新产生垃圾会话。"""
     t_short, dialog_id = await _get_t_short(client)
     ragflow_session_id = "slice22-session-from-ragflow-001"
-    _mock_ragflow_sse_with_session_id(monkeypatch, ragflow_session_id)
+    _mock_ragflow_sse_with_session_id(app, ragflow_session_id)
 
     # 请求体无 session_id 且 question=''(模拟 RAGFlow 前端挂载时的 greeting 请求)
     resp = await client.post(
@@ -89,11 +83,11 @@ async def test_gateway_binds_session_id_from_sse_response_when_request_has_none(
 # ---------------------------------------------------------------------------
 
 
-async def test_subsequent_request_with_bound_session_id_returns_200(client, app, monkeypatch):
+async def test_subsequent_request_with_bound_session_id_returns_200(client, app):
     """greeting 创建的未绑定 session 发真实首问时应放行并在成功后绑定。"""
     t_short, dialog_id = await _get_t_short(client)
     ragflow_session_id = "slice22-session-from-ragflow-002"
-    _mock_ragflow_sse_with_session_id(monkeypatch, ragflow_session_id, message_id="msg-002")
+    _mock_ragflow_sse_with_session_id(app, ragflow_session_id, message_id="msg-002")
 
     # 第一次:greeting 只拿到 RAGFlow session_id,但不绑定
     resp1 = await client.post(
@@ -122,11 +116,11 @@ async def test_subsequent_request_with_bound_session_id_returns_200(client, app,
 # ---------------------------------------------------------------------------
 
 
-async def test_already_bound_session_does_not_rebind(client, app, monkeypatch):
+async def test_already_bound_session_does_not_rebind(client, app):
     """请求体有已绑定的 session_id → 走归属校验 + update_last_active,不重复 bind(不抛唯一约束异常)。"""
     t_short, dialog_id = await _get_t_short(client)
     ragflow_session_id = "slice22-session-already-bound-003"
-    _mock_ragflow_sse_with_session_id(monkeypatch, ragflow_session_id, message_id="msg-003")
+    _mock_ragflow_sse_with_session_id(app, ragflow_session_id, message_id="msg-003")
 
     app.state.session_store.bind(
         session_id=ragflow_session_id,
@@ -150,11 +144,11 @@ async def test_already_bound_session_does_not_rebind(client, app, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-async def test_unbound_session_id_still_rejected_403(client, app, monkeypatch):
+async def test_unbound_session_id_still_rejected_403(client, app):
     """请求体有未绑定的 session_id 且 question 为空时仍拒绝,避免空请求抢绑。"""
     t_short, dialog_id = await _get_t_short(client)
     ragflow_session_id = "never-bound-session-004"
-    _mock_ragflow_sse_with_session_id(monkeypatch, ragflow_session_id, message_id="msg-004")
+    _mock_ragflow_sse_with_session_id(app, ragflow_session_id, message_id="msg-004")
 
     resp = await client.post(
         f"/api/v1/chatbots/{dialog_id}/completions",
@@ -170,11 +164,11 @@ async def test_unbound_session_id_still_rejected_403(client, app, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-async def test_gateway_binds_session_id_from_nested_sse_response(client, app, monkeypatch):
+async def test_gateway_binds_session_id_from_nested_sse_response(client, app):
     """真实消息无 session_id 时,嵌套结构 {data:{session_id}} 也能解析并绑定。"""
     t_short, dialog_id = await _get_t_short(client)
     ragflow_session_id = "slice22-session-nested-005"
-    _mock_ragflow_sse_with_session_id(monkeypatch, ragflow_session_id, nested=True)
+    _mock_ragflow_sse_with_session_id(app, ragflow_session_id, nested=True)
 
     # 请求体无 session_id 但 question 非空,代表真实首问
     resp = await client.post(

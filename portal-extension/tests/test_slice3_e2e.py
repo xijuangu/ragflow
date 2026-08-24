@@ -18,11 +18,12 @@
      另:test_chain_step1_unauthenticated_rejected 覆盖 embed-url / 预创建 路由的未登录 → 403。
 """
 
-from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlparse
 
 import httpx
 import pytest
+
+from tests.conftest import get_fake_ragflow
 
 
 def _extract_iframe_params(url: str) -> dict:
@@ -36,37 +37,26 @@ async def _login(client, username="admin", password="testpass123"):
     assert resp.status_code == 200, f"登录失败: {resp.text}"
 
 
-def _mock_precreate(monkeypatch, session_id: str):
-    """辅助:mock 网关的 precreate_session_via_ragflow 返回给定 session_id。"""
-    monkeypatch.setattr(
-        "portal.routes.precreate_session_via_ragflow",
-        AsyncMock(return_value=session_id),
-    )
+def _mock_precreate(app, session_id: str):
+    """辅助:配置 FakeRagflow 预创建路由返回给定 session_id(Issue 97:transport 层 mock)。"""
+    get_fake_ragflow(app).precreate_session_id = session_id
 
 
-def _mock_ragflow_sse_with_message(monkeypatch, session_id: str, message_id: str):
-    """辅助:mock 网关的 httpx.AsyncClient,让上游 SSE 返回含指定 message_id 与 session_id 的成功流。
+def _mock_ragflow_sse_with_message(app, session_id: str, message_id: str):
+    """辅助:配置 FakeRagflow 上游 SSE 返回含指定 message_id 与 session_id 的成功流。
 
     用于「继续对话流式」测试:验证新 message_id 生成、session_id 不变。
+    (Issue 97:transport 层 mock)
     """
-
-    class _MockAsyncClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            sse_body = (
-                f'data: {{"answer":"流式","session_id":"{session_id}","id":"{message_id}","final":true}}\n\n'
-            ).encode("utf-8")
-            kwargs["transport"] = httpx.MockTransport(
-                lambda req: httpx.Response(200, content=sse_body, headers={"content-type": "text/event-stream"})
-            )
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr("portal.gateway.httpx.AsyncClient", _MockAsyncClient)
+    get_fake_ragflow(app).sse_body = (
+        f'data: {{"answer":"流式","session_id":"{session_id}","id":"{message_id}","final":true}}\n\n'
+    ).encode("utf-8")
 
 
-async def _login_and_precreate(client, monkeypatch, session_id: str):
+async def _login_and_precreate(client, app, session_id: str):
     """辅助:登录 + 预创建 session,返回 (t_short, dialog_id, session_id)。"""
     await _login(client)
-    _mock_precreate(monkeypatch, session_id)
+    _mock_precreate(app, session_id)
     resp = await client.post("/share-pages/sp_default/sessions")
     assert resp.status_code == 200
     resp = await client.get("/share-pages/sp_default/embed-url")
@@ -93,14 +83,14 @@ async def _login_user_b_and_get_t_short(client_b) -> str:
 # ---------------------------------------------------------------------------
 
 
-async def test_continue_conversation_streams_with_new_message_id(client, monkeypatch):
+async def test_continue_conversation_streams_with_new_message_id(client, app):
     """用户 A 在旧 session_id 上继续提问,SSE 流式正常,新 message_id 生成,session_id 不变。"""
     fake_session_id = "slice3-session-continue-001"
-    t_short, dialog_id, _ = await _login_and_precreate(client, monkeypatch, fake_session_id)
+    t_short, dialog_id, _ = await _login_and_precreate(client, app, fake_session_id)
 
     # mock 上游 SSE 返回新 message_id(与 session_id 关联)
     new_message_id = "msg-new-slice3-001"
-    _mock_ragflow_sse_with_message(monkeypatch, fake_session_id, new_message_id)
+    _mock_ragflow_sse_with_message(app, fake_session_id, new_message_id)
 
     resp = await client.post(
         f"/api/v1/chatbots/{dialog_id}/completions",
@@ -124,7 +114,7 @@ async def test_continue_conversation_streams_with_new_message_id(client, monkeyp
 async def test_user_b_cannot_use_admin_session_id(client, app, monkeypatch):
     """用户 B 用 admin 的 session_id 调网关 SSE → 403(归属校验失败)。"""
     fake_session_id = "slice3-session-isolation-002"
-    _t_short_admin, dialog_id, _ = await _login_and_precreate(client, monkeypatch, fake_session_id)
+    _t_short_admin, dialog_id, _ = await _login_and_precreate(client, app, fake_session_id)
 
     # user2 已由 build_seed_data 硬编码(对 sp_default 有 use grant),直接登录
     transport = httpx.ASGITransport(app=app)
@@ -152,7 +142,7 @@ async def test_user_b_t_short_rejected_for_admin_session(client, app, monkeypatc
     本测试额外断言:即使 user2 也有 sp_default 的 grant,仍因 session 归属失败 → 403。
     """
     fake_session_id = "slice3-session-isolation-003"
-    _t_short_admin, dialog_id, _ = await _login_and_precreate(client, monkeypatch, fake_session_id)
+    _t_short_admin, dialog_id, _ = await _login_and_precreate(client, app, fake_session_id)
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client_b:
@@ -174,10 +164,10 @@ async def test_user_b_t_short_rejected_for_admin_session(client, app, monkeypatc
 async def test_revoke_grant_invalidates_t_short_immediately(client, app, monkeypatch):
     """管理员撤销用户 A 的授权后,已签发的 T_short 立即失效(同令牌 → 403)。"""
     fake_session_id = "slice3-session-revoke-004"
-    t_short, dialog_id, _ = await _login_and_precreate(client, monkeypatch, fake_session_id)
+    t_short, dialog_id, _ = await _login_and_precreate(client, app, fake_session_id)
 
     # 先验证 T_short 可用(撤销前)
-    _mock_ragflow_sse_with_message(monkeypatch, fake_session_id, "msg-pre-revoke")
+    _mock_ragflow_sse_with_message(app, fake_session_id, "msg-pre-revoke")
     resp = await client.post(
         f"/api/v1/chatbots/{dialog_id}/completions",
         json={"question": "撤销前", "stream": True, "session_id": fake_session_id},
@@ -204,7 +194,7 @@ async def test_revoke_grant_invalidates_t_short_immediately(client, app, monkeyp
 async def test_revoke_grant_blocks_iframe_continue(client, app, monkeypatch):
     """撤销后 iframe 继续提问 → 403(网关校验 grant 不存在)。"""
     fake_session_id = "slice3-session-revoke-005"
-    t_short, dialog_id, _ = await _login_and_precreate(client, monkeypatch, fake_session_id)
+    t_short, dialog_id, _ = await _login_and_precreate(client, app, fake_session_id)
 
     # 撤销授权
     resp = await client.request("DELETE", "/share-pages/sp_default/grants/user/u_admin")
@@ -243,7 +233,7 @@ async def test_revoke_grant_blocks_embed_url_refresh(client, app, monkeypatch):
 async def test_revoke_grant_preserves_session_history(client, app, monkeypatch):
     """撤销授权后历史会话在 chat_session_owner 中保留(管理员仍可查)。"""
     fake_session_id = "slice3-session-revoke-006"
-    await _login_and_precreate(client, monkeypatch, fake_session_id)
+    await _login_and_precreate(client, app, fake_session_id)
 
     # 撤销前确认 session 已绑定
     owner = app.state.session_store.get(fake_session_id)
@@ -274,7 +264,7 @@ async def test_sse_rejects_missing_cookie(client, app, monkeypatch):
     即使 Authorization header 带有效 T_short,网关也应在步骤 0 拒绝 → 403。
     """
     fake_session_id = "slice3-chain-step0-009"
-    t_short, dialog_id, _ = await _login_and_precreate(client, monkeypatch, fake_session_id)
+    t_short, dialog_id, _ = await _login_and_precreate(client, app, fake_session_id)
 
     # 用新 client(无 cookie)调 SSE,即使带有效 T_short 也应 → 403
     transport = httpx.ASGITransport(app=app)
@@ -311,7 +301,7 @@ async def test_chain_step2_no_grant_rejected(client, app, monkeypatch):
     resp = await client.get("/share-pages/sp_default/embed-url")
     assert resp.status_code == 403
     # 预创建 → 403(grant 不存在)
-    _mock_precreate(monkeypatch, "should-not-reach")
+    _mock_precreate(app, "should-not-reach")
     resp = await client.post("/share-pages/sp_default/sessions")
     assert resp.status_code == 403
 
@@ -319,7 +309,7 @@ async def test_chain_step2_no_grant_rejected(client, app, monkeypatch):
 async def test_chain_step3_session_not_owned_rejected(client, app, monkeypatch):
     """校验链步骤 3 失败:session 不归属当前用户 → 403。"""
     fake_session_id = "slice3-chain-step3-007"
-    t_short, dialog_id, _ = await _login_and_precreate(client, monkeypatch, fake_session_id)
+    t_short, dialog_id, _ = await _login_and_precreate(client, app, fake_session_id)
 
     # 用一个不存在的 session_id(归属校验失败:session 不存在)
     resp = await client.post(
@@ -338,7 +328,7 @@ async def test_chain_step4_dialog_id_mismatch_rejected(client, app, monkeypatch)
     与请求的 dialog_id 不一致 → 校验链步骤 4 失败 → 403。
     """
     fake_session_id = "slice3-chain-step4-008"
-    t_short, dialog_id, _ = await _login_and_precreate(client, monkeypatch, fake_session_id)
+    t_short, dialog_id, _ = await _login_and_precreate(client, app, fake_session_id)
 
     # 手动篡改归属记录的 ragflow_resource_id(模拟 dialog_id 不一致)
     # Slice 8:DB 后端 get() 返回独立 dataclass 实例,直接改属性不会持久化;

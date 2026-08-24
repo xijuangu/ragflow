@@ -37,7 +37,6 @@ Slice 7 review 修复(本文件增量):
 """
 
 import os
-from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -645,7 +644,7 @@ async def test_branch_hard_delete_user_cascades_sessions(client, app, mock_precr
     assert alice_sessions == [], "硬删除用户后不应残留任何会话记录(无孤儿)"
 
 
-async def test_branch_hard_delete_user_cascades_even_if_ragflow_fails(client, app, mock_precreate, monkeypatch):
+async def test_branch_hard_delete_user_cascades_even_if_ragflow_fails(client, app, mock_precreate):
     """分支 1c 变体:RAGFlow DELETE 部分失败时,门户侧仍全删(无孤儿),用户也删除。
 
     对应 ISSUES.md L217「无孤儿」:用户硬删除后,所有会话(含 RAGFlow 失败的)
@@ -666,14 +665,11 @@ async def test_branch_hard_delete_user_cascades_even_if_ragflow_fails(client, ap
         mock_precreate(fake_session_fail)
         await alice_client.post("/share-pages/sp_default/sessions")
 
-    # mock RAGFlow DELETE:对 fail session 抛 502,对 ok session 成功
-    # 注:cascade_delete_for_user 在 models.py 内延迟导入 portal.gateway.delete_session_via_ragflow,
-    # 故 mock gateway 模块的绑定(而非 routes 模块)
-    async def _fake_delete(settings, dialog_id, session_id):
-        if session_id == fake_session_fail:
-            raise HTTPException(status_code=502, detail="RAGFlow 上游失败")
+    # 配置 FakeRagflow DELETE:对 fail session 返回 500(网关统一包装为 502),对 ok session 成功
+    # (Issue 97 迁移;原按名 patch gateway.delete_session_via_ragflow 抛 502,语义一致)
+    from tests.conftest import get_fake_ragflow
 
-    monkeypatch.setattr("portal.gateway.delete_session_via_ragflow", AsyncMock(side_effect=_fake_delete))
+    get_fake_ragflow(app).delete_status_by_session = {fake_session_fail: 500}
 
     # 硬删除 alice(RAGFlow 部分失败)
     resp = await client.delete(f"/admin/users/{alice['id']}")

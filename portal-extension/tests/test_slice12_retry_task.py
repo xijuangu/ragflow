@@ -8,17 +8,16 @@
 
 设计:
   - 直接调 ``retry_delete_pending_sessions`` 函数(不等待定时器触发),验证单次执行行为。
-  - mock RAGFlow DELETE 端点(portal.gateway.delete_session_via_ragflow)。
+  - mock RAGFlow DELETE 端点(FakeRagflow transport 层,Issue 97;原先按名 patch
+    portal.tasks/portal.routes 的 delete_session_via_ragflow)。
   - lifecycle 测试用 ``asyncio.sleep`` 推进定时器,验证 startup/shutdown 行为。
 """
 
-from unittest.mock import AsyncMock
-
 import pytest
-from fastapi import HTTPException
 
 from portal.config import load_settings
 from portal.tasks import retry_delete_pending_sessions
+from tests.conftest import get_fake_ragflow
 
 # ---------------------------------------------------------------------------
 # 辅助
@@ -31,21 +30,22 @@ async def _login(client, username="admin", password="testpass123"):
     assert resp.status_code == 200, f"登录失败: {resp.text}"
 
 
-def _mock_precreate(monkeypatch, session_id: str):
-    """辅助:mock 网关的 precreate_session_via_ragflow 返回给定 session_id。"""
-    monkeypatch.setattr(
-        "portal.routes.precreate_session_via_ragflow",
-        AsyncMock(return_value=session_id),
-    )
-
-
-async def _precreate_session(client, monkeypatch, session_id: str):
+async def _precreate_session(client, app, session_id: str):
     """辅助:登录 + 预创建 session,返回响应体。"""
     await _login(client)
-    _mock_precreate(monkeypatch, session_id)
+    get_fake_ragflow(app).precreate_session_id = session_id
     resp = await client.post("/share-pages/sp_default/sessions")
     assert resp.status_code == 200, f"预创建失败: {resp.text}"
     return resp.json()
+
+
+def _delete_request_count(fake, session_id: str) -> int:
+    """统计 fake 收到的对该 session 的 DELETE 请求数(替代原 AsyncMock 断言)。"""
+    return sum(
+        1
+        for r in fake.requests
+        if r.method == "DELETE" and r.url.path.endswith(f"/sessions/{session_id}")
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -53,14 +53,13 @@ async def _precreate_session(client, monkeypatch, session_id: str):
 # ---------------------------------------------------------------------------
 
 
-async def test_retry_task_deletes_session_when_ragflow_succeeds(client, app, monkeypatch):
+async def test_retry_task_deletes_session_when_ragflow_succeeds(client, app):
     """RAGFlow DELETE 成功 → 门户侧硬删除,session 不在 list_pending_deletion 中。"""
     fake_session_id = "slice12-retry-ok"
-    await _precreate_session(client, monkeypatch, fake_session_id)
+    await _precreate_session(client, app, fake_session_id)
     app.state.session_store.mark_deleted(fake_session_id)
-    # mock RAGFlow DELETE 成功(任务在 portal.tasks 内导入,需 mock 该路径)
-    mock_delete = AsyncMock(return_value=None)
-    monkeypatch.setattr("portal.tasks.delete_session_via_ragflow", mock_delete)
+    # FakeRagflow DELETE 路由默认 200(成功)
+    fake = get_fake_ragflow(app)
 
     settings = app.state.settings
     await retry_delete_pending_sessions(settings, app.state.session_store)
@@ -68,22 +67,19 @@ async def test_retry_task_deletes_session_when_ragflow_succeeds(client, app, mon
     # 门户记录已硬删除
     assert app.state.session_store.get(fake_session_id) is None, "RAGFlow 成功后门户侧应硬删除"
     # RAGFlow DELETE 被调用一次
-    mock_delete.assert_awaited_once()
+    assert _delete_request_count(fake, fake_session_id) == 1
     # 不在 pending_deletion 列表中(已硬删除)
     pending = app.state.session_store.list_pending_deletion()
     assert all(s.session_id != fake_session_id for s in pending)
 
 
-async def test_retry_task_preserves_session_when_ragflow_fails(client, app, monkeypatch):
+async def test_retry_task_preserves_session_when_ragflow_fails(client, app):
     """RAGFlow DELETE 失败 → 门户侧记录保留(仍待重试),deleted_at 仍非空。"""
     fake_session_id = "slice12-retry-fail"
-    await _precreate_session(client, monkeypatch, fake_session_id)
+    await _precreate_session(client, app, fake_session_id)
     app.state.session_store.mark_deleted(fake_session_id)
-    # mock RAGFlow DELETE 失败
-    monkeypatch.setattr(
-        "portal.tasks.delete_session_via_ragflow",
-        AsyncMock(side_effect=HTTPException(status_code=502, detail="上游失败")),
-    )
+    # 配置 DELETE 全部失败(500 → 网关统一包装为 HTTPException 502)
+    get_fake_ragflow(app).delete_status = 500
 
     settings = app.state.settings
     # 不应抛异常(单个 session 失败不阻塞任务)
@@ -95,32 +91,27 @@ async def test_retry_task_preserves_session_when_ragflow_fails(client, app, monk
     assert owner.deleted_at is not None, "deleted_at 应仍非空(待重试)"
 
 
-async def test_retry_task_no_pending_does_nothing(client, app, monkeypatch):
+async def test_retry_task_no_pending_does_nothing(client, app):
     """无待重试会话时,任务不调 RAGFlow(空跑)。"""
-    mock_delete = AsyncMock(return_value=None)
-    monkeypatch.setattr("portal.tasks.delete_session_via_ragflow", mock_delete)
+    fake = get_fake_ragflow(app)
 
     settings = app.state.settings
     await retry_delete_pending_sessions(settings, app.state.session_store)
 
-    mock_delete.assert_not_awaited()
+    assert not [r for r in fake.requests if r.method == "DELETE"], "无待重试时不应调 RAGFlow DELETE"
 
 
-async def test_retry_task_partial_failure(client, app, monkeypatch):
+async def test_retry_task_partial_failure(client, app):
     """多个待重试:部分成功部分失败 — 成功的硬删除,失败的保留。"""
     sid_ok = "slice12-retry-partial-ok"
     sid_fail = "slice12-retry-partial-fail"
-    await _precreate_session(client, monkeypatch, sid_ok)
-    await _precreate_session(client, monkeypatch, sid_fail)
+    await _precreate_session(client, app, sid_ok)
+    await _precreate_session(client, app, sid_fail)
     app.state.session_store.mark_deleted(sid_ok)
     app.state.session_store.mark_deleted(sid_fail)
 
-    # mock RAGFlow DELETE:sid_ok 成功,sid_fail 失败
-    async def _fake_delete(settings, dialog_id, session_id):
-        if session_id == sid_fail:
-            raise HTTPException(status_code=502, detail="上游失败")
-
-    monkeypatch.setattr("portal.tasks.delete_session_via_ragflow", AsyncMock(side_effect=_fake_delete))
+    # 配置 DELETE:sid_ok 成功(默认 200),sid_fail 失败(500)
+    get_fake_ragflow(app).delete_status_by_session = {sid_fail: 500}
 
     settings = app.state.settings
     await retry_delete_pending_sessions(settings, app.state.session_store)
@@ -138,13 +129,13 @@ async def test_retry_task_partial_failure(client, app, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-async def test_manual_retry_delete_endpoint_still_works(client, app, monkeypatch):
+async def test_manual_retry_delete_endpoint_still_works(client, app):
     """Slice 6 的 POST /admin/sessions/{id}/retry-delete 端点回归测试。"""
     await _login(client)
     fake_session_id = "slice12-manual-retry"
-    await _precreate_session(client, monkeypatch, fake_session_id)
+    await _precreate_session(client, app, fake_session_id)
     app.state.session_store.mark_deleted(fake_session_id)
-    monkeypatch.setattr("portal.routes.delete_session_via_ragflow", AsyncMock(return_value=None))
+    # FakeRagflow DELETE 路由默认 200(成功)
 
     resp = await client.post(f"/admin/sessions/{fake_session_id}/retry-delete")
     assert resp.status_code == 200, f"手动重试应成功: {resp.text}"
@@ -182,12 +173,12 @@ def test_config_retry_delete_interval_disable(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-async def test_retry_task_lifecycle_starts_and_stops(app, monkeypatch):
+async def test_retry_task_lifecycle_starts_and_stops(app):
     """FastAPI startup 启动 retry task,shutdown 取消(无残留 task)。"""
     # 用极短间隔让任务循环可观察(0.01s)
     app.state.settings.retry_delete_interval_seconds = 1
-    # mock RAGFlow DELETE(避免真实调用)
-    monkeypatch.setattr("portal.tasks.delete_session_via_ragflow", AsyncMock(return_value=None))
+    # 装 FakeRagflow(避免真实调用;无 pending 时任务空跑)
+    get_fake_ragflow(app)
 
     # 模拟 startup:启动任务
     from portal.main import start_retry_delete_task
@@ -206,7 +197,7 @@ async def test_retry_task_lifecycle_starts_and_stops(app, monkeypatch):
     assert getattr(app.state, "retry_delete_task", None) is None
 
 
-async def test_retry_task_disabled_when_interval_zero(app, monkeypatch):
+async def test_retry_task_disabled_when_interval_zero(app):
     """retry_delete_interval_seconds <=0 时不启动定时任务(禁用)。"""
     app.state.settings.retry_delete_interval_seconds = 0
     from portal.main import start_retry_delete_task
@@ -221,31 +212,41 @@ async def test_retry_task_disabled_when_interval_zero(app, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-async def test_retry_task_exception_does_not_crash_loop(client, app, monkeypatch):
-    """单个 session 处理抛非 HTTPException 异常时,任务不崩溃(继续处理其他)。"""
+async def test_retry_task_exception_does_not_crash_loop(client, app):
+    """单个 session 处理抛非 HTTPException 异常时,任务不崩溃(继续处理其他)。
+
+    transport handler 对 sid_a 的 DELETE 抛 httpx.ConnectError(非 HTTPException,
+    gateway 不捕获直接传播),与原先 patch 抛 RuntimeError 的异常路径语义一致。
+    """
     sid_a = "slice12-retry-exception-a"
     sid_b = "slice12-retry-exception-b"
-    await _precreate_session(client, monkeypatch, sid_a)
-    await _precreate_session(client, monkeypatch, sid_b)
+    await _precreate_session(client, app, sid_a)
+    await _precreate_session(client, app, sid_b)
     app.state.session_store.mark_deleted(sid_a)
     app.state.session_store.mark_deleted(sid_b)
 
-    call_count = 0
+    import httpx
 
-    async def _fake_delete(settings, dialog_id, session_id):
-        nonlocal call_count
-        call_count += 1
-        if session_id == sid_a:
-            raise RuntimeError("意外的错误")
+    fake = get_fake_ragflow(app)
+    inner_handler = fake.handler
 
-    monkeypatch.setattr("portal.tasks.delete_session_via_ragflow", AsyncMock(side_effect=_fake_delete))
+    def handler(req: httpx.Request) -> httpx.Response:
+        fake.requests.append(req)
+        if req.method == "DELETE":
+            if req.url.path.endswith(f"/sessions/{sid_a}"):
+                raise httpx.ConnectError("mock: 上游连接异常", request=req)
+            return httpx.Response(200, json={"code": 0})
+        return inner_handler(req)
+
+    app.state.settings.upstream_transport = httpx.MockTransport(handler)
 
     settings = app.state.settings
     # 不应抛异常
     await retry_delete_pending_sessions(settings, app.state.session_store)
 
-    # 两个 session 都被尝试
-    assert call_count == 2
+    # 两个 session 都被尝试(DELETE 请求各发一次)
+    assert _delete_request_count(fake, sid_a) == 1
+    assert _delete_request_count(fake, sid_b) == 1
     # sid_a 处理失败仍保留,sid_b 处理成功已删除
     assert app.state.session_store.get(sid_a) is not None, "异常时 sid_a 保留"
     assert app.state.session_store.get(sid_b) is None, "sid_b 应正常删除"

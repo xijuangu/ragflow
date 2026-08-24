@@ -29,13 +29,17 @@ Slice 5 扩展(原型 H7/H8 验证结论 — 会话重命名/删除双删):
 Slice 16 扩展(widget + Agent 支持):
   - build_agent_iframe_url:构造 RAGFlow Agent iframe URL(/agent/share?...)。
   - build_widget_url / build_widget_snippet:widget 独立页面 URL 与可嵌入 iframe snippet。
-  - precreate_agent_session_via_ragflow / fetch_agent_session_history_via_ragflow /
-    rename_agent_session_via_ragflow / delete_agent_session_via_ragflow:
-    agent 类型走 RAGFlow agentbot 端点(/api/v1/agentbots/<id>/...),与 chat 的
-    chatbot 端点(/api/v1/chatbots/<id>/...)对应。
+  - 上游会话函数统一收 ragflow_type 参数(TD15):agent 类型走 RAGFlow agentbot/agents
+    端点(/api/v1/agentbots/<id>/...),与 chat 的 chatbot 端点(/api/v1/chatbots/<id>/...)
+    对应;Issue 97 删除 *_agent_*_via_ragflow 透传 wrapper(原为测试 monkeypatch 接缝)。
   - proxy_sse_to_ragflow 加 ragflow_type 参数:agent 类型上游走 agentbot 端点,
-    message_count 同步调 fetch_agent_session_history_via_ragflow。
+    message_count 同步调 fetch_session_history_via_ragflow(ragflow_type='agent')。
   - 校验链对 widget 与 agent 类型同样生效(不因 ragflow_type/embed_type 跳过)。
+
+Issue 97(测试 mock 接缝迁移):
+  - _build_upstream_client 收 settings,经 settings.upstream_transport 注入
+    httpx.MockTransport;测试在 transport 层 mock RAGFlow 响应,不再按名 patch
+    本模块命名空间(生产 upstream_transport 始终 None,行为零变化)。
 """
 
 import json
@@ -461,12 +465,19 @@ def _build_upstream_headers(beta_token: str, content_type: str | None = None) ->
     return headers
 
 
-def _build_upstream_client(*, timeout: float | None = 30.0) -> httpx.AsyncClient:
+def _build_upstream_client(settings, *, timeout: float | None = 30.0) -> httpx.AsyncClient:
     """构造 httpx.AsyncClient(trust_env=False,网关连内部 RAGFlow 不走系统代理环境变量)。
+
+    settings.upstream_transport 为 Issue 97 的测试注入点:生产始终 None(httpx 默认
+    真实网络);测试注入 httpx.MockTransport 在 transport 层 mock 上游响应。
 
     调用方需用 `async with` 管理生命周期。
     """
-    return httpx.AsyncClient(timeout=httpx.Timeout(timeout=timeout, connect=10.0), trust_env=False)
+    return httpx.AsyncClient(
+        timeout=httpx.Timeout(timeout=timeout, connect=10.0),
+        trust_env=False,
+        transport=settings.upstream_transport,
+    )
 
 
 def _ragflow_http_error(resp, action: str) -> HTTPException:
@@ -672,7 +683,7 @@ async def precreate_session_via_ragflow(settings, dialog_id: str, ragflow_type: 
     # 空 question 触发 RAGFlow 创建 session 返回 prologue(NOTES.md H4 验证)
     body = json.dumps({"question": "", "stream": True, "quote": True}).encode("utf-8")
     err_action = "预创建 agent session" if ragflow_type == "agent" else "预创建 session"
-    async with _build_upstream_client(timeout=30.0) as client:
+    async with _build_upstream_client(settings, timeout=30.0) as client:
         async with client.stream("POST", upstream_url, content=body, headers=upstream_headers) as resp:
             if resp.status_code != 200:
                 raise _ragflow_http_error(resp, f"RAGFlow {err_action} 失败")
@@ -697,15 +708,6 @@ async def precreate_session_via_ragflow(settings, dialog_id: str, ragflow_type: 
     raise HTTPException(status_code=502, detail=f"RAGFlow {err_action} 未返回 session_id")
 
 
-async def precreate_agent_session_via_ragflow(settings, agent_id: str) -> str:
-    """调 RAGFlow Agent 创建空 session(Slice 16 — agent 预创建)。
-
-    TD15:thin wrapper,委托给 precreate_session_via_ragflow(ragflow_type='agent')。
-    保留独立函数名供测试 monkeypatch(patch portal.routes.precreate_agent_session_via_ragflow)。
-    """
-    return await precreate_session_via_ragflow(settings, agent_id, ragflow_type="agent")
-
-
 async def fetch_session_history_via_ragflow(
     settings, dialog_id: str, session_id: str, ragflow_type: str = "chat"
 ) -> dict:
@@ -726,7 +728,7 @@ async def fetch_session_history_via_ragflow(
     upstream_url = f"{settings.ragflow_host.rstrip('/')}/api/v1/{bot_segment}/{dialog_id}/sessions/{session_id}"
     upstream_headers = _build_upstream_headers(settings.ragflow_beta_token)
     err_action = "取回 agent 会话" if ragflow_type == "agent" else "取回会话"
-    async with _build_upstream_client(timeout=30.0) as client:
+    async with _build_upstream_client(settings, timeout=30.0) as client:
         resp = await client.get(upstream_url, headers=upstream_headers)
         if resp.status_code != 200:
             raise _ragflow_http_error(resp, f"RAGFlow {err_action}失败")
@@ -734,15 +736,6 @@ async def fetch_session_history_via_ragflow(
         # RAGFlow get_result 包裹结构:{"code":0,"data":{...}}
         data = body.get("data", body) if isinstance(body, dict) else body
         return data
-
-
-async def fetch_agent_session_history_via_ragflow(settings, agent_id: str, session_id: str) -> dict:
-    """调 RAGFlow Agent GET 端点取回 agent 会话消息与引用(Slice 16 — agent 类型)。
-
-    TD15:thin wrapper,委托给 fetch_session_history_via_ragflow(ragflow_type='agent')。
-    保留独立函数名供测试 monkeypatch。
-    """
-    return await fetch_session_history_via_ragflow(settings, agent_id, session_id, ragflow_type="agent")
 
 
 async def rename_session_via_ragflow(
@@ -764,19 +757,10 @@ async def rename_session_via_ragflow(
     upstream_url = f"{settings.ragflow_host.rstrip('/')}/api/v1/{bot_segment}/{dialog_id}/sessions/{session_id}"
     upstream_headers = _build_upstream_headers(settings.ragflow_beta_token, content_type="application/json")
     err_action = "重命名 agent 会话" if ragflow_type == "agent" else "重命名会话"
-    async with _build_upstream_client(timeout=30.0) as client:
+    async with _build_upstream_client(settings, timeout=30.0) as client:
         resp = await client.patch(upstream_url, headers=upstream_headers, json={"name": name})
         if resp.status_code != 200:
             raise _ragflow_http_error(resp, f"RAGFlow {err_action}失败")
-
-
-async def rename_agent_session_via_ragflow(settings, agent_id: str, session_id: str, name: str) -> None:
-    """调 RAGFlow Agent PATCH 端点更新 agent 会话标题(Slice 16 — agent 类型重命名)。
-
-    TD15:thin wrapper,委托给 rename_session_via_ragflow(ragflow_type='agent')。
-    保留独立函数名供测试 monkeypatch。
-    """
-    return await rename_session_via_ragflow(settings, agent_id, session_id, name, ragflow_type="agent")
 
 
 async def delete_session_via_ragflow(settings, dialog_id: str, session_id: str, ragflow_type: str = "chat") -> None:
@@ -795,19 +779,10 @@ async def delete_session_via_ragflow(settings, dialog_id: str, session_id: str, 
     upstream_url = f"{settings.ragflow_host.rstrip('/')}/api/v1/{bot_segment}/{dialog_id}/sessions/{session_id}"
     upstream_headers = _build_upstream_headers(settings.ragflow_beta_token)
     err_action = "删除 agent 会话" if ragflow_type == "agent" else "删除会话"
-    async with _build_upstream_client(timeout=30.0) as client:
+    async with _build_upstream_client(settings, timeout=30.0) as client:
         resp = await client.delete(upstream_url, headers=upstream_headers)
         if resp.status_code != 200:
             raise _ragflow_http_error(resp, f"RAGFlow {err_action}失败")
-
-
-async def delete_agent_session_via_ragflow(settings, agent_id: str, session_id: str) -> None:
-    """调 RAGFlow Agent DELETE 端点删除 agent 会话(Slice 16 — agent 类型删除)。
-
-    TD15:thin wrapper,委托给 delete_session_via_ragflow(ragflow_type='agent')。
-    保留独立函数名供测试 monkeypatch(patch portal.routes 与 portal.gateway 两处)。
-    """
-    return await delete_session_via_ragflow(settings, agent_id, session_id, ragflow_type="agent")
 
 
 # ---------------------------------------------------------------------------
@@ -817,8 +792,7 @@ async def delete_agent_session_via_ragflow(settings, agent_id: str, session_id: 
 # 方法(Issue 94 上移,models.py 回归纯持久化,不再延迟 import gateway);
 # _dual_delete_session 原为 routes.py 私有函数(Issue 95 下沉,routes 恢复薄适配)。
 # 首参数均为 session_store/store;其余签名与原实现一致。
-# 测试 mock 接缝不变:内部调用按名解析本模块 globals
-# (patch ``portal.gateway.delete_session_via_ragflow`` 等仍生效)。
+# Issue 97:内部直接调统一函数带 ragflow_type 参数,不再按名分发。
 # ---------------------------------------------------------------------------
 
 
@@ -888,10 +862,9 @@ async def sync_message_count_from_history(
     错误处理(SSE 路径用 try/except + logger.warning;routes 路径用 _invoke_upstream)。
     """
     if history is None:
-        if ragflow_type == "agent":
-            history = await fetch_agent_session_history_via_ragflow(settings, dialog_id, session_id)
-        else:
-            history = await fetch_session_history_via_ragflow(settings, dialog_id, session_id)
+        history = await fetch_session_history_via_ragflow(
+            settings, dialog_id, session_id, ragflow_type=ragflow_type
+        )
     if isinstance(history, dict):
         messages = history.get("messages", [])
         # 仅当 count 变化时才写库(恢复原 resume_session 守卫,SSE/admin 路径同享优化)
@@ -917,17 +890,13 @@ async def _dual_delete_session(
 
     Slice 16:``ragflow_type`` 参数,agent 类型调 agentbot 端点,chat 类型调 chatbot 端点。
     Issue 95:从 routes.py 下沉至网关层(双删编排属权限业务,§4 硬约束:routes 只注册
-    路由 + 薄适配)。分发按名解析本模块 globals,测试 patch
-    ``portal.gateway.delete_session_via_ragflow`` / ``delete_agent_session_via_ragflow`` 仍生效。
+    路由 + 薄适配)。Issue 97:直接调统一函数带 ``ragflow_type=`` 参数,不再按名分发。
 
     返回 True 表示 RAGFlow 删除成功(门户侧已硬删除);
     返回 False 表示 RAGFlow 失败(门户侧已标记 deleted_at,记录保留待重试)。
     """
     try:
-        if ragflow_type == "agent":
-            await delete_agent_session_via_ragflow(settings, dialog_id, session_id)
-        else:
-            await delete_session_via_ragflow(settings, dialog_id, session_id)
+        await delete_session_via_ragflow(settings, dialog_id, session_id, ragflow_type=ragflow_type)
         store.delete(session_id)
         return True
     except HTTPException:
@@ -1189,7 +1158,7 @@ def _build_sse_streaming_response(
         event_parser = SSEJSONEventParser()
         can_rewrite = token_store is not None and bool(t_short)
         try:
-            async with _build_upstream_client(timeout=None) as client:
+            async with _build_upstream_client(settings, timeout=None) as client:
                 async with client.stream("POST", upstream_url, content=body, headers=upstream_headers) as upstream:
                     async for chunk in upstream.aiter_bytes():
                         events = event_parser.feed_with_raw(chunk)
@@ -1613,7 +1582,7 @@ async def proxy_document_thumbnails_to_ragflow(request: Request):
     resolved = await resolve_token_and_share_page(request, reference_access=True)
     if resolved is None:
         try:
-            async with _build_upstream_client() as client:
+            async with _build_upstream_client(settings) as client:
                 resp = await client.get(
                     upstream_url,
                     params=request.query_params.multi_items(),
@@ -1635,7 +1604,7 @@ async def proxy_document_thumbnails_to_ragflow(request: Request):
         raise HTTPException(status_code=403, detail="文档不在当前会话引用范围内")
 
     try:
-        async with _build_upstream_client() as client:
+        async with _build_upstream_client(settings) as client:
             resp = await client.get(
                 upstream_url,
                 params=request.query_params.multi_items(),
@@ -1671,7 +1640,7 @@ async def proxy_document_preview_to_ragflow(request: Request, document_id: str):
         upstream_headers = _build_upstream_headers(settings.ragflow_beta_token)
 
     try:
-        async with _build_upstream_client() as client:
+        async with _build_upstream_client(settings) as client:
             resp = await client.get(upstream_url, headers=upstream_headers)
         response_headers = {}
         if content_disposition := resp.headers.get("content-disposition"):
@@ -1700,7 +1669,7 @@ async def proxy_document_image_to_ragflow(request: Request, image_id: str):
         if ticket_value:
             raise HTTPException(status_code=401, detail="图片票据无效或已过期")
         try:
-            async with _build_upstream_client() as client:
+            async with _build_upstream_client(settings) as client:
                 resp = await client.get(upstream_url, headers=_build_passthrough_headers(request))
             return Response(
                 content=resp.content,
@@ -1721,7 +1690,7 @@ async def proxy_document_image_to_ragflow(request: Request, image_id: str):
         raise HTTPException(status_code=403, detail="图片不在当前会话引用范围内")
 
     try:
-        async with _build_upstream_client() as client:
+        async with _build_upstream_client(settings) as client:
             resp = await client.get(upstream_url, headers=_build_upstream_headers(settings.ragflow_beta_token))
         return Response(
             content=resp.content,
@@ -1755,7 +1724,7 @@ def _build_sse_passthrough_response(
 
     async def stream_generator():
         try:
-            async with _build_upstream_client(timeout=None) as client:
+            async with _build_upstream_client(settings, timeout=None) as client:
                 async with client.stream("POST", upstream_url, content=body, headers=passthrough_headers) as upstream:
                     async for chunk in upstream.aiter_bytes():
                         yield chunk
@@ -1797,7 +1766,7 @@ async def proxy_bot_json_to_ragflow(
     if resolved is None:
         passthrough_headers = _build_passthrough_headers(request)
         try:
-            async with _build_upstream_client() as client:
+            async with _build_upstream_client(settings) as client:
                 resp = await client.get(upstream_url, headers=passthrough_headers)
             return Response(
                 content=resp.content,
@@ -1812,7 +1781,7 @@ async def proxy_bot_json_to_ragflow(
     # 校验通过 → 用 beta Token 调 RAGFlow
     upstream_headers = _build_upstream_headers(settings.ragflow_beta_token)
     try:
-        async with _build_upstream_client() as client:
+        async with _build_upstream_client(settings) as client:
             resp = await client.get(upstream_url, headers=upstream_headers)
         # Slice 42:RAGFlow /info 响应的 data.title 是 dialog.name(如内部知识库名 law-test-01),
         # iframe 内 EmbedContainer 头部会显示此值。用 portal 分享页名称替换,避免泄露内部
@@ -1860,7 +1829,7 @@ async def proxy_session_history_to_ragflow(
     resolved = await resolve_token_and_share_page(request, resource_id, reference_access=True)
     if resolved is None:
         try:
-            async with _build_upstream_client() as client:
+            async with _build_upstream_client(settings) as client:
                 resp = await client.get(upstream_url, headers=_build_passthrough_headers(request))
             return Response(
                 content=resp.content,
@@ -1882,7 +1851,7 @@ async def proxy_session_history_to_ragflow(
     )
 
     try:
-        async with _build_upstream_client() as client:
+        async with _build_upstream_client(settings) as client:
             resp = await client.get(upstream_url, headers=_build_upstream_headers(settings.ragflow_beta_token))
         body = resp.content
         if resp.status_code == 200:

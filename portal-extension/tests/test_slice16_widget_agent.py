@@ -10,18 +10,19 @@
   7. X-Frame-Options 策略对 widget 场景适配(跨域嵌入需调整 CSP/frame-ancestors)。
 
 设计:
-  - 复用 conftest.py 的 mock helper(mock_precreate / mock_ragflow_sse / mock_fetch_history)。
+  - 复用 conftest.py 的 mock helper(mock_precreate / mock_ragflow_sse / mock_fetch_history)
+    与 FakeRagflow transport 层假实现(Issue 97)。
   - widget 模式:`GET /widget/<id>` 返回独立 HTML 页面,`embed-url` 返回 widget_url + snippet。
   - agent 模式:`embed-url` 返回 agent iframe URL(/agent/share 路径),SSE 代理走 agentbot 端点。
   - CSP:widget 页面响应含 frame-ancestors 头,允许跨域嵌入;其他页面保持 SAMEORIGIN。
 """
 
 import os
-from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlparse
 
-import httpx
 import pytest
+
+from tests.conftest import get_fake_ragflow
 
 # ---------------------------------------------------------------------------
 # 辅助
@@ -39,25 +40,14 @@ async def _login(client, username="admin", password="testpass123"):
     assert resp.status_code == 200, f"登录失败: {resp.text}"
 
 
-def _mock_agent_precreate(monkeypatch, session_id: str):
-    """辅助:mock 网关的 precreate_agent_session_via_ragflow 返回给定 session_id。"""
-    monkeypatch.setattr(
-        "portal.routes.precreate_agent_session_via_ragflow",
-        AsyncMock(return_value=session_id),
-    )
+def _mock_agent_precreate(app, session_id: str):
+    """辅助:配置 FakeRagflow 预创建路由返回给定 session_id(agent 走 agentbot 端点)。"""
+    get_fake_ragflow(app).precreate_session_id = session_id
 
 
-def _mock_ragflow_agent_sse_success(monkeypatch, sse_body: bytes = b'data: {"code":0}\n\n'):
-    """辅助:mock 网关内的 httpx.AsyncClient,让 agent SSE 上游返回 200 成功流。"""
-
-    class _MockAsyncClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            kwargs["transport"] = httpx.MockTransport(
-                lambda req: httpx.Response(200, content=sse_body, headers={"content-type": "text/event-stream"})
-            )
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr("portal.gateway.httpx.AsyncClient", _MockAsyncClient)
+def _mock_ragflow_agent_sse_success(app, sse_body: bytes = b'data: {"code":0}\n\n'):
+    """辅助:配置 FakeRagflow SSE 路由返回 200 成功流。"""
+    get_fake_ragflow(app).sse_body = sse_body
 
 
 # ===========================================================================
@@ -312,7 +302,7 @@ async def test_non_widget_page_keeps_sameorigin(client, app):
 # ===========================================================================
 
 
-async def test_agent_sse_proxy_uses_agentbot_endpoint(client, app, monkeypatch):
+async def test_agent_sse_proxy_uses_agentbot_endpoint(client, app):
     """Agent 分享页 SSE 代理走 /api/v1/agentbots/<id>/completions 端点。"""
     await _login(client)
     create = await client.post(
@@ -328,8 +318,9 @@ async def test_agent_sse_proxy_uses_agentbot_endpoint(client, app, monkeypatch):
         f"/admin/share-pages/{sp_id}/grants",
         json={"subject_type": "user", "subject_id": "u_admin", "permission": "use"},
     )
+    fake = get_fake_ragflow(app)
     # 预创建 agent session
-    _mock_agent_precreate(monkeypatch, "agent-session-001")
+    _mock_agent_precreate(app, "agent-session-001")
     precreate = await client.post(f"/share-pages/{sp_id}/sessions")
     assert precreate.status_code == 200, f"预创建失败: {precreate.text}"
     assert precreate.json()["session_id"] == "agent-session-001"
@@ -339,24 +330,10 @@ async def test_agent_sse_proxy_uses_agentbot_endpoint(client, app, monkeypatch):
     assert embed.status_code == 200
     t_short = _extract_params(embed.json()["iframe_url"])["auth"][0]
 
-    # mock agent SSE 上游成功流
-    captured_urls = []
-
-    class _MockAsyncClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            def handler(req: httpx.Request) -> httpx.Response:
-                captured_urls.append(str(req.url))
-                sse = 'data: {"answer":"agent 回答","session_id":"agent-session-001","id":"m1","final":true}\n\n'
-                return httpx.Response(
-                    200,
-                    content=sse.encode("utf-8"),
-                    headers={"content-type": "text/event-stream"},
-                )
-
-            kwargs["transport"] = httpx.MockTransport(handler)
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr("portal.gateway.httpx.AsyncClient", _MockAsyncClient)
+    # 配置 agent SSE 上游成功流
+    fake.sse_body = (
+        'data: {"answer":"agent 回答","session_id":"agent-session-001","id":"m1","final":true}\n\n'
+    ).encode("utf-8")
 
     # 调 agent SSE 代理端点
     resp = await client.post(
@@ -368,39 +345,25 @@ async def test_agent_sse_proxy_uses_agentbot_endpoint(client, app, monkeypatch):
     assert resp.status_code == 200, f"agent SSE 失败: {resp.text}"
 
     # 验证上游 URL 走 agentbot 端点(而非 chatbot)
+    captured_urls = [str(r.url) for r in fake.requests]
     assert any("/api/v1/agentbots/agent-sse-001/completions" in u for u in captured_urls), (
         f"应走 agentbot 端点,实际上游 URL: {captured_urls}"
     )
     assert not any("/api/v1/chatbots/" in u for u in captured_urls), "不应走 chatbot 端点"
 
 
-async def test_chat_sse_proxy_still_uses_chatbot_endpoint(client, app, monkeypatch):
+async def test_chat_sse_proxy_still_uses_chatbot_endpoint(client, app):
     """chat 类型 SSE 代理仍走 /api/v1/chatbots/<id>/completions(向后兼容)。"""
     await _login(client)
+    fake = get_fake_ragflow(app)
     # 预创建 session
-    monkeypatch.setattr(
-        "portal.routes.precreate_session_via_ragflow",
-        AsyncMock(return_value="chat-session-001"),
-    )
+    fake.precreate_session_id = "chat-session-001"
     await client.post("/share-pages/sp_default/sessions")
     embed = await client.get("/share-pages/sp_default/embed-url")
     t_short = _extract_params(embed.json()["iframe_url"])["auth"][0]
     dialog_id = os.environ["RAGFLOW_DIALOG_ID"]
 
-    captured_urls = []
-
-    class _MockAsyncClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            def handler(req: httpx.Request) -> httpx.Response:
-                captured_urls.append(str(req.url))
-                return httpx.Response(
-                    200, content=b'data: {"code":0}\n\n', headers={"content-type": "text/event-stream"}
-                )
-
-            kwargs["transport"] = httpx.MockTransport(handler)
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr("portal.gateway.httpx.AsyncClient", _MockAsyncClient)
+    fake.sse_body = b'data: {"code":0}\n\n'
 
     resp = await client.post(
         f"/api/v1/chatbots/{dialog_id}/completions",
@@ -409,7 +372,9 @@ async def test_chat_sse_proxy_still_uses_chatbot_endpoint(client, app, monkeypat
     )
     await resp.aread()
     assert resp.status_code == 200
-    assert any(f"/api/v1/chatbots/{dialog_id}/completions" in u for u in captured_urls)
+    assert any(
+        f"/api/v1/chatbots/{dialog_id}/completions" in str(r.url) for r in fake.requests
+    )
 
 
 # ===========================================================================
@@ -417,28 +382,14 @@ async def test_chat_sse_proxy_still_uses_chatbot_endpoint(client, app, monkeypat
 # ===========================================================================
 
 
-async def test_agent_sse_passthrough_unknown_token(client, app, monkeypatch):
+async def test_agent_sse_passthrough_unknown_token(client, app):
     """Slice 18:Agent SSE 代理 — 未知的 Bearer token → 透传 RAGFlow agentbot 端点。
 
     旧行为:Bearer token 不在 TokenStore → 401。
     Slice 18:token 不在 TokenStore → 非 portal T_short → 透传 RAGFlow。
     """
-    captured_urls = []
-
-    class _MockAsyncClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            def handler(req: httpx.Request) -> httpx.Response:
-                captured_urls.append(str(req.url))
-                return httpx.Response(
-                    200,
-                    content=b'data: {"code":0}\n\n',
-                    headers={"content-type": "text/event-stream"},
-                )
-
-            kwargs["transport"] = httpx.MockTransport(handler)
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr("portal.gateway.httpx.AsyncClient", _MockAsyncClient)
+    fake = get_fake_ragflow(app)
+    fake.sse_body = b'data: {"code":0}\n\n'
 
     resp = await client.post(
         "/api/v1/agentbots/agent-val-001/completions",
@@ -448,12 +399,12 @@ async def test_agent_sse_passthrough_unknown_token(client, app, monkeypatch):
     await resp.aread()
     assert resp.status_code == 200
     # 验证透传到 agentbot 端点
-    assert any("/api/v1/agentbots/agent-val-001/completions" in u for u in captured_urls), (
-        f"应透传到 agentbot 端点,实际 URLs: {captured_urls}"
+    assert any("/api/v1/agentbots/agent-val-001/completions" in str(r.url) for r in fake.requests), (
+        f"应透传到 agentbot 端点,实际 URLs: {[str(r.url) for r in fake.requests]}"
     )
 
 
-async def test_agent_sse_rejects_missing_grant(client, app, monkeypatch):
+async def test_agent_sse_rejects_missing_grant(client, app):
     """Agent SSE 代理:无 grant 的用户 → 403(校验链步骤 1 生效)。"""
     await _login(client)
     create = await client.post(
@@ -484,7 +435,7 @@ async def test_widget_embed_url_rejects_no_grant(client, app):
 # ===========================================================================
 
 
-async def test_widget_session_enters_my_sessions(client, app, monkeypatch):
+async def test_widget_session_enters_my_sessions(client, app):
     """widget 分享页预创建的会话进入「我的会话」列表。"""
     await _login(client)
     create = await client.post(
@@ -496,11 +447,8 @@ async def test_widget_session_enters_my_sessions(client, app, monkeypatch):
         f"/admin/share-pages/{sp_id}/grants",
         json={"subject_type": "user", "subject_id": "u_admin", "permission": "use"},
     )
-    # mock 预创建(widget 用 chat 端点预创建,ragflow_type=chat)
-    monkeypatch.setattr(
-        "portal.routes.precreate_session_via_ragflow",
-        AsyncMock(return_value="widget-session-001"),
-    )
+    # 配置预创建路由(widget 用 chat 端点预创建,ragflow_type=chat)
+    get_fake_ragflow(app).precreate_session_id = "widget-session-001"
     resp = await client.post(f"/share-pages/{sp_id}/sessions")
     assert resp.status_code == 200
 
@@ -511,7 +459,7 @@ async def test_widget_session_enters_my_sessions(client, app, monkeypatch):
     assert any(s["session_id"] == "widget-session-001" for s in sessions)
 
 
-async def test_agent_session_enters_my_sessions(client, app, monkeypatch):
+async def test_agent_session_enters_my_sessions(client, app):
     """agent 分享页预创建的会话进入「我的会话」列表。"""
     await _login(client)
     create = await client.post(
@@ -523,8 +471,8 @@ async def test_agent_session_enters_my_sessions(client, app, monkeypatch):
         f"/admin/share-pages/{sp_id}/grants",
         json={"subject_type": "user", "subject_id": "u_admin", "permission": "use"},
     )
-    # mock agent 预创建
-    _mock_agent_precreate(monkeypatch, "agent-my-session-001")
+    # 配置 agent 预创建路由
+    _mock_agent_precreate(app, "agent-my-session-001")
     resp = await client.post(f"/share-pages/{sp_id}/sessions")
     assert resp.status_code == 200
     assert resp.json()["session_id"] == "agent-my-session-001"
@@ -534,7 +482,7 @@ async def test_agent_session_enters_my_sessions(client, app, monkeypatch):
     assert any(s["session_id"] == "agent-my-session-001" for s in sessions)
 
 
-async def test_agent_session_can_be_renamed_and_deleted(client, app, monkeypatch):
+async def test_agent_session_can_be_renamed_and_deleted(client, app):
     """agent 会话可重命名与删除(进入「我的会话」管理)。"""
     await _login(client)
     create = await client.post(
@@ -546,11 +494,11 @@ async def test_agent_session_can_be_renamed_and_deleted(client, app, monkeypatch
         f"/admin/share-pages/{sp_id}/grants",
         json={"subject_type": "user", "subject_id": "u_admin", "permission": "use"},
     )
-    _mock_agent_precreate(monkeypatch, "agent-mgmt-sess")
+    # FakeRagflow 的 rename/delete 路由默认 200(成功),无需额外配置
+    get_fake_ragflow(app)
+    _mock_agent_precreate(app, "agent-mgmt-sess")
     await client.post(f"/share-pages/{sp_id}/sessions")
 
-    # mock 重命名(agent 用 agentbot 端点)
-    monkeypatch.setattr("portal.routes.rename_agent_session_via_ragflow", AsyncMock(return_value=None))
     rename = await client.patch(
         f"/share-pages/{sp_id}/sessions/agent-mgmt-sess",
         json={"title": "新标题"},
@@ -562,10 +510,6 @@ async def test_agent_session_can_be_renamed_and_deleted(client, app, monkeypatch
     listing = await client.get(f"/share-pages/{sp_id}/sessions")
     assert any(s["title"] == "新标题" for s in listing.json()["sessions"])
 
-    # mock 删除
-    # Issue 95:双删编排(_dual_delete_session)已下沉 gateway.py,agent 删除分发
-    # 解析 gateway 命名空间;portal.routes 不再 re-export delete_agent_session_via_ragflow
-    monkeypatch.setattr("portal.gateway.delete_agent_session_via_ragflow", AsyncMock(return_value=None))
     delete = await client.delete(f"/share-pages/{sp_id}/sessions/agent-mgmt-sess")
     assert delete.status_code == 200
     assert delete.json()["deleted"] is True
@@ -607,7 +551,7 @@ async def test_widget_snippet_contains_iframe_with_widget_url(client, app):
 # ===========================================================================
 
 
-async def test_agent_precreate_uses_agentbot_endpoint(client, app, monkeypatch):
+async def test_agent_precreate_uses_agentbot_endpoint(client, app):
     """agent 分享页预创建 session 走 agentbot 端点(/api/v1/agentbots/<id>/completions)。"""
     await _login(client)
     create = await client.post(
@@ -620,24 +564,14 @@ async def test_agent_precreate_uses_agentbot_endpoint(client, app, monkeypatch):
         json={"subject_type": "user", "subject_id": "u_admin", "permission": "use"},
     )
 
-    captured_urls = []
-
-    class _MockAsyncClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            def handler(req: httpx.Request) -> httpx.Response:
-                captured_urls.append(str(req.url))
-                sse = b'data: {"data":{"session_id":"agent-pre-sess"}}\n\n'
-                return httpx.Response(200, content=sse, headers={"content-type": "text/event-stream"})
-
-            kwargs["transport"] = httpx.MockTransport(handler)
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr("portal.gateway.httpx.AsyncClient", _MockAsyncClient)
+    fake = get_fake_ragflow(app)
+    fake.precreate_session_id = "agent-pre-sess"
 
     resp = await client.post(f"/share-pages/{sp_id}/sessions")
     assert resp.status_code == 200, f"预创建失败: {resp.text}"
     assert resp.json()["session_id"] == "agent-pre-sess"
     # 上游 URL 走 agentbot 端点
+    captured_urls = [str(r.url) for r in fake.requests]
     assert any("/api/v1/agentbots/agent-pre-001/completions" in u for u in captured_urls), (
         f"预创建应走 agentbot 端点,实际: {captured_urls}"
     )

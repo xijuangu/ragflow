@@ -40,9 +40,7 @@ from portal.gateway import (
     build_widget_url,
     cascade_delete_for_user,
     delete_session_via_ragflow,
-    fetch_agent_session_history_via_ragflow,
     fetch_session_history_via_ragflow,
-    precreate_agent_session_via_ragflow,
     precreate_session_via_ragflow,
     proxy_bot_json_to_ragflow,
     proxy_document_image_to_ragflow,
@@ -51,7 +49,6 @@ from portal.gateway import (
     proxy_session_history_to_ragflow,
     proxy_sse_public_to_ragflow,
     proxy_sse_to_ragflow,
-    rename_agent_session_via_ragflow,
     rename_session_via_ragflow,
     sync_message_count_from_history,
 )
@@ -552,12 +549,12 @@ async def _invoke_upstream(fn: Callable[[], Awaitable[T]], action: str) -> T:
 
 
 # ---------------------------------------------------------------------------
-# TD15:ragflow_type 分发辅助 — 消除散落的 ``if ragflow_type == "agent"`` 分支
+# TD15:ragflow_type 分发辅助
 #
-# 每个操作集中到一个 dispatch 函数,按 ragflow_type 调用对应的 chat/agent 函数名。
-# 保留按名调用(而非 dict 派发)以兼容测试 monkeypatch:测试 patch
-# ``portal.routes.precreate_agent_session_via_ragflow`` 等名字,必须在运行时
-# 从模块 globals 解析才能命中 mock。
+# Issue 97:_precreate_session / _fetch_session_history / _rename_session 三个
+# 按名 dispatcher 已删除 — 调用点直接调 gateway 统一函数带 ``ragflow_type=``
+# 参数(原 dispatcher 仅为测试 monkeypatch 接缝存在)。
+# _build_iframe_url 保留:纯 URL 构造分发,非测试 mock 接缝。
 # ---------------------------------------------------------------------------
 
 
@@ -571,30 +568,9 @@ def _build_iframe_url(ragflow_browser_origin: str, resource_id: str, t_short: st
     return build_iframe_url(ragflow_browser_origin, resource_id, t_short, session_id)
 
 
-async def _precreate_session(settings, resource_id: str, ragflow_type: str) -> str:
-    """按 ragflow_type 预创建 session(chat → chatbot 端点,agent → agentbot 端点)。"""
-    if ragflow_type == "agent":
-        return await precreate_agent_session_via_ragflow(settings, resource_id)
-    return await precreate_session_via_ragflow(settings, resource_id)
-
-
-async def _fetch_session_history(settings, resource_id: str, session_id: str, ragflow_type: str) -> dict:
-    """按 ragflow_type 取回会话 history(chat → chatbot 端点,agent → agentbot 端点)。"""
-    if ragflow_type == "agent":
-        return await fetch_agent_session_history_via_ragflow(settings, resource_id, session_id)
-    return await fetch_session_history_via_ragflow(settings, resource_id, session_id)
-
-
-async def _rename_session(settings, resource_id: str, session_id: str, name: str, ragflow_type: str) -> None:
-    """按 ragflow_type 重命名会话(chat → chatbot 端点,agent → agentbot 端点)。"""
-    if ragflow_type == "agent":
-        return await rename_agent_session_via_ragflow(settings, resource_id, session_id, name)
-    return await rename_session_via_ragflow(settings, resource_id, session_id, name)
-
-
 # Issue 95:_delete_session 分发与 _dual_delete_session 双删编排已下沉至 gateway.py
-# (routes 恢复「只注册路由 + 薄适配」);chat/agent 分发在 gateway 内部完成,
-# 测试 mock 接缝改为 patch ``portal.gateway.delete_session_via_ragflow`` 等名字。
+# (routes 恢复「只注册路由 + 薄适配」);chat/agent 分发由 gateway 统一函数的
+# ragflow_type 参数承担(Issue 97 起测试改在 transport 层 mock 上游)。
 
 
 def _get_owned_session_or_404(
@@ -705,9 +681,10 @@ async def precreate_session(share_page_id: str, request: Request, user=Depends(g
     share_page = _check_share_page_access(seed, share_page_id, user)
     settings = request.app.state.settings
     # 调 RAGFlow 预创建 session(网关用 beta Token,绝不返回浏览器)
-    # TD15:统一走 _precreate_session 分发(消除 if ragflow_type == "agent" 分支)
     session_id = await _invoke_upstream(
-        lambda: _precreate_session(settings, share_page.ragflow_resource_id, share_page.ragflow_type),
+        lambda: precreate_session_via_ragflow(
+            settings, share_page.ragflow_resource_id, ragflow_type=share_page.ragflow_type
+        ),
         "预创建 session 失败",
     )
     # 立即绑定到当前用户(chat_session_owner.portal_user_id NOT NULL)
@@ -778,9 +755,10 @@ async def resume_session(share_page_id: str, session_id: str, request: Request, 
     # 调 RAGFlow GET 端点取回消息 + 引用
     # Slice 16:agent 类型走 agentbot 端点,chat 类型走 chatbot 端点
     settings = request.app.state.settings
-    # TD15:统一走 _fetch_session_history 分发(消除 if ragflow_type == "agent" 分支)
     history = await _invoke_upstream(
-        lambda: _fetch_session_history(settings, share_page.ragflow_resource_id, session_id, share_page.ragflow_type),
+        lambda: fetch_session_history_via_ragflow(
+            settings, share_page.ragflow_resource_id, session_id, ragflow_type=share_page.ragflow_type
+        ),
         "取回会话失败",
     )
     # 恢复会话时同步 message_count(TD2 + TD8:聚到 sync_message_count_from_history)
@@ -828,9 +806,10 @@ async def rename_session(
     )
     # 同步策略:RAGFlow PATCH 成功才更新门户 title;失败抛 502(不吞异常,不更新门户 title)
     # rename_session_via_ragflow 在非 200 时已抛 HTTPException(502),此处直接透传
-    # TD15:统一走 _rename_session 分发(消除 if ragflow_type == "agent" 分支)
     settings = request.app.state.settings
-    await _rename_session(settings, share_page.ragflow_resource_id, session_id, body.title, share_page.ragflow_type)
+    await rename_session_via_ragflow(
+        settings, share_page.ragflow_resource_id, session_id, body.title, ragflow_type=share_page.ragflow_type
+    )
     # RAGFlow 成功 → 更新门户 title(两侧同步)
     request.app.state.session_store.rename(session_id, body.title)
     return {"session_id": session_id, "title": body.title}
@@ -1619,7 +1598,9 @@ async def admin_get_session(
     share_page = request.app.state.seed.get_share_page(owner.share_page_id)
     ragflow_type = share_page.ragflow_type if share_page is not None else "chat"
     history = await _invoke_upstream(
-        lambda: _fetch_session_history(settings, owner.ragflow_resource_id, session_id, ragflow_type),
+        lambda: fetch_session_history_via_ragflow(
+            settings, owner.ragflow_resource_id, session_id, ragflow_type=ragflow_type
+        ),
         "取回会话失败",
     )
     # 同步 message_count(TD2 + TD8:聚到 sync_message_count_from_history)
