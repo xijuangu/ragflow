@@ -16,7 +16,12 @@ from portal.password import verify_password
 
 
 class LoginError(HTTPException):
-    """登录失败异常 — 携带明确的中文错误 detail(对应验收点 9)。"""
+    """登录失败异常 — 携带明确的中文错误 detail(对应验收点 9)。
+
+    Issue 96 评估去留:保留。它是 authenticate() 的语义化异常类型,
+    routes.login 用 ``except LoginError`` 精确捕获登录失败写 login_failure 审计,
+    与其他 HTTPException(如上游 502)区分;删除会失去该区分度,语义价值大于一个空子类的成本。
+    """
 
 
 async def authenticate(seed, username: str, password: str) -> PortalUser:

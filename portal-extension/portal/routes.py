@@ -56,6 +56,7 @@ from portal.gateway import (
     sync_message_count_from_history,
 )
 from portal.models import (
+    ANONYMOUS_USER_ID,
     EmbedType,
     Permission,
     PortalGroup,
@@ -116,6 +117,19 @@ class UpdateEnabledRequest(BaseModel):
 
     enabled: bool | None = None
     is_public: bool | None = None
+
+
+class UpdateUserEnabledRequest(BaseModel):
+    """管理员更新用户启用状态(Issue 96:enabled 必填)。
+
+    修复前复用分享页的 UpdateEnabledRequest(enabled/is_public 均可选):
+    只传 is_public 时 enabled=None 被 set_user_enabled 写入 NOT NULL 列。
+    enabled 必填后,缺字段由 Pydantic 在入口处返回 422,不会触及写库
+    (对齐 share-page 版「至少传一个字段」的校验意图,只是用户侧只有
+    enabled 一个可更新字段,故直接设为必填)。
+    """
+
+    enabled: bool
 
 
 class UpdatePasswordRequest(BaseModel):
@@ -1077,7 +1091,7 @@ async def admin_update_user_password(
 
 @router.patch("/admin/users/{user_id}")
 async def admin_update_user(
-    user_id: str, body: UpdateEnabledRequest, request: Request, user=Depends(require_org_admin)
+    user_id: str, body: UpdateUserEnabledRequest, request: Request, user=Depends(require_org_admin)
 ):
     """管理员启用/禁用用户(对应 PRD 用户故事 4-5)。
 
@@ -1086,6 +1100,8 @@ async def admin_update_user(
 
     Slice 6 加审计:启用 → user_enable,禁用 → user_disable(PR D7b)。
     Slice 13:org_admin 跨 org 修改用户 → 403。
+    Issue 96:body 为 UpdateUserEnabledRequest(enabled 必填),缺 enabled
+    (如只传 is_public)→ Pydantic 422,不会把 None 写入 NOT NULL 列。
     """
     seed = request.app.state.seed
     target = seed.get_user(user_id)
@@ -1357,15 +1373,17 @@ async def admin_delete_session(share_page_id: str, session_id: str, request: Req
 
 
 def _validate_subject_exists(seed, subject_type: str, subject_id: str) -> None:
-    """校验 subject 存在;不存在 → 404。"""
+    """校验 subject 存在;不存在 → 404。
+
+    Issue 96:subject_type 由 CreateGrantRequest 的 Literal 类型在入口处做
+    Pydantic 422 校验,到达此处只会是 "user" 或 "group",原 else 分支不可达,已删除。
+    """
     if subject_type == "user":
         if seed.get_user(subject_id) is None:
             raise HTTPException(status_code=404, detail="用户不存在")
     elif subject_type == "group":
         if seed.get_group(subject_id) is None:
             raise HTTPException(status_code=404, detail="用户组不存在")
-    else:
-        raise HTTPException(status_code=400, detail="subject_type 必须为 user 或 group")
 
 
 @router.post("/admin/share-pages/{share_page_id}/grants", status_code=201)
@@ -1739,8 +1757,8 @@ async def public_get_embed_url(share_page_id: str, request: Request):
     share_page = _get_public_share_page(seed, share_page_id)
     settings = request.app.state.settings
     token_store = request.app.state.token_store
-    # 签发公开 T_short(scope='public',portal_user_id='u_anonymous')
-    t_short = token_store.issue("u_anonymous", share_page.id, settings.t_short_ttl_seconds, scope="public")
+    # 签发公开 T_short(scope='public',portal_user_id=ANONYMOUS_USER_ID)
+    t_short = token_store.issue(ANONYMOUS_USER_ID, share_page.id, settings.t_short_ttl_seconds, scope="public")
     iframe_url = build_iframe_url(settings.ragflow_browser_origin, share_page.ragflow_resource_id, t_short)
     return {
         "iframe_url": iframe_url,
@@ -1763,16 +1781,16 @@ async def public_precreate_session(share_page_id: str, request: Request):
         lambda: precreate_session_via_ragflow(settings, share_page.ragflow_resource_id),
         "预创建 session 失败",
     )
-    # 绑定到 u_anonymous(公开会话锚点,不归属任何具体登录用户)
+    # 绑定到匿名锚点(公开会话,不归属任何具体登录用户)
     request.app.state.session_store.bind(
         session_id=session_id,
         share_page_id=share_page.id,
-        portal_user_id="u_anonymous",
+        portal_user_id=ANONYMOUS_USER_ID,
         ragflow_resource_id=share_page.ragflow_resource_id,
     )
     # 签发公开 T_short 并构造含 session_id 的 iframe URL
     token_store = request.app.state.token_store
-    t_short = token_store.issue("u_anonymous", share_page.id, settings.t_short_ttl_seconds, scope="public")
+    t_short = token_store.issue(ANONYMOUS_USER_ID, share_page.id, settings.t_short_ttl_seconds, scope="public")
     iframe_url = build_iframe_url(settings.ragflow_browser_origin, share_page.ragflow_resource_id, t_short, session_id)
     return {
         "session_id": session_id,

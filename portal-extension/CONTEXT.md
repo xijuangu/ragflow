@@ -118,7 +118,7 @@ portal-extension/
 - 所有 middleware 用 async/await,不用 callback 风格
 - Portal token 前缀知识集中用 `PORTAL_TOKEN_PREFIX` 常量
 - SSE 响应必须解析出 `session_id`,同时支持 flat `{session_id}` 与 nested `{data:{session_id}}` 结构
-- Session 消息数通过 `SessionStore.increment_message_count(+1)` 在 SSE stream 成功后更新
+- Session 消息数更新路径:SSE 流成功后由 gateway `sync_message_count_from_history` 同步(语义见下条);增量式 `SessionStore.increment_message_count` 已无调用方,Issue 96 删除
 - Portal 重启必须用 `start.sh` 脚本(加载 `.env`)
 - 消息数语义:`message_count = len(RAGFlow history.messages)`(Slice 26 改动,非 Q&A 轮次)
 - Session 归属:网关在 SSE 成功后从响应绑定 `session_id` 到当前用户(Slice 22),不依赖 iframe URL 预带 `session_id`

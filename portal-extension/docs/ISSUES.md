@@ -181,7 +181,7 @@ admin sidebar 新增「用量统计」tab，仅 admin 可见。汇总视图：�
 
 ## Issue 96：死代码清理 + admin_update_user 校验修复
 
-> 状态：待实施。无阻塞。零风险，可并入任意 slice。
+> 状态：✅ 已完成（2026-08-24,分支 impl/93-96）。删除无调用方的 `SessionStore.increment_message_count`;删除 `_validate_subject_exists` 不可达 else 分支(subject_type 已由 CreateGrantRequest 的 Literal 在入口处 422);`admin_update_user` 改用 `UpdateUserEnabledRequest`(enabled 必填),只传 is_public / 空 body → 422 不写库,回归测试 `test_admin_update_user_without_enabled_returns_422_no_write` 锁定;`LoginError` 空子类评估后**保留**(routes.login 用 `except LoginError` 精确区分登录失败写审计,理由已写入 auth.py docstring);`"u_anonymous"` 提取为 models.py `ANONYMOUS_USER_ID` 常量(routes×3、gateway×1、build_seed_data×2 全部改引用,生产代码字面量只剩常量定义一处;测试中字面量为对常量值的断言,保留)。基线 451+5 → 452+5(新增 1 个回归测试)。
 
 ## What to build
 

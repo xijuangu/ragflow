@@ -54,6 +54,9 @@ Permission = Literal["use", "manage"]
 RagflowType = Literal["chat", "agent"]
 EmbedType = Literal["fullscreen", "widget"]
 SubjectType = Literal["user", "group"]
+# Slice 15:公开分享页会话归属锚点 — 匿名用户 ID(Issue 96:集中常量,全仓唯一定义;
+# routes/gateway/build_seed_data 一律引用本常量,不再散布字面量 "u_anonymous")
+ANONYMOUS_USER_ID = "u_anonymous"
 # Slice 6 审计日志枚举(PR D7b:仅覆盖敏感操作)
 # Slice 15 加 public_chat(公开访问审计,可选开关 PUBLIC_AUDIT_ENABLED)
 AuditAction = Literal[
@@ -407,23 +410,6 @@ class SessionStore(_StoreBase):
             if row is None:
                 return False
             row.message_count = count
-            return True
-
-        return self._transact(_do)
-
-    def increment_message_count(self, session_id: str, delta: int = 1) -> bool:
-        """将会话消息数按 delta 增量更新。
-
-        保留给需要增量语义的旧调用方;Slice 26 后 SSE 路径改用
-        ``sync_message_count_from_history`` 同步 RAGFlow history.messages 绝对长度。
-        返回 True 表示 session 存在并已更新;False 表示 session 不存在(已绑定场景不会发生)。
-        """
-
-        def _do(session) -> bool:
-            row = session.get(ChatSessionOwnerModel, session_id)
-            if row is None:
-                return False
-            row.message_count = (row.message_count or 0) + delta
             return True
 
         return self._transact(_do)
@@ -1193,15 +1179,15 @@ def build_seed_data(settings: Settings, session_maker: sessionmaker) -> SeedData
             user_id="u_user2",
         )
     # Slice 15:匿名用户(公开分享页会话归属)— idempotent:已存在则跳过
-    # 用途:公开分享页(is_public=true)预创建 session 时,portal_user_id 绑定到 u_anonymous,
+    # 用途:公开分享页(is_public=true)预创建 session 时,portal_user_id 绑定到匿名锚点,
     # 使公开会话不归属任何具体登录用户,且可被管理员通过 user_id=u_anonymous 过滤查询。
-    if seed.get_user("u_anonymous") is None:
+    if seed.get_user(ANONYMOUS_USER_ID) is None:
         # 匿名用户无密码(password_hash 空占位),不可登录
         seed.create_user(
             username="anonymous",
             email="anonymous@portal.local",
             password_hash="",
-            user_id="u_anonymous",
+            user_id=ANONYMOUS_USER_ID,
         )
     # 默认分享页(Slice 1 硬编码,关联配置的 RAGFLOW_DIALOG_ID)
     # Slice 13:org_id='default'

@@ -54,6 +54,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from portal.auth import get_current_user
+from portal.models import ANONYMOUS_USER_ID
 
 if TYPE_CHECKING:
     from portal.models import SharePage
@@ -1805,7 +1806,7 @@ async def proxy_sse_public_to_ragflow(request: Request, share_page_id: str, sess
     audit_store = request.app.state.audit_store
     if getattr(settings, "public_audit_enabled", True):
         audit_store.record(
-            actor_user_id="u_anonymous",
+            actor_user_id=ANONYMOUS_USER_ID,
             action="public_chat",
             target_type="session",
             target_id=session_id,
