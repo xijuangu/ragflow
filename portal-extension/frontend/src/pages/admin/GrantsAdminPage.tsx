@@ -24,9 +24,12 @@ import {
   type AdminUser,
   type SubjectType,
 } from '../../api/client';
-import { useAdminList } from '../../hooks/useAdminList';
+import { useAdminList, useAdminListView } from '../../hooks/useAdminList';
+import type { AdminListViewConfig } from '../../hooks/useAdminList';
 import { useOptimisticToggle } from '../../hooks/useOptimisticToggle';
 import { MobileCard, MobileCardList } from '../../components/MobileCards';
+import { AdminListToolbar, SortableTh } from '../../components/AdminListControls';
+import SearchableCombobox from '../../components/SearchableCombobox';
 
 export default function GrantsAdminPage() {
   const [sharePages, setSharePages] = useState<AdminSharePage[]>([]);
@@ -86,6 +89,37 @@ export default function GrantsAdminPage() {
     },
     [userMap, groupMap],
   );
+
+  // Issue 87:授权列表接入统一搜索/筛选/排序(列表状态在 hook 外 —— 随分享页切换重取)
+  const selectedPageName = sharePages.find((p) => p.id === selectedPageId)?.name ?? '';
+  const grantsViewConfig: AdminListViewConfig<AdminGrant> = {
+    // 搜索列 = 授权对象名 + 分享页名(分享页名对当前选中页为常量)
+    searchColumns: [(g) => resolveSubjectName(g), () => selectedPageName],
+    filters: [
+      {
+        key: 'subject_type',
+        label: '主体类型筛选',
+        options: [
+          { value: 'user', label: '用户' },
+          { value: 'group', label: '用户组' },
+        ],
+        match: (g, v) => g.subject_type === v,
+      },
+    ],
+    sortColumns: [
+      { key: 'subject_type', label: '主体类型', compare: (a, b) => a.subject_type.localeCompare(b.subject_type) },
+      { key: 'name', label: '名称', compare: (a, b) => resolveSubjectName(a).localeCompare(resolveSubjectName(b)) },
+    ],
+  };
+  const {
+    view: visibleGrants,
+    search: grantSearch,
+    setSearch: setGrantSearch,
+    filterValues: grantFilterValues,
+    setFilterValue: setGrantFilterValue,
+    sort: grantSort,
+    toggleSort: toggleGrantSort,
+  } = useAdminListView(grants, grantsViewConfig);
 
   // 初始加载由 useAdminList 完成(上方);以下仅保留分享页切换 → 加载 grants
   const loadGrants = useCallback(async (pageId: string) => {
@@ -156,11 +190,18 @@ export default function GrantsAdminPage() {
     [run, selectedPageId, setGrants],
   );
 
-  // 授权对象下拉选项(随 subjectType 切换)
-  const subjectOptions: { value: string; label: string }[] =
+  // 授权对象 combobox 选项(随 subjectType 切换;用户名 + 邮箱参与搜索,Issue 88)
+  const subjectOptions =
     subjectType === 'user'
-      ? users.map((u) => ({ value: u.id, label: `${u.username}(${u.email})` }))
+      ? users.map((u) => ({ value: u.id, label: u.username, sublabel: u.email }))
       : groups.map((g) => ({ value: g.id, label: g.name }));
+
+  // 分享页 combobox 选项(名称 + RAGFlow 资源 ID 参与搜索,Issue 88)
+  const sharePageOptions = sharePages.map((p) => ({
+    value: p.id,
+    label: p.name,
+    sublabel: p.ragflow_resource_id,
+  }));
 
   const renderRevokeAction = (grant: AdminGrant) => (
     <button
@@ -192,19 +233,16 @@ export default function GrantsAdminPage() {
         <div className="admin-form-row admin-form-row-compact">
           <div className="form-field">
             <label htmlFor="grant-share-page">分享页</label>
-            <select
+            <SearchableCombobox
+              mode="single"
               id="grant-share-page"
+              ariaLabel="分享页"
+              options={sharePageOptions}
               value={selectedPageId}
-              onChange={(e) => setSelectedPageId(e.target.value)}
+              onChange={setSelectedPageId}
+              placeholder={sharePages.length === 0 ? '无可用分享页' : '选择分享页…'}
               disabled={sharePages.length === 0}
-            >
-              {sharePages.length === 0 && <option value="">无可用分享页</option>}
-              {sharePages.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}({p.ragflow_resource_id})
-                </option>
-              ))}
-            </select>
+            />
           </div>
           <div className="form-field">
             <label htmlFor="grant-subject-type">主体类型</label>
@@ -222,19 +260,16 @@ export default function GrantsAdminPage() {
           </div>
           <div className="form-field">
             <label htmlFor="grant-subject-id">授权对象</label>
-            <select
+            <SearchableCombobox
+              mode="single"
               id="grant-subject-id"
+              ariaLabel="授权对象"
+              options={subjectOptions}
               value={subjectId}
-              onChange={(e) => setSubjectId(e.target.value)}
+              onChange={setSubjectId}
+              placeholder={subjectOptions.length === 0 ? '无可选对象' : '搜索用户名/邮箱或组名…'}
               disabled={subjectOptions.length === 0}
-            >
-              <option value="">{subjectOptions.length === 0 ? '无可选对象' : '选择…'}</option>
-              {subjectOptions.map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
+            />
           </div>
           <button type="submit" className="btn btn-primary" disabled={creating || !subjectId || !selectedPageId}>
             {creating ? '授权中…' : '授权'}
@@ -245,24 +280,36 @@ export default function GrantsAdminPage() {
       {/* 授权列表 */}
       {selectedPageId && (
         <div className="card card-table">
+          <AdminListToolbar
+            search={grantSearch}
+            onSearchChange={setGrantSearch}
+            searchLabel="搜索授权"
+            searchPlaceholder="按授权对象或分享页名搜索"
+            filters={grantsViewConfig.filters}
+            filterValues={grantFilterValues}
+            onFilterChange={setGrantFilterValue}
+          />
           <div className="card-body">
             {grants === null && <div className="loading">加载中…</div>}
             {grants !== null && grants.length === 0 && (
               <div className="empty-state">暂无授权</div>
             )}
+            {grants !== null && grants.length > 0 && visibleGrants !== null && visibleGrants.length === 0 && (
+              <div className="empty-state">无匹配结果</div>
+            )}
             <div className="table-wrap">
-              {grants !== null && grants.length > 0 && (
+              {visibleGrants !== null && visibleGrants.length > 0 && (
                 <table>
                   <thead>
                     <tr>
-                      <th>主体类型</th>
-                      <th>名称</th>
+                      <SortableTh columnKey="subject_type" label="主体类型" sort={grantSort} onToggle={toggleGrantSort} />
+                      <SortableTh columnKey="name" label="名称" sort={grantSort} onToggle={toggleGrantSort} />
                       <th>权限</th>
                       <th>操作</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {grants.map((g) => {
+                    {visibleGrants.map((g) => {
                       const key = `${g.subject_type}-${g.subject_id}`;
                       return (
                         <tr key={key} data-testid={`grant-row-${key}`}>
@@ -279,9 +326,9 @@ export default function GrantsAdminPage() {
                 </table>
               )}
             </div>
-            {grants !== null && grants.length > 0 && (
+            {visibleGrants !== null && visibleGrants.length > 0 && (
               <MobileCardList label="授权列表">
-                {grants.map((g) => {
+                {visibleGrants.map((g) => {
                   const key = `${g.subject_type}-${g.subject_id}`;
                   return (
                     <MobileCard

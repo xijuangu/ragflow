@@ -14,8 +14,49 @@ import { useCallback, useState } from 'react';
 import type { FormEvent } from 'react';
 import { ApiError, api, type AdminSharePage } from '../../api/client';
 import { useAdminList } from '../../hooks/useAdminList';
+import type { AdminListViewConfig } from '../../hooks/useAdminList';
 import { useOptimisticToggle } from '../../hooks/useOptimisticToggle';
 import { MobileCard, MobileCardList } from '../../components/MobileCards';
+import { AdminListToolbar, SortableTh } from '../../components/AdminListControls';
+import { formatTime } from '../../utils/formatTime';
+
+/** Issue 87:搜索列 = 名称 + RAGFlow 资源 ID;筛选 = 状态/嵌入类型/RAGFlow 类型;排序 = 名称、创建时间。 */
+const SHARE_PAGE_LIST_VIEW: AdminListViewConfig<AdminSharePage> = {
+  searchColumns: [(p) => p.name, (p) => p.ragflow_resource_id],
+  filters: [
+    {
+      key: 'enabled',
+      label: '状态筛选',
+      options: [
+        { value: 'enabled', label: '启用' },
+        { value: 'disabled', label: '禁用' },
+      ],
+      match: (p, v) => (v === 'enabled' ? p.enabled : !p.enabled),
+    },
+    {
+      key: 'embed_type',
+      label: '嵌入类型筛选',
+      options: [
+        { value: 'fullscreen', label: 'fullscreen' },
+        { value: 'widget', label: 'widget' },
+      ],
+      match: (p, v) => p.embed_type === v,
+    },
+    {
+      key: 'ragflow_type',
+      label: 'RAGFlow 类型筛选',
+      options: [
+        { value: 'chat', label: 'chat' },
+        { value: 'agent', label: 'agent' },
+      ],
+      match: (p, v) => p.ragflow_type === v,
+    },
+  ],
+  sortColumns: [
+    { key: 'name', label: '名称', compare: (a, b) => a.name.localeCompare(b.name) },
+    { key: 'created_at', label: '创建时间', compare: (a, b) => a.created_at - b.created_at },
+  ],
+};
 
 interface SharePageFormState {
   name: string;
@@ -32,10 +73,22 @@ const DEFAULT_FORM: SharePageFormState = {
 };
 
 export default function SharePagesAdminPage() {
-  const { data: pages, setData: setPages, error, setError } = useAdminList(
-    () => api.listAdminSharePages().then((r) => r.share_pages),
-    { errorMessage: '加载分享页列表失败' },
-  );
+  const {
+    data: pages,
+    setData: setPages,
+    error,
+    setError,
+    view: visiblePages,
+    search,
+    setSearch,
+    filterValues,
+    setFilterValue,
+    sort,
+    toggleSort,
+  } = useAdminList(() => api.listAdminSharePages().then((r) => r.share_pages), {
+    errorMessage: '加载分享页列表失败',
+    view: SHARE_PAGE_LIST_VIEW,
+  });
   const { busyId, run } = useOptimisticToggle({ onError: setError });
 
   const [form, setForm] = useState<SharePageFormState>(DEFAULT_FORM);
@@ -176,26 +229,39 @@ export default function SharePagesAdminPage() {
 
       {/* 分享页列表 */}
       <div className="card card-table">
+        <AdminListToolbar
+          search={search}
+          onSearchChange={setSearch}
+          searchLabel="搜索分享页"
+          searchPlaceholder="按名称或资源 ID 搜索"
+          filters={SHARE_PAGE_LIST_VIEW.filters}
+          filterValues={filterValues}
+          onFilterChange={setFilterValue}
+        />
         <div className="card-body">
           {pages === null && !error && <div className="loading">加载中…</div>}
           {pages !== null && pages.length === 0 && (
             <div className="empty-state">暂无分享页</div>
           )}
+          {pages !== null && pages.length > 0 && visiblePages !== null && visiblePages.length === 0 && (
+            <div className="empty-state">无匹配结果</div>
+          )}
           <div className="table-wrap">
-            {pages !== null && pages.length > 0 && (
+            {visiblePages !== null && visiblePages.length > 0 && (
               <table>
                 <thead>
                   <tr>
-                    <th>名称</th>
+                    <SortableTh columnKey="name" label="名称" sort={sort} onToggle={toggleSort} />
                     <th>资源 ID</th>
                     <th>嵌入类型</th>
                     <th>RAGFlow 类型</th>
                     <th>状态</th>
+                    <SortableTh columnKey="created_at" label="创建时间" sort={sort} onToggle={toggleSort} />
                     <th>操作</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {pages.map((p) => (
+                  {visiblePages.map((p) => (
                     <tr key={p.id} data-testid={`share-page-row-${p.id}`}>
                       <td>{p.name}</td>
                       <td className="mono">{p.ragflow_resource_id}</td>
@@ -208,6 +274,7 @@ export default function SharePagesAdminPage() {
                           <span className="badge b-archived">禁用</span>
                         )}
                       </td>
+                      <td className="mono">{formatTime(p.created_at, 'date')}</td>
                       <td>
                         <div className="admin-actions">{renderActions(p)}</div>
                       </td>
@@ -217,9 +284,9 @@ export default function SharePagesAdminPage() {
               </table>
             )}
           </div>
-          {pages !== null && pages.length > 0 && (
+          {visiblePages !== null && visiblePages.length > 0 && (
             <MobileCardList label="分享页列表">
-              {pages.map((p) => (
+              {visiblePages.map((p) => (
                 <MobileCard
                   key={p.id}
                   title={p.name}
@@ -232,6 +299,7 @@ export default function SharePagesAdminPage() {
                       label: '状态',
                       value: <span className={`badge ${p.enabled ? 'b-active' : 'b-archived'}`}>{p.enabled ? '启用' : '禁用'}</span>,
                     },
+                    { label: '创建时间', value: <span className="mono">{formatTime(p.created_at, 'date')}</span> },
                   ]}
                   actions={renderActions(p)}
                 />

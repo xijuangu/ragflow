@@ -9,21 +9,58 @@
  *   - DELETE /admin/users/:id(硬删除,级联删会话,无孤儿)
  *
  * 硬删除前用统一危险操作弹窗提示级联清会话、不可恢复和审计后果。
+ *
+ * Issue 86(tracer):列表接入 useAdminList 统一视图能力 — 搜索(用户名+邮箱)、
+ * 状态筛选、用户名/创建时间三态排序;页面侧只声明 USER_LIST_VIEW 列配置。
  */
 import { useCallback, useState } from 'react';
 import type { FormEvent } from 'react';
 import { ApiError, api, type AdminUser } from '../../api/client';
 import { formatTime } from '../../utils/formatTime';
 import { useAdminList } from '../../hooks/useAdminList';
+import type { AdminListViewConfig } from '../../hooks/useAdminList';
 import { useOptimisticToggle } from '../../hooks/useOptimisticToggle';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import { MobileCard, MobileCardList } from '../../components/MobileCards';
+import { AdminListToolbar, SortableTh } from '../../components/AdminListControls';
+
+/** Issue 86 tracer:搜索列 = 用户名 + 邮箱;筛选 = 启用/禁用;排序列 = 用户名、创建时间。 */
+const USER_LIST_VIEW: AdminListViewConfig<AdminUser> = {
+  searchColumns: [(u) => u.username, (u) => u.email],
+  filters: [
+    {
+      key: 'enabled',
+      label: '状态筛选',
+      options: [
+        { value: 'enabled', label: '启用' },
+        { value: 'disabled', label: '禁用' },
+      ],
+      match: (u, v) => (v === 'enabled' ? u.enabled : !u.enabled),
+    },
+  ],
+  sortColumns: [
+    { key: 'username', label: '用户名', compare: (a, b) => a.username.localeCompare(b.username) },
+    { key: 'created_at', label: '创建时间', compare: (a, b) => a.created_at - b.created_at },
+  ],
+};
 
 export default function UsersAdminPage() {
-  const { data: users, setData: setUsers, error, setError } = useAdminList(
-    () => api.listAdminUsers().then((r) => r.users),
-    { errorMessage: '加载用户列表失败' },
-  );
+  const {
+    data: users,
+    setData: setUsers,
+    error,
+    setError,
+    view: visibleUsers,
+    search,
+    setSearch,
+    filterValues,
+    setFilterValue,
+    sort,
+    toggleSort,
+  } = useAdminList(() => api.listAdminUsers().then((r) => r.users), {
+    errorMessage: '加载用户列表失败',
+    view: USER_LIST_VIEW,
+  });
   const { busyId, run } = useOptimisticToggle({ onError: setError });
 
   // 创建表单状态
@@ -229,25 +266,37 @@ export default function UsersAdminPage() {
 
       {/* 用户列表 */}
       <div className="card card-table">
+        <AdminListToolbar
+          search={search}
+          onSearchChange={setSearch}
+          searchLabel="搜索用户"
+          searchPlaceholder="按用户名或邮箱搜索"
+          filters={USER_LIST_VIEW.filters}
+          filterValues={filterValues}
+          onFilterChange={setFilterValue}
+        />
         <div className="card-body">
           {users === null && !error && <div className="loading">加载中…</div>}
           {users !== null && users.length === 0 && <div className="empty-state">暂无用户</div>}
-          {users !== null && users.length > 0 && (
+          {users !== null && users.length > 0 && visibleUsers !== null && visibleUsers.length === 0 && (
+            <div className="empty-state">无匹配结果</div>
+          )}
+          {visibleUsers !== null && visibleUsers.length > 0 && (
             <>
               <div className="table-wrap">
               <table>
                 <thead>
                   <tr>
-                    <th>用户名</th>
+                    <SortableTh columnKey="username" label="用户名" sort={sort} onToggle={toggleSort} />
                     <th>邮箱</th>
                     <th>角色</th>
                     <th>状态</th>
-                    <th>创建时间</th>
+                    <SortableTh columnKey="created_at" label="创建时间" sort={sort} onToggle={toggleSort} />
                     <th>操作</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {users.map((u) => (
+                  {visibleUsers.map((u) => (
                     <tr key={u.id} data-testid={`user-row-${u.id}`}>
                       <td>{u.username}</td>
                       <td>{u.email}</td>
@@ -269,7 +318,7 @@ export default function UsersAdminPage() {
               </table>
               </div>
               <MobileCardList label="用户列表">
-                {users.map((u) => (
+                {visibleUsers.map((u) => (
                   <MobileCard
                     key={u.id}
                     testId={`mobile-user-${u.id}`}

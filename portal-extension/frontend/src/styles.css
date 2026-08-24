@@ -8,7 +8,9 @@
    session-list、session-item、login-page、admin-table-wrap、admin-table 等)。
    保留的旧 class(仍在 JSX 中使用):login-card、iframe-container、
    widget-snippet-panel、snippet-*、admin-form、admin-form-row、admin-actions、
-   admin-groups、admin-group-*、member-*、admin-main。
+   admin-group-*、member-*、admin-main。
+   Issue 88/89 新增:combobox*(可搜索下拉)、group-master-detail / group-master-*
+   / group-detail*(用户组主从视图);旧 admin-groups 卡片网格已删除。
    ------------------------------------------------------------
    必须保留的布局修复(已迁移到新 class,不可丢失):
    - Slice 31:.conv-item flex-shrink:0(会话列表不压缩,触发滚动)
@@ -183,6 +185,8 @@ svg { display: block; }
    FILTER BAR / FIELDS / PILLS(新 — Issue 56/58 迁移使用)
    ============================================================ */
 .filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+/* Issue 87:工具栏独占一张卡片时(如用户组搜索)去掉底部边线,避免与卡片边框双线。 */
+.admin-list-toolbar:last-child { border-bottom: 0; }
 /* Issue 73 修正:form-field 基类有 margin-bottom:16px,在 .filters 内会令按钮(无 margin)按 margin-box
    flex-end 对齐时可视下沉 16px。清零后 form-field border-box 底边与按钮底边对齐。 */
 .filters .form-field { margin-bottom: 0; }
@@ -212,6 +216,18 @@ tbody tr:hover { background: var(--surface-2); }
 .ttl small { display: block; font-weight: 400; color: var(--muted); font-size: 12px; margin-top: 2px; }
 .row-act { display: flex; gap: 4px; justify-content: flex-end; }
 .row-act .icon-btn { width: 30px; height: 30px; }
+
+/* ---- Issue 86:可排序表头(三态:升→降→不排;内联 SVG 箭头,不引 icon 库)---- */
+.th-sort {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: none; border: 0; padding: 0; margin: 0;
+  font: inherit; color: inherit; letter-spacing: inherit; text-transform: inherit;
+  cursor: pointer;
+}
+.th-sort svg { opacity: 0.3; }
+.th-sort:hover svg { opacity: 0.6; }
+.th-sort.active { color: var(--fg); }
+.th-sort.active svg { opacity: 1; color: var(--accent); }
 
 /* ---- badge(新 D1 变体 + 旧别名)---- */
 .badge { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px; border-radius: var(--radius-sm); font-size: 11px; font-weight: 550; letter-spacing: 0.01em; }
@@ -508,6 +524,106 @@ tbody tr:hover { background: var(--surface-2); }
   border-color: color-mix(in oklch, var(--accent) 50%, var(--border));
 }
 
+/* ---- combobox(Issue 88 自研可搜索下拉,单选/多选 chips)---- */
+.combobox {
+  position: relative;
+  min-width: 0;
+}
+
+.combobox input {
+  width: 100%;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 14px;
+  outline: none;
+  background: var(--surface);
+  color: var(--fg);
+}
+
+.combobox input:focus {
+  border-color: color-mix(in oklch, var(--accent) 50%, var(--border));
+}
+
+.combobox-dropdown {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px oklch(0% 0 0 / 0.08);
+  list-style: none;
+}
+
+.combobox-option {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 8px 12px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.combobox-option.active {
+  background: var(--accent-tint);
+}
+
+.combobox-option-sub {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.combobox-empty {
+  padding: 8px 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.combobox-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.combobox-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 6px 0 10px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 550;
+}
+
+.combobox-chip-remove {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  color: var(--muted);
+}
+
+.combobox-chip-remove:hover:not(:disabled) {
+  color: var(--danger);
+  background: var(--danger-bg);
+}
+
+/* Issue 88:添加成员 combobox 固定宽,与 Issue 74 select 版布局一致 */
+.admin-add-member-form .combobox {
+  flex: 0 0 280px;
+}
+
 /* ---- alert ---- */
 .alert-error {
   background: var(--danger-bg);
@@ -679,16 +795,77 @@ tbody tr:hover { background: var(--surface-2); }
   white-space: nowrap;
 }
 
-/* ---- Groups admin ---- */
-.admin-groups {
-  display: flex;
-  flex-direction: column;
+/* ---- Groups admin(Issue 89 master-detail 主从视图)---- */
+.group-master-detail {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
   gap: 16px;
   margin-top: 16px;
+  align-items: start;
 }
 
-.admin-group-card {
+.group-master {
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.group-master .loading,
+.group-master .empty-state {
+  margin: 16px;
+}
+
+.group-master-list {
+  list-style: none;
+  overflow-y: auto;
+}
+
+.group-master-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 16px;
+  font-size: 14px;
+  text-align: left;
+  color: var(--fg);
+  border-bottom: 1px solid var(--border);
+}
+
+.group-master-item:hover {
+  background: var(--surface-2);
+}
+
+.group-master-item.active {
+  background: var(--accent-tint);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.group-master-item-name {
+  font-weight: 550;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.group-detail {
   padding: 16px;
+  min-height: 240px;
+}
+
+.group-detail-subhead {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 16px 0 8px;
+}
+
+.group-grants {
+  margin-top: 8px;
 }
 
 .admin-group-header {
@@ -721,26 +898,7 @@ tbody tr:hover { background: var(--surface-2); }
   flex-wrap: wrap;
 }
 
-/* Issue 74:添加成员 select 固定宽,不再 flex:1 撑满整行 */
-.admin-add-member-form select {
-  flex: 0 0 220px;
-  height: 30px;
-  padding: 0 26px 0 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  font-size: 12px;
-  outline: none;
-  background: var(--surface);
-  color: var(--fg);
-  appearance: none;
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b6964' stroke-width='2'><path d='m6 9 6 6 6-6'/></svg>");
-  background-repeat: no-repeat;
-  background-position: right 8px center;
-}
-
-.admin-add-member-form select:focus {
-  border-color: color-mix(in oklch, var(--accent) 50%, var(--border));
-}
+/* Issue 74/88:添加成员 combobox 固定宽,不再 flex:1 撑满整行(规则见 combobox 区块) */
 
 /* Issue 74:创建用户组表单 — 单字段表单不撑满,input 固定宽 */
 .admin-form-row-compact .form-field {
@@ -935,14 +1093,14 @@ tbody tr:hover { background: var(--surface-2); }
   .table-wrap { display: none; }
   .card-table .card-body { padding: 0; }
   .mobile-cards { display: block; }
-  .admin-groups.mobile-cards { display: flex; }
+  .group-master-detail { grid-template-columns: 1fr; }
   .admin-form-row, .filters { align-items: stretch; }
   .admin-form-row .form-field, .admin-form-row-compact .form-field, .filters .form-field { flex: 1 1 100%; min-width: 0; }
   .admin-form-row .btn, .filters > .btn { width: 100%; min-height: 44px; justify-content: center; }
   .m-card-actions .btn, .modal-actions .btn, .conv-list-toggle, .topbar-right > .btn { min-height: 44px; }
   .admin-group-header { align-items: flex-start; gap: 8px; }
   .member-list { grid-template-columns: 1fr; }
-  .admin-add-member-form select, .admin-add-member-form .btn { flex: 1 1 100%; width: 100%; }
+  .admin-add-member-form .combobox, .admin-add-member-form .btn { flex: 1 1 100%; width: 100%; }
   .login-aside { display: none; }
   .login-main { padding: 32px 20px; }
   .detail-shell { flex-direction: column; height: auto; }

@@ -299,4 +299,98 @@ describe('UsersAdminPage', () => {
 
     expect(await screen.findByText('服务器错误')).toBeInTheDocument();
   });
+
+  // ---- Issue 86:搜索 / 筛选 / 三态排序(tracer 接入) ----
+
+  function userRowOrder(): string[] {
+    return screen
+      .getAllByTestId(/^user-row-/)
+      .map((el) => el.getAttribute('data-testid')!.replace('user-row-', ''));
+  }
+
+  it('搜索框按用户名+邮箱不区分大小写模糊匹配', async () => {
+    const user = userEvent.setup();
+    globalThis.fetch = mockFetch([
+      { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
+      { url: '/admin/users', status: 200, body: USERS_RESPONSE },
+    ]);
+
+    renderPage();
+    await screen.findByTestId('user-row-u_admin');
+
+    // 大写搜索用户名
+    await user.type(screen.getByLabelText('搜索用户'), 'USER1');
+    expect(userRowOrder()).toEqual(['u_user1']);
+
+    // 清空后改搜邮箱
+    await user.clear(screen.getByLabelText('搜索用户'));
+    await user.type(screen.getByLabelText('搜索用户'), 'd@example');
+    expect(userRowOrder()).toEqual(['u_disabled']);
+
+    // 无匹配 → 空态提示
+    await user.clear(screen.getByLabelText('搜索用户'));
+    await user.type(screen.getByLabelText('搜索用户'), 'nobody');
+    expect(screen.queryByTestId(/^user-row-/)).not.toBeInTheDocument();
+    expect(screen.getByText('无匹配结果')).toBeInTheDocument();
+  });
+
+  it('启用状态筛选:只看禁用用户', async () => {
+    const user = userEvent.setup();
+    globalThis.fetch = mockFetch([
+      { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
+      { url: '/admin/users', status: 200, body: USERS_RESPONSE },
+    ]);
+
+    renderPage();
+    await screen.findByTestId('user-row-u_admin');
+
+    await user.selectOptions(screen.getByLabelText('状态筛选'), 'disabled');
+    expect(userRowOrder()).toEqual(['u_disabled']);
+
+    await user.selectOptions(screen.getByLabelText('状态筛选'), 'enabled');
+    expect(userRowOrder()).toEqual(['u_admin', 'u_user1']);
+
+    await user.selectOptions(screen.getByLabelText('状态筛选'), '');
+    expect(userRowOrder()).toEqual(['u_admin', 'u_user1', 'u_disabled']);
+  });
+
+  it('用户名列表头三态排序:升 → 降 → 不排', async () => {
+    const user = userEvent.setup();
+    globalThis.fetch = mockFetch([
+      { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
+      { url: '/admin/users', status: 200, body: USERS_RESPONSE },
+    ]);
+
+    renderPage();
+    await screen.findByTestId('user-row-u_admin');
+    expect(userRowOrder()).toEqual(['u_admin', 'u_user1', 'u_disabled']);
+
+    await user.click(screen.getByRole('button', { name: '按用户名排序' }));
+    expect(userRowOrder()).toEqual(['u_admin', 'u_disabled', 'u_user1']);
+
+    await user.click(screen.getByRole('button', { name: '按用户名排序' }));
+    expect(userRowOrder()).toEqual(['u_user1', 'u_disabled', 'u_admin']);
+
+    await user.click(screen.getByRole('button', { name: '按用户名排序' }));
+    expect(userRowOrder()).toEqual(['u_admin', 'u_user1', 'u_disabled']);
+  });
+
+  it('创建时间列可排序;操作列不参与排序', async () => {
+    const user = userEvent.setup();
+    globalThis.fetch = mockFetch([
+      { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
+      { url: '/admin/users', status: 200, body: USERS_RESPONSE },
+    ]);
+
+    renderPage();
+    await screen.findByTestId('user-row-u_admin');
+
+    await user.click(screen.getByRole('button', { name: '按创建时间排序' }));
+    expect(userRowOrder()).toEqual(['u_admin', 'u_user1', 'u_disabled']);
+    await user.click(screen.getByRole('button', { name: '按创建时间排序' }));
+    expect(userRowOrder()).toEqual(['u_disabled', 'u_user1', 'u_admin']);
+
+    // 操作列没有排序按钮
+    expect(screen.queryByRole('button', { name: '按操作排序' })).not.toBeInTheDocument();
+  });
 });

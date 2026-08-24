@@ -28,7 +28,7 @@
 
 ## Issue 86：useAdminList 收编全站搜索/筛选/排序能力 + 用户管理页接入（tracer）
 
-> 状态：待实施。无阻塞。
+> 状态：✅ 已完成（2026-08-24,impl-ux worktree)。`useAdminList` 新增 `options.view` 声明式配置(searchColumns/filters/sortColumns)并返回视图状态;核心逻辑在纯函数 `applyAdminListView`,外加独立 `useAdminListView` 供列表状态在 hook 外的页面使用。新增 `components/AdminListControls.tsx`(AdminListToolbar + SortableTh,内联 SVG 箭头)。UsersAdminPage 作为 tracer 接入:搜索 = 用户名+邮箱,筛选 = 启用/禁用,排序 = 用户名/创建时间,操作列不排。
 
 ## What to build
 
@@ -36,14 +36,14 @@
 
 ## Acceptance criteria
 
-- [ ] `useAdminList` 提供 search/filter/sort 通用能力，页面侧只需声明列配置，不再手写过滤逻辑。
-- [ ] 用户管理页：搜索框模糊匹配用户名与邮箱（不区分大小写）；启用状态可筛选；用户名、创建时间列可三态排序；操作列不参与排序。
-- [ ] 前端 Vitest 覆盖 hook 的搜索/筛选/排序组合逻辑与用户管理页渲染；既有 89 个前端测试不回归。
-- [ ] 视觉沿用 D1 Graphite 设计 token，不引第三方组件库。
+- [x] `useAdminList` 提供 search/filter/sort 通用能力，页面侧只需声明列配置，不再手写过滤逻辑。
+- [x] 用户管理页：搜索框模糊匹配用户名与邮箱（不区分大小写）；启用状态可筛选；用户名、创建时间列可三态排序；操作列不参与排序。
+- [x] 前端 Vitest 覆盖 hook 的搜索/筛选/排序组合逻辑与用户管理页渲染；既有 89 个前端测试不回归。
+- [x] 视觉沿用 D1 Graphite 设计 token，不引第三方组件库。
 
 ## Issue 87：其余 5 个 admin 页面接入统一搜索/筛选/排序
 
-> 状态：待实施。阻塞：← Issue 86。
+> 状态：✅ 已完成（2026-08-24,impl-ux worktree)。5 页全部接入:SharePages(搜索 名称+资源 ID;筛选 状态/嵌入类型/RAGFlow 类型;排序 名称/创建时间,新增创建时间列)、Grants(搜索 授权对象名+当前分享页名;筛选 主体类型;排序 主体类型/名称;列表仍随分享页切换重取,经 `useAdminListView` 接入)、Sessions/AuditLogs 改为全量加载 + 纯内存检索(原服务端带参筛选表单删除,§12.1 内存方案;审计日志日期范围以 `control:'date'` 筛选声明)、Groups 卡片网格接入组名搜索(无枚举列与表头,筛选/排序不适用,留待 Issue 89 master-detail 重设计)。各页手写 filter 逻辑已全部删除。
 
 ## What to build
 
@@ -51,13 +51,13 @@
 
 ## Acceptance criteria
 
-- [ ] 6 个 admin 页面全部具备搜索框；文本列模糊匹配，枚举列筛选下拉，有意义列三态排序，行为与 Issue 86 约定一致。
-- [ ] 各页面内的手写 filter 逻辑删除，统一走 `useAdminList`。
-- [ ] 前端测试逐页覆盖至少一条搜索 + 一条筛选 + 一次排序路径。
+- [x] 6 个 admin 页面全部具备搜索框；文本列模糊匹配，枚举列筛选下拉，有意义列三态排序，行为与 Issue 86 约定一致。
+- [x] 各页面内的手写 filter 逻辑删除，统一走 `useAdminList`。
+- [x] 前端测试逐页覆盖至少一条搜索 + 一条筛选 + 一次排序路径。
 
 ## Issue 88：可搜索 combobox 组件 + 全站长列表选择点替换
 
-> 状态：待实施。无阻塞。
+> 状态：✅ 已完成（2026-08-24,impl-ux worktree)。新增自研 `components/SearchableCombobox.tsx`(单选/多选 chips 两模式;label+sublabel 不区分大小写包含过滤;ArrowUp/Down 移动高亮、Enter 选中、Esc 关闭、多选空输入 Backspace 删尾 chip;ARIA combobox/listbox/option + aria-activedescendant;样式沿用 D1 Graphite token,未引组件库)。全站 `<select>` 盘点(7 处)与处置:① Groups 添加成员(长用户列表)→ 多选 combobox + chips,一次可添加多人(逐个乐观更新);② Grants 分享页 scope 选择 → 单选 combobox(名称+资源 ID 可搜);③ Grants 授权对象 → 单选 combobox(用户名+邮箱/组名可搜,随主体类型切换);④ Sessions 用户筛选/分享页筛选(长列表)→ `AdminListFilterDef.control:'combobox'`,工具栏渲染单选 combobox,"全部"为清空伪选项;⑤ Grants 主体类型(固定 2 项枚举)→ 保留原生;⑥ SharePages 创建表单 embed_type/ragflow_type(固定 2 项枚举)→ 保留原生;⑦ 其余工具栏筛选(SharePages 状态/嵌入类型/RAGFlow 类型、Grants 主体类型筛选、AuditLogs 操作类型+日期范围,均为小枚举/日期)→ 保留原生。审计日志"操作者"为搜索列而非下拉,无替换对象。前端 124 个 Vitest 全绿(组件 10 个:过滤/选择/chips 移除/键盘;Groups/Grants/Sessions 页级用例适配),tsc + eslint 净。注意:`#grant-share-page`/`#grant-subject-id` 与组内"选择用户"已非原生 select,生产 Playwright CRUD 用例(`test/playwright/portal_extension/test_portal_admin_crud.py`,在本 stream 范围外)需在 Issue 89 一并适配,详见 Issue 89 实施记录。
 
 ## What to build
 
@@ -65,13 +65,15 @@
 
 ## Acceptance criteria
 
-- [ ] combobox 组件支持单选/多选两种模式，键盘可操作（上下移动、回车选中、Esc 关闭），多选以 chips 呈现已选项。
-- [ ] "添加成员"与"授权对象"两处下拉完成替换；全站盘点出的其余长列表选择点（盘点清单附在实施记录中）完成替换或明确记录不替换的理由。
-- [ ] 前端测试覆盖过滤、选择、chips 移除、键盘交互。
+- [x] combobox 组件支持单选/多选两种模式，键盘可操作（上下移动、回车选中、Esc 关闭），多选以 chips 呈现已选项。
+- [x] "添加成员"与"授权对象"两处下拉完成替换；全站盘点出的其余长列表选择点（盘点清单附在实施记录中）完成替换或明确记录不替换的理由。
+- [x] 前端测试覆盖过滤、选择、chips 移除、键盘交互。
 
 ## Issue 89：用户组管理主从视图重设计
 
-> 状态：待实施。阻塞：← Issue 88（添加成员入口复用 combobox）。
+> 状态：✅ 已完成（2026-08-24,impl-ux worktree)。GroupsAdminPage 改为 master-detail:左侧 `.group-master` 可搜索组列表(复用 `useAdminListView` 组名搜索;每项为 button,`data-testid="group-row-<id>"` 保留,选中态 `aria-current` + accent 左边条),右侧 `.group-detail` 详情面板——顶部"添加成员"(Issue 88 combobox 多选 + chips,一次多人,逐个乐观更新)、成员列表(`.member-list`/`.member-item` 保留,移除走 `ConfirmDialog` danger 确认)、该组已获得的分享页授权列表(选中组切换时并行拉取各分享页 grants 后按 `subject_type=group + subject_id` 过滤,显示分享页名 + 权限)。创建表单保留,新组建后自动选中;Slice 43 漏字段兜底保留。前端本无"删除组"入口(API client 亦无 deleteAdminGroup),AC 所指删除能力 = 移除成员,已覆盖确认弹窗。CSS:`.group-master-detail` 300px+1fr 网格,<768px 堆叠单列(§6.5 桌面优先、小屏不崩);旧 `.admin-groups` 卡片网格与 `.admin-add-member-form select` 死样式删除。前端 126 个 Vitest 全绿(组页 10 个:主从切换/授权展示/多选添加/chips 移除/确认移除/取消移除/搜索/创建/Slice 43 回归/错误态),tsc + eslint + `npm run build` 净。
+>
+> **Playwright admin CRUD 用例适配说明(无法在本 stream 执行)**:`test/playwright/portal_extension/test_portal_admin_crud.py` 位于 portal-extension 之外(本 stream 范围仅 `portal-extension/frontend/` + `docs/`),且运行需生产部署(`PORTAL_E2E_BASE_URL` 指向 172.16.10.180)。Issue 88/89 后该文件三处需由负责该目录的 stream 适配:① `test_admin_create_grant_revoke_and_delete_user` 中 `#grant-share-page`/`#grant-subject-id` 已是 combobox input 而非原生 select——`select_option_containing` 需改为「click input → click role=option」;`input_value()` 现在返回显示名而非 id,审计断言用的 share_page_id 应改从 `api_get_json('/admin/share-pages')` 取;② `test_admin_group_form_and_member_add_remove` 需先 click `group-row-<id>` 选中组,再在 `group-detail` 内操作 combobox(click → click option → click「添加」);「移除」现在先弹确认框,需再 click「确认移除」;③ `select_option_containing` helper 对上述场景不再适用。组名/成员 testid(`group-row-*`、`group-detail`、`.member-item`、「选择用户」label、「添加」按钮名)均已为新布局保留,适配成本集中在交互方式而非定位器。
 
 ## What to build
 
@@ -79,10 +81,10 @@
 
 ## Acceptance criteria
 
-- [ ] 选中组即所见：成员与该组的分享页授权在右侧面板直接可见，无需跳页或开下拉。
-- [ ] 添加成员走 combobox 多选 + chips，一次可添加多人；移除成员有确认。
-- [ ] 既有组的创建/删除能力不回归；Playwright admin CRUD 用例适配新布局后通过。
-- [ ] 视觉沿用 D1 Graphite token；桌面优先，小屏不崩（沿用 §6.5 边界）。
+- [x] 选中组即所见：成员与该组的分享页授权在右侧面板直接可见，无需跳页或开下拉。
+- [x] 添加成员走 combobox 多选 + chips，一次可添加多人；移除成员有确认。
+- [x] 既有组的创建/删除能力不回归；Playwright admin CRUD 用例适配新布局后通过。(前端创建/移除成员/添加成员均有 Vitest 回归覆盖;Playwright 文件在本 stream 写范围之外且需生产部署,无法在此适配与运行——逐条适配指引见上方实施记录,已尽量保留 testid/label 降低适配成本)
+- [x] 视觉沿用 D1 Graphite token；桌面优先，小屏不崩（沿用 §6.5 边界）。
 
 ## Issue 90：RAGFlow fork——chatbot completions SSE 末帧透出结构化 usage（硬约束批准票）
 

@@ -6,7 +6,7 @@
  *   - 按 action/时间筛选
  *   - 8 类敏感操作都在日志中可见
  */
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -56,16 +56,16 @@ const AUDIT_LOGS_RESPONSE = {
       action: 'grant_create',
       target_type: 'share_page',
       target_id: 'sp_default',
-      at: 1700002000,
+      at: 1700100000,
       meta: { subject_type: 'user', subject_id: 'u_user1' },
     },
     {
       id: 3,
-      actor_user_id: 'u_admin',
+      actor_user_id: 'u_user1',
       action: 'session_view_elevated',
       target_type: 'session',
       target_id: 'sess_a',
-      at: 1700003000,
+      at: 1700200000,
       meta: { owner_user_id: 'u_user1', share_page_id: 'sp_default' },
     },
   ],
@@ -119,68 +119,50 @@ describe('AuditLogsAdminPage', () => {
     expect(details).toHaveAttribute('title', detailsText);
   });
 
-  it('按 action 筛选 — 触发带 action=xxx 的 GET /admin/audit-logs', async () => {
+  it('按 action 筛选 — 客户端过滤,不再带参请求(Issue 87)', async () => {
     const user = userEvent.setup();
     globalThis.fetch = mockFetch([
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
       { url: '/admin/users', status: 200, body: USERS_RESPONSE },
       { url: '/admin/audit-logs', status: 200, body: AUDIT_LOGS_RESPONSE },
-      {
-        url: '/admin/audit-logs?action=grant_create',
-        status: 200,
-        body: { audit_logs: [AUDIT_LOGS_RESPONSE.audit_logs[1]] },
-      },
     ]);
 
     renderPage();
-
-    // 等待初始加载完成
     await screen.findByTestId('audit-row-1');
 
     await user.selectOptions(screen.getByLabelText('操作类型'), 'grant_create');
-    await user.click(screen.getByRole('button', { name: '筛选' }));
 
-    // 等待筛选结果 — row 1 与 row 3 消失,row 2 保留
-    await waitFor(() => {
-      expect(screen.queryByTestId('audit-row-1')).not.toBeInTheDocument();
-    });
+    // row 1 与 row 3 消失,row 2 保留
+    expect(screen.queryByTestId('audit-row-1')).not.toBeInTheDocument();
     expect(screen.queryByTestId('audit-row-3')).not.toBeInTheDocument();
     expect(screen.getByTestId('audit-row-2')).toBeInTheDocument();
 
+    // 全量加载后不再发起带查询参数的 audit-logs 请求
     const calls = getFetchCalls(globalThis.fetch);
-    const lastCall = calls[calls.length - 1];
-    expect(lastCall.url).toContain('action=grant_create');
+    expect(calls.filter((c) => c.url.startsWith('/admin/audit-logs?'))).toHaveLength(0);
   });
 
-  it('按 actor 筛选 — 触发带 actor_user_id=xxx 的 GET /admin/audit-logs', async () => {
+  it('搜索框按操作者用户名不区分大小写模糊匹配(Issue 87)', async () => {
     const user = userEvent.setup();
     globalThis.fetch = mockFetch([
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
       { url: '/admin/users', status: 200, body: USERS_RESPONSE },
       { url: '/admin/audit-logs', status: 200, body: AUDIT_LOGS_RESPONSE },
-      {
-        url: '/admin/audit-logs?actor_user_id=u_admin',
-        status: 200,
-        body: { audit_logs: [AUDIT_LOGS_RESPONSE.audit_logs[0]] },
-      },
     ]);
 
     renderPage();
-
     await screen.findByTestId('audit-row-1');
 
-    await user.selectOptions(screen.getByLabelText('操作者'), 'u_admin');
-    await user.click(screen.getByRole('button', { name: '筛选' }));
+    await user.type(screen.getByLabelText('搜索操作者'), 'USER1');
+    expect(screen.queryByTestId('audit-row-1')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('audit-row-2')).not.toBeInTheDocument();
+    expect(screen.getByTestId('audit-row-3')).toBeInTheDocument();
 
-    // 等待筛选结果 — 只剩 row 1
-    await waitFor(() => {
-      expect(screen.queryByTestId('audit-row-2')).not.toBeInTheDocument();
-    });
+    await user.clear(screen.getByLabelText('搜索操作者'));
+    await user.type(screen.getByLabelText('搜索操作者'), 'admin');
     expect(screen.getByTestId('audit-row-1')).toBeInTheDocument();
-
-    const calls = getFetchCalls(globalThis.fetch);
-    const lastCall = calls[calls.length - 1];
-    expect(lastCall.url).toContain('actor_user_id=u_admin');
+    expect(screen.getByTestId('audit-row-2')).toBeInTheDocument();
+    expect(screen.queryByTestId('audit-row-3')).not.toBeInTheDocument();
   });
 
   it('日志条目包含 8 类 action 筛选选项', async () => {
@@ -231,36 +213,48 @@ describe('AuditLogsAdminPage', () => {
     expect(await screen.findByText('暂无日志')).toBeInTheDocument();
   });
 
-  it('按时间范围筛选 — 触发带 since/until 的 GET /admin/audit-logs', async () => {
+  it('按时间范围筛选 — 客户端按起始/结束日期过滤(Issue 87)', async () => {
     const user = userEvent.setup();
     globalThis.fetch = mockFetch([
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
       { url: '/admin/users', status: 200, body: USERS_RESPONSE },
       { url: '/admin/audit-logs', status: 200, body: AUDIT_LOGS_RESPONSE },
-      {
-        // 2023-11-14 ~ 2023-11-15 对应日志 at=1700001000(2023-11-14)的筛选
-        url: '/admin/audit-logs?since=1699920000&until=1700092799',
-        status: 200,
-        body: { audit_logs: [AUDIT_LOGS_RESPONSE.audit_logs[0]] },
-      },
     ]);
 
     renderPage();
-
     await screen.findByTestId('audit-row-1');
 
-    await user.type(screen.getByLabelText('起始日期'), '2023-11-14');
-    await user.type(screen.getByLabelText('结束日期'), '2023-11-15');
-    await user.click(screen.getByRole('button', { name: '筛选' }));
+    // at 分别为 2023-11-14 / 2023-11-16 / 2023-11-17(UTC);圈出 11-16 只留 row 2
+    await user.type(screen.getByLabelText('起始日期'), '2023-11-16');
+    await user.type(screen.getByLabelText('结束日期'), '2023-11-16');
 
-    await waitFor(() => {
-      expect(screen.queryByTestId('audit-row-2')).not.toBeInTheDocument();
-    });
-    expect(screen.getByTestId('audit-row-1')).toBeInTheDocument();
+    expect(screen.queryByTestId('audit-row-1')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('audit-row-3')).not.toBeInTheDocument();
+    expect(screen.getByTestId('audit-row-2')).toBeInTheDocument();
+  });
 
-    const calls = getFetchCalls(globalThis.fetch);
-    const lastCall = calls[calls.length - 1];
-    expect(lastCall.url).toContain('since=');
-    expect(lastCall.url).toContain('until=');
+  it('时间列三态排序(Issue 87)', async () => {
+    const user = userEvent.setup();
+    globalThis.fetch = mockFetch([
+      { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
+      { url: '/admin/users', status: 200, body: USERS_RESPONSE },
+      { url: '/admin/audit-logs', status: 200, body: AUDIT_LOGS_RESPONSE },
+    ]);
+
+    renderPage();
+    await screen.findByTestId('audit-row-1');
+
+    const order = () =>
+      screen
+        .getAllByTestId(/^audit-row-/)
+        .map((el) => el.getAttribute('data-testid')!.replace('audit-row-', ''));
+
+    expect(order()).toEqual(['1', '2', '3']);
+    await user.click(screen.getByRole('button', { name: '按时间排序' }));
+    expect(order()).toEqual(['1', '2', '3']);
+    await user.click(screen.getByRole('button', { name: '按时间排序' }));
+    expect(order()).toEqual(['3', '2', '1']);
+    await user.click(screen.getByRole('button', { name: '按时间排序' }));
+    expect(order()).toEqual(['1', '2', '3']);
   });
 });
