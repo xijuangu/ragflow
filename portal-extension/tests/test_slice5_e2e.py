@@ -161,8 +161,9 @@ async def test_delete_own_session_dual_delete_success(client, app, monkeypatch):
     await _precreate_session(client, monkeypatch, fake_session_id)
 
     # mock RAGFlow DELETE 成功
+    # Issue 95:双删编排(_dual_delete_session)已下沉 gateway.py,需 patch gateway 命名空间
     mock_delete = AsyncMock(return_value=None)
-    monkeypatch.setattr("portal.routes.delete_session_via_ragflow", mock_delete)
+    monkeypatch.setattr("portal.gateway.delete_session_via_ragflow", mock_delete)
 
     resp = await client.delete(f"/share-pages/sp_default/sessions/{fake_session_id}")
     assert resp.status_code == 200, f"删除失败: {resp.text}"
@@ -186,8 +187,9 @@ async def test_delete_own_session_ragflow_failure_marks_deleted_at(client, app, 
     await _precreate_session(client, monkeypatch, fake_session_id)
 
     # mock RAGFlow DELETE 失败
+    # Issue 95:双删编排(_dual_delete_session)已下沉 gateway.py,需 patch gateway 命名空间
     monkeypatch.setattr(
-        "portal.routes.delete_session_via_ragflow",
+        "portal.gateway.delete_session_via_ragflow",
         AsyncMock(side_effect=HTTPException(status_code=502, detail="上游失败")),
     )
 
@@ -230,8 +232,9 @@ async def test_admin_delete_any_session(client, app, monkeypatch):
     await _precreate_session(client, monkeypatch, fake_session_id)
 
     # mock RAGFlow DELETE 成功
+    # Issue 95:双删编排(_dual_delete_session)已下沉 gateway.py,需 patch gateway 命名空间
     mock_delete = AsyncMock(return_value=None)
-    monkeypatch.setattr("portal.routes.delete_session_via_ragflow", mock_delete)
+    monkeypatch.setattr("portal.gateway.delete_session_via_ragflow", mock_delete)
 
     # admin 删除该 session(管理员专用端点,不校验归属)
     resp = await client.delete(f"/admin/share-pages/sp_default/sessions/{fake_session_id}")

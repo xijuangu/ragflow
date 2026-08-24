@@ -563,7 +563,8 @@ async def test_agent_session_can_be_renamed_and_deleted(client, app, monkeypatch
     assert any(s["title"] == "新标题" for s in listing.json()["sessions"])
 
     # mock 删除
-    monkeypatch.setattr("portal.routes.delete_agent_session_via_ragflow", AsyncMock(return_value=None))
+    # Issue 95:双删编排(_dual_delete_session)已下沉 gateway.py,agent 删除分发
+    # 解析 gateway 命名空间;portal.routes 不再 re-export delete_agent_session_via_ragflow
     monkeypatch.setattr("portal.gateway.delete_agent_session_via_ragflow", AsyncMock(return_value=None))
     delete = await client.delete(f"/share-pages/{sp_id}/sessions/agent-mgmt-sess")
     assert delete.status_code == 200

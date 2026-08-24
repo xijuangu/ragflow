@@ -136,7 +136,8 @@ async def test_audit_session_delete_user(client, app, monkeypatch):
     fake_session_id = "slice6-session-delete-001"
     await _precreate_session(client, monkeypatch, fake_session_id)
     # mock RAGFlow DELETE 成功
-    monkeypatch.setattr("portal.routes.delete_session_via_ragflow", AsyncMock(return_value=None))
+    # Issue 95:双删编排(_dual_delete_session)已下沉 gateway.py,需 patch gateway 命名空间
+    monkeypatch.setattr("portal.gateway.delete_session_via_ragflow", AsyncMock(return_value=None))
     resp = await client.delete(f"/share-pages/sp_default/sessions/{fake_session_id}")
     assert resp.status_code == 200, f"删除失败: {resp.text}"
     actions = _audit_actions(app)
@@ -151,8 +152,9 @@ async def test_audit_session_delete_not_recorded_on_ragflow_failure(client, app,
     fake_session_id = "slice6-session-delete-fail"
     await _precreate_session(client, monkeypatch, fake_session_id)
     # mock RAGFlow DELETE 失败
+    # Issue 95:双删编排(_dual_delete_session)已下沉 gateway.py,需 patch gateway 命名空间
     monkeypatch.setattr(
-        "portal.routes.delete_session_via_ragflow",
+        "portal.gateway.delete_session_via_ragflow",
         AsyncMock(side_effect=HTTPException(status_code=502, detail="上游失败")),
     )
     resp = await client.delete(f"/share-pages/sp_default/sessions/{fake_session_id}")
@@ -238,7 +240,8 @@ async def test_all_9_audit_actions_covered(client, app, monkeypatch):
         json={"subject_type": "user", "subject_id": alice["id"], "permission": "use"},
     )
     # 5. session_delete(RAGFlow 成功)
-    monkeypatch.setattr("portal.routes.delete_session_via_ragflow", AsyncMock(return_value=None))
+    # Issue 95:双删编排(_dual_delete_session)已下沉 gateway.py,需 patch gateway 命名空间
+    monkeypatch.setattr("portal.gateway.delete_session_via_ragflow", AsyncMock(return_value=None))
     await client.delete(f"/share-pages/sp_default/sessions/{fake_session_id}")
     # 6. session_view_elevated(需先预创建另一个 session)
     fake_session_id_2 = "slice6-all-002"

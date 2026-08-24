@@ -62,9 +62,9 @@ portal-extension/
 ├── .env / ~/.env             # 配置(本地/服务器)
 ├── portal/                   # 后端(FastAPI)
 │   ├── main.py               # app = create_app(),中间件装配
-│   ├── routes.py             # 路由(用户/组/分享页/会话/管理/公开)
-│   ├── gateway.py            # 网关:SSE 代理/TokenStore(含 touch 滑动过期)/SessionStore/上游 RAGFlow 调用/reference.chunks image_id 票据改写
-│   ├── models.py             # ORM 模型(User/Group/SharePage/Grant/SessionOwner/...)
+│   ├── routes.py             # 路由(用户/组/分享页/会话/管理/公开);薄适配 — 归属校验收敛在 _get_owned_session_or_404,双删编排 _dual_delete_session 在 gateway.py(Issue 95)
+│   ├── gateway.py            # 网关:SSE 代理/TokenStore(含 touch 滑动过期)/SessionStore/上游 RAGFlow 调用/reference.chunks image_id 票据改写;令牌/分享页校验链收敛在 resolve_token_and_share_page(Issue 93,全仓唯一实现)
+│   ├── models.py             # ORM 模型(User/Group/SharePage/Grant/SessionOwner/...);纯持久化 — 含 RAGFlow 调用的编排方法(cascade_delete_for_user/sync_message_count_from_history)已上移 gateway.py(Issue 94),models 不 import gateway
 │   ├── auth.py               # 鉴权依赖(get_current_user/require_org_admin)
 │   ├── password.py           # 密码哈希(argon2)
 │   ├── oidc.py               # SSO(Authlib)
@@ -118,7 +118,7 @@ portal-extension/
 - 所有 middleware 用 async/await,不用 callback 风格
 - Portal token 前缀知识集中用 `PORTAL_TOKEN_PREFIX` 常量
 - SSE 响应必须解析出 `session_id`,同时支持 flat `{session_id}` 与 nested `{data:{session_id}}` 结构
-- Session 消息数通过 `SessionStore.increment_message_count(+1)` 在 SSE stream 成功后更新
+- Session 消息数更新路径:SSE 流成功后由 gateway `sync_message_count_from_history` 同步(语义见下条);增量式 `SessionStore.increment_message_count` 已无调用方,Issue 96 删除
 - Portal 重启必须用 `start.sh` 脚本(加载 `.env`)
 - 消息数语义:`message_count = len(RAGFlow history.messages)`(Slice 26 改动,非 Q&A 轮次)
 - Session 归属:网关在 SSE 成功后从响应绑定 `session_id` 到当前用户(Slice 22),不依赖 iframe URL 预带 `session_id`
@@ -156,6 +156,8 @@ RAGFlow 前端 `getAuthorization()` 优先读 URL `?auth=` 参数,回退读 `loc
 portal 网关 `_ragflow_bot_segment` 用于 completions(agent → "agentbots"),sessions 端点需用 `_ragflow_sessions_segment`(agent → "agents")。Slice 30 修复 agent sessions URL。
 
 Issue 82/84 的引用资源链：成功恢复且通过归属校验的 history 响应，以及新回答中已完整解析的 SSE 引用事件，都会把引用 `doc_id` 绑定到当前 `pt_`；SSE 授权发生在对应事件转发给浏览器之前，解析不依赖网络 chunk 边界。`/api/v1/thumbnails` 只能查询 history/SSE 形成的集合。非 base64 缩略图路径会附加绑定 token/doc/image 的 `pit_` 票据，`<img>` 请求凭同源 Portal cookie + 票据取图，不需要 RAGFlow 登录态。无 Portal token/票据的原生 RAGFlow 请求保持透传。
+
+Issue 93 起,所有「取令牌记录 → `pt_` 前缀判定 → cookie/grant 或 is_public 校验 → 令牌有效性 → share_page 解析」链路收敛为 gateway.py 的 `resolve_token_and_share_page(request, resource_id, *, token, touch, reference_access)` 单一入口(SSE/JSON/history/thumbnail/preview/image 共用;公开/私有差异由 `record.scope` 决定,reference 端点差异由 `reference_access=True` 表达;图片票据场景用 `token=` 显式传令牌)。「先查 grant 再 validate(撤权返 403 而非 401)」的顺序不变量只存在于该函数。网关对 `app.state` 关键服务(session_store/rate_limiter/audit_store)一律直接属性访问(fail-closed),缺失即 AttributeError,不再 `getattr(..., None)` 静默跳过校验。
 
 ### 6.4.1 引用 chunks 的 image_id 票据改写(Bug 1 修复,2026-07-22)
 

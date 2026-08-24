@@ -33,11 +33,12 @@ from pydantic import BaseModel
 
 from portal.auth import LoginError, authenticate, get_current_user, require_org_admin
 from portal.gateway import (
+    _dual_delete_session,
     build_agent_iframe_url,
     build_iframe_url,
     build_widget_snippet,
     build_widget_url,
-    delete_agent_session_via_ragflow,
+    cascade_delete_for_user,
     delete_session_via_ragflow,
     fetch_agent_session_history_via_ragflow,
     fetch_session_history_via_ragflow,
@@ -52,8 +53,10 @@ from portal.gateway import (
     proxy_sse_to_ragflow,
     rename_agent_session_via_ragflow,
     rename_session_via_ragflow,
+    sync_message_count_from_history,
 )
 from portal.models import (
+    ANONYMOUS_USER_ID,
     EmbedType,
     Permission,
     PortalGroup,
@@ -114,6 +117,19 @@ class UpdateEnabledRequest(BaseModel):
 
     enabled: bool | None = None
     is_public: bool | None = None
+
+
+class UpdateUserEnabledRequest(BaseModel):
+    """管理员更新用户启用状态(Issue 96:enabled 必填)。
+
+    修复前复用分享页的 UpdateEnabledRequest(enabled/is_public 均可选):
+    只传 is_public 时 enabled=None 被 set_user_enabled 写入 NOT NULL 列。
+    enabled 必填后,缺字段由 Pydantic 在入口处返回 422,不会触及写库
+    (对齐 share-page 版「至少传一个字段」的校验意图,只是用户侧只有
+    enabled 一个可更新字段,故直接设为必填)。
+    """
+
+    enabled: bool
 
 
 class UpdatePasswordRequest(BaseModel):
@@ -560,40 +576,37 @@ async def _rename_session(settings, resource_id: str, session_id: str, name: str
     return await rename_session_via_ragflow(settings, resource_id, session_id, name)
 
 
-async def _delete_session(settings, resource_id: str, session_id: str, ragflow_type: str) -> None:
-    """按 ragflow_type 删除会话(chat → chatbot 端点,agent → agentbot 端点)。"""
-    if ragflow_type == "agent":
-        return await delete_agent_session_via_ragflow(settings, resource_id, session_id)
-    return await delete_session_via_ragflow(settings, resource_id, session_id)
+# Issue 95:_delete_session 分发与 _dual_delete_session 双删编排已下沉至 gateway.py
+# (routes 恢复「只注册路由 + 薄适配」);chat/agent 分发在 gateway 内部完成,
+# 测试 mock 接缝改为 patch ``portal.gateway.delete_session_via_ragflow`` 等名字。
 
 
-async def _dual_delete_session(
-    settings,
-    store,
-    dialog_id: str,
+def _get_owned_session_or_404(
+    session_store,
     session_id: str,
-    ragflow_type: str = "chat",
-) -> bool:
-    """单会话双删协调:RAGFlow DELETE 成功 → 门户硬删除;失败 → 标记 deleted_at 待重试。
+    share_page_id: str,
+    *,
+    expected_owner_id: str | None = None,
+):
+    """会话归属校验收敛(Issue 95)— resume/rename/delete 与 admin 变体共用。
 
-    用于 delete_session / admin_delete_session 的双删策略(单会话场景)。
-    与 ``SessionStore.cascade_delete_for_user`` 的区别:级联删除用户时 RAGFlow 失败
-    也硬删除门户侧(用户已不存在无法重试,避免孤儿);此处单会话删除失败时保留
-    门户侧记录标记 deleted_at,供后台重试任务后续清理。
+    404/403 语义分叉(显式化):
+      - session 不存在 → 404「会话不存在」(不区分不存在与无权探知)。
+      - ``expected_owner_id`` 给定(用户端点)→ ``owner.portal_user_id`` 不符
+        → 403「无权访问该会话」(归属他人)。
+      - ``owner.share_page_id`` 不符 → 403「会话不属于该分享页」。
 
-    Slice 16:加 ``ragflow_type`` 参数,agent 类型调 agentbot 端点,chat 类型调 chatbot 端点。
-
-    返回 True 表示 RAGFlow 删除成功(门户侧已硬删除);
-    返回 False 表示 RAGFlow 失败(门户侧已标记 deleted_at,记录保留待重试)。
+    admin 变体:显式传 ``expected_owner_id=None`` 跳过归属校验
+    (管理员可删除/操作任意用户的会话),仅保留存在性与分享页一致性校验。
     """
-    try:
-        # TD15:统一走 _delete_session 分发(消除 if ragflow_type == "agent" 分支)
-        await _delete_session(settings, dialog_id, session_id, ragflow_type)
-        store.delete(session_id)
-        return True
-    except HTTPException:
-        store.mark_deleted(session_id)
-        return False
+    owner = session_store.get(session_id)
+    if owner is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    if expected_owner_id is not None and owner.portal_user_id != expected_owner_id:
+        raise HTTPException(status_code=403, detail="无权访问该会话")
+    if owner.share_page_id != share_page_id:
+        raise HTTPException(status_code=403, detail="会话不属于该分享页")
+    return owner
 
 
 @router.get("/share-pages")
@@ -742,15 +755,10 @@ async def resume_session(share_page_id: str, session_id: str, request: Request, 
     """
     seed = request.app.state.seed
     share_page = _check_share_page_access(seed, share_page_id, user)
-    # 归属校验:session 必须归属当前用户
-    owner = request.app.state.session_store.get(session_id)
-    if owner is None:
-        raise HTTPException(status_code=404, detail="会话不存在")
-    if owner.portal_user_id != user.id:
-        # 基础隔离:用户只能查自己的 session(Slice 3 加完整校验链)
-        raise HTTPException(status_code=403, detail="无权访问该会话")
-    if owner.share_page_id != share_page_id:
-        raise HTTPException(status_code=403, detail="会话不属于该分享页")
+    # 归属校验:session 必须归属当前用户(Issue 95:收敛为 _get_owned_session_or_404)
+    owner = _get_owned_session_or_404(
+        request.app.state.session_store, session_id, share_page_id, expected_owner_id=user.id
+    )
     # 调 RAGFlow GET 端点取回消息 + 引用
     # Slice 16:agent 类型走 agentbot 端点,chat 类型走 chatbot 端点
     settings = request.app.state.settings
@@ -761,8 +769,14 @@ async def resume_session(share_page_id: str, session_id: str, request: Request, 
     )
     # 恢复会话时同步 message_count(TD2 + TD8:聚到 sync_message_count_from_history)
     # history 已 fetch,传入 history= 避免重复请求
-    await request.app.state.session_store.sync_message_count_from_history(
-        settings, share_page.ragflow_resource_id, session_id, share_page.ragflow_type, history=history
+    # Issue 94:编排上移 — sync_message_count_from_history 为 gateway 模块级函数
+    await sync_message_count_from_history(
+        request.app.state.session_store,
+        settings,
+        share_page.ragflow_resource_id,
+        session_id,
+        share_page.ragflow_type,
+        history=history,
     )
     # 补充门户侧标题(chat_session_owner.title 为列表显示主源)
     if isinstance(history, dict):
@@ -792,14 +806,10 @@ async def rename_session(
     """
     seed = request.app.state.seed
     share_page = _check_share_page_access(seed, share_page_id, user)
-    # 归属校验:session 必须归属当前用户
-    owner = request.app.state.session_store.get(session_id)
-    if owner is None:
-        raise HTTPException(status_code=404, detail="会话不存在")
-    if owner.portal_user_id != user.id:
-        raise HTTPException(status_code=403, detail="无权访问该会话")
-    if owner.share_page_id != share_page_id:
-        raise HTTPException(status_code=403, detail="会话不属于该分享页")
+    # 归属校验:session 必须归属当前用户(Issue 95:收敛为 _get_owned_session_or_404)
+    _get_owned_session_or_404(
+        request.app.state.session_store, session_id, share_page_id, expected_owner_id=user.id
+    )
     # 同步策略:RAGFlow PATCH 成功才更新门户 title;失败抛 502(不吞异常,不更新门户 title)
     # rename_session_via_ragflow 在非 200 时已抛 HTTPException(502),此处直接透传
     # TD15:统一走 _rename_session 分发(消除 if ragflow_type == "agent" 分支)
@@ -823,16 +833,13 @@ async def delete_session(share_page_id: str, session_id: str, request: Request, 
     """
     seed = request.app.state.seed
     share_page = _check_share_page_access(seed, share_page_id, user)
-    # 归属校验:session 必须归属当前用户
-    owner = request.app.state.session_store.get(session_id)
-    if owner is None:
-        raise HTTPException(status_code=404, detail="会话不存在")
-    if owner.portal_user_id != user.id:
-        raise HTTPException(status_code=403, detail="无权访问该会话")
-    if owner.share_page_id != share_page_id:
-        raise HTTPException(status_code=403, detail="会话不属于该分享页")
+    # 归属校验:session 必须归属当前用户(Issue 95:收敛为 _get_owned_session_or_404)
+    owner = _get_owned_session_or_404(
+        request.app.state.session_store, session_id, share_page_id, expected_owner_id=user.id
+    )
     # 双删:RAGFlow DELETE 成功 → 门户硬删除;失败 → 标记 deleted_at(返回 200 不暴露失败)
     # Slice 16:agent 类型走 agentbot 端点,chat 类型走 chatbot 端点
+    # Issue 95:_dual_delete_session 已下沉至 gateway.py(本层只做薄适配调用)
     settings = request.app.state.settings
     deleted = await _dual_delete_session(
         settings,
@@ -1084,7 +1091,7 @@ async def admin_update_user_password(
 
 @router.patch("/admin/users/{user_id}")
 async def admin_update_user(
-    user_id: str, body: UpdateEnabledRequest, request: Request, user=Depends(require_org_admin)
+    user_id: str, body: UpdateUserEnabledRequest, request: Request, user=Depends(require_org_admin)
 ):
     """管理员启用/禁用用户(对应 PRD 用户故事 4-5)。
 
@@ -1093,6 +1100,8 @@ async def admin_update_user(
 
     Slice 6 加审计:启用 → user_enable,禁用 → user_disable(PR D7b)。
     Slice 13:org_admin 跨 org 修改用户 → 403。
+    Issue 96:body 为 UpdateUserEnabledRequest(enabled 必填),缺 enabled
+    (如只传 is_public)→ Pydantic 422,不会把 None 写入 NOT NULL 列。
     """
     seed = request.app.state.seed
     target = seed.get_user(user_id)
@@ -1119,7 +1128,7 @@ async def admin_update_user(
 async def admin_delete_user(user_id: str, request: Request, user=Depends(require_org_admin)):
     """管理员硬删除用户(对应 Slice 5 验收点 6:级联删除 chat_session_owner + RAGFlow API4Conversation,无孤儿)。
 
-    级联策略(``SessionStore.cascade_delete_for_user``,与单会话双删不同):
+    级联策略(``gateway.cascade_delete_for_user``,与单会话双删不同):
       - 遍历用户的所有 chat_session_owner(含 deleted_at 标记的,跨分享页)。
       - 每条调 RAGFlow DELETE:**无论成功失败都硬删除门户侧记录**(避免孤儿)。
         理由:用户已不存在,保留 orphan 会话无法后续重试(无用户上下文);
@@ -1139,7 +1148,8 @@ async def admin_delete_user(user_id: str, request: Request, user=Depends(require
     settings = request.app.state.settings
     session_store = request.app.state.session_store
     # 级联删除用户所有会话(RAGFlow 失败也硬删除门户侧,避免孤儿;失败记日志)
-    cascade_results = await session_store.cascade_delete_for_user(user_id, settings)
+    # Issue 94:编排上移 — cascade_delete_for_user 为 gateway 模块级函数
+    cascade_results = await cascade_delete_for_user(session_store, user_id, settings)
     # Slice 6 审计:每个级联删除的会话记 session_delete(门户侧已硬删除)
     for session_id, _success in cascade_results:
         _audit(
@@ -1325,14 +1335,14 @@ async def admin_delete_session(share_page_id: str, session_id: str, request: Req
     if page is None:
         raise HTTPException(status_code=404, detail="分享页不存在")
     _assert_same_org_admin(user, page.org_id)
-    owner = request.app.state.session_store.get(session_id)
-    if owner is None:
-        raise HTTPException(status_code=404, detail="会话不存在")
-    # 校验 session 属于该分享页(与 rename_session/delete_session 校验链一致)
-    if owner.share_page_id != share_page_id:
-        raise HTTPException(status_code=403, detail="会话不属于该分享页")
+    # admin 变体(Issue 95):显式 expected_owner_id=None — 不校验 portal_user_id 归属
+    # (管理员可删任意用户的会话),仅保留存在性(404)与分享页一致性(403)校验
+    owner = _get_owned_session_or_404(
+        request.app.state.session_store, session_id, share_page_id, expected_owner_id=None
+    )
     # 双删:RAGFlow DELETE(管理员不校验 portal_user_id 归属,可删任意用户的会话)
     # Slice 16:agent 类型走 agentbot 端点,chat 类型走 chatbot 端点
+    # Issue 95:_dual_delete_session 已下沉至 gateway.py(本层只做薄适配调用)
     settings = request.app.state.settings
     share_page = seed.get_share_page(share_page_id)
     deleted = await _dual_delete_session(
@@ -1363,15 +1373,17 @@ async def admin_delete_session(share_page_id: str, session_id: str, request: Req
 
 
 def _validate_subject_exists(seed, subject_type: str, subject_id: str) -> None:
-    """校验 subject 存在;不存在 → 404。"""
+    """校验 subject 存在;不存在 → 404。
+
+    Issue 96:subject_type 由 CreateGrantRequest 的 Literal 类型在入口处做
+    Pydantic 422 校验,到达此处只会是 "user" 或 "group",原 else 分支不可达,已删除。
+    """
     if subject_type == "user":
         if seed.get_user(subject_id) is None:
             raise HTTPException(status_code=404, detail="用户不存在")
     elif subject_type == "group":
         if seed.get_group(subject_id) is None:
             raise HTTPException(status_code=404, detail="用户组不存在")
-    else:
-        raise HTTPException(status_code=400, detail="subject_type 必须为 user 或 group")
 
 
 @router.post("/admin/share-pages/{share_page_id}/grants", status_code=201)
@@ -1595,8 +1607,9 @@ async def admin_get_session(
         "取回会话失败",
     )
     # 同步 message_count(TD2 + TD8:聚到 sync_message_count_from_history)
-    await session_store.sync_message_count_from_history(
-        settings, owner.ragflow_resource_id, session_id, ragflow_type, history=history
+    # Issue 94:编排上移 — sync_message_count_from_history 为 gateway 模块级函数
+    await sync_message_count_from_history(
+        session_store, settings, owner.ragflow_resource_id, session_id, ragflow_type, history=history
     )
     # 合并元数据与正文
     return {
@@ -1744,8 +1757,8 @@ async def public_get_embed_url(share_page_id: str, request: Request):
     share_page = _get_public_share_page(seed, share_page_id)
     settings = request.app.state.settings
     token_store = request.app.state.token_store
-    # 签发公开 T_short(scope='public',portal_user_id='u_anonymous')
-    t_short = token_store.issue("u_anonymous", share_page.id, settings.t_short_ttl_seconds, scope="public")
+    # 签发公开 T_short(scope='public',portal_user_id=ANONYMOUS_USER_ID)
+    t_short = token_store.issue(ANONYMOUS_USER_ID, share_page.id, settings.t_short_ttl_seconds, scope="public")
     iframe_url = build_iframe_url(settings.ragflow_browser_origin, share_page.ragflow_resource_id, t_short)
     return {
         "iframe_url": iframe_url,
@@ -1768,16 +1781,16 @@ async def public_precreate_session(share_page_id: str, request: Request):
         lambda: precreate_session_via_ragflow(settings, share_page.ragflow_resource_id),
         "预创建 session 失败",
     )
-    # 绑定到 u_anonymous(公开会话锚点,不归属任何具体登录用户)
+    # 绑定到匿名锚点(公开会话,不归属任何具体登录用户)
     request.app.state.session_store.bind(
         session_id=session_id,
         share_page_id=share_page.id,
-        portal_user_id="u_anonymous",
+        portal_user_id=ANONYMOUS_USER_ID,
         ragflow_resource_id=share_page.ragflow_resource_id,
     )
     # 签发公开 T_short 并构造含 session_id 的 iframe URL
     token_store = request.app.state.token_store
-    t_short = token_store.issue("u_anonymous", share_page.id, settings.t_short_ttl_seconds, scope="public")
+    t_short = token_store.issue(ANONYMOUS_USER_ID, share_page.id, settings.t_short_ttl_seconds, scope="public")
     iframe_url = build_iframe_url(settings.ragflow_browser_origin, share_page.ragflow_resource_id, t_short, session_id)
     return {
         "session_id": session_id,

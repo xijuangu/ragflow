@@ -630,6 +630,28 @@ async def test_login_disabled_user_returns_403_with_clear_message(client):
     assert "禁用" in resp.json()["detail"]
 
 
+async def test_admin_update_user_without_enabled_returns_422_no_write(client, app):
+    """Issue 96 回归:PATCH /admin/users/{id} 缺 enabled(如只传 is_public)→ 422,不写库。
+
+    修复前复用分享页的 UpdateEnabledRequest(enabled 可选):只传 is_public 时
+    enabled=None 被 set_user_enabled 写入 NOT NULL 列。修复后 enabled 必填,
+    Pydantic 在入口处 422,不触及 DB。
+    """
+    await _login_admin(client)
+    user = await _create_user(client, username="alice", email="alice@example.com", password="alicepass123")
+    enabled_before = app.state.seed.get_user(user["id"]).enabled
+
+    # 只传 is_public(修复前触发 enabled=None 写库的请求形态)→ 422
+    resp = await client.patch(f"/admin/users/{user['id']}", json={"is_public": True})
+    assert resp.status_code == 422, f"只传 is_public 应 422: {resp.status_code} {resp.text}"
+    # 空 body(什么都不传)→ 422
+    resp = await client.patch(f"/admin/users/{user['id']}", json={})
+    assert resp.status_code == 422, f"空 body 应 422: {resp.status_code} {resp.text}"
+
+    # 两次 422 均未触及写库(enabled 保持原值)
+    assert app.state.seed.get_user(user["id"]).enabled == enabled_before
+
+
 # ---------------------------------------------------------------------------
 # 验收点 10:网关 ACL — 用户仅通过组授权时,调 embed-url / SSE 代理成功。
 # ---------------------------------------------------------------------------
