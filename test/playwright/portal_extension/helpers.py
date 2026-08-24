@@ -16,6 +16,8 @@ ADMIN_TABS = [
     ("/admin/grants", "授权管理"),
     ("/admin/sessions", "会话搜索"),
     ("/admin/audit", "审计日志"),
+    # Issue 92:sidebar 第 7 项「用量统计」
+    ("/admin/usage", "用量统计"),
 ]
 
 
@@ -202,3 +204,18 @@ def select_option_containing(select_locator, text: str) -> str:
     assert value, f"Option containing {text!r} has no value"
     select_locator.select_option(value)
     return value
+
+
+def select_combobox_option(page: Page, input_locator, text: str) -> None:
+    """Issue 88 起 SearchableCombobox 替代原生 select:点开 input → 点选 role=option。
+
+    选项定位收窄到该 input 的 aria-controls 指向的 listbox,避免多 combobox
+    同时展开时误选。listbox id 来自 React useId(含 ':'),用属性选择器而非 '#'
+    拼接(避免 CSS 解析错误)。选项 value 不落在 DOM 属性上,需要 id 的场景一律从 admin API 取。
+    """
+    input_locator.click()
+    listbox_id = input_locator.get_attribute("aria-controls")
+    assert listbox_id, "combobox input has no aria-controls"
+    option = page.locator(f"[id='{listbox_id}'] [role='option']").filter(has_text=text).first
+    expect(option).to_be_visible()
+    option.click()

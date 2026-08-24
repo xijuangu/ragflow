@@ -535,9 +535,10 @@ PORTAL_E2E_ADMIN_USERNAME=admin \
 PORTAL_E2E_ADMIN_PASSWORD='<admin-password>' \
 uv run --python 3.13 pytest -q test/playwright/portal_extension -s --junitxml=/tmp/playwright-portal.xml
 ```
-- 基线:6 passed + 1 skipped(2026-07-14 验收；跳过项为真实聊天慢用例)
+- 基线:5 passed + 4 skipped(2026-08-24 适配后;skip = 2 个劳动法 fixture 用例(当前环境无该分享页,显式 skip 指引 env var)+ 2 个真实聊天慢用例)
 - 前置:172.16.10.180 已部署最新代码 + `.venv-playwright` 已装 playwright 依赖 + admin 密码与服务器 `.env` 一致
-- 默认覆盖:登录、分享页列表、iframe shell、token 不泄露、6 个 admin tab 加载、Slice 44 缓存回归、Issue 82 含引用历史恢复、临时用户 CRUD + 审计 + 用户组成员 + 分享页表单
+- 默认覆盖:登录、分享页列表、iframe shell、token 不泄露、7 个 admin tab 加载(含用量统计)、Slice 44 缓存回归、临时用户 CRUD + 审计 + 用户组成员 + 分享页表单(Issue 88/89 combobox/master-detail 已适配,`select_combobox_option` helper 替代 `select_option_containing`)
+- **combobox 测试要点**:多选 combobox 选中后必须先 `press("Escape")` 关闭下拉再点「添加」— 下拉展开时点按钮,mousedown 触发 blur 关闭下拉的重渲染会吞掉 click,表单不提交;listbox id 含 React useId 的 `:`,定位用 `[id='...']` 属性选择器而非 `#` 拼接
 - **不纳入默认回归**:`PORTAL_E2E_RUN_CHAT=1` 和 `PORTAL_E2E_RUN_REFERENCE_CHAT=1` 真实聊天慢用例(每次跑会产生不可控对话内容并在结束后清理会话),仅在验收聊天相关 Issue 或发版前手动追加
 - 失败处理:看 `FAILURES` 段 + `test/playwright/artifacts/` 截图;CRUD 用例失败时 finally 会用管理员 API 清理临时用户(`pw-user-*` / `pw-group-user-*`)
 

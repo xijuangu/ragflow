@@ -11,7 +11,7 @@ from test.playwright.portal_extension.helpers import (
     login_as_admin,
     quote_path,
     portal_url,
-    select_option_containing,
+    select_combobox_option,
     unique_name,
     wait_until,
     wait_for_audit_action,
@@ -30,9 +30,10 @@ def test_admin_create_grant_revoke_and_delete_user(page: Page, base_url: str):
         page.goto(portal_url(base_url, "/admin/users"), wait_until="domcontentloaded")
         expect(page.get_by_role("heading", name="用户管理")).to_be_visible()
 
-        page.get_by_label("用户名").fill(username)
-        page.get_by_label("邮箱").fill(email)
-        page.get_by_label("初始密码").fill(password)
+        # Issue 86:列表页新增搜索框(同为「用户名」label),表单字段用 id 定位
+        page.locator("#new-username").fill(username)
+        page.locator("#new-email").fill(email)
+        page.locator("#new-password").fill(password)
         page.get_by_role("button", name="创建用户").click()
 
         row = page.get_by_role("row").filter(has_text=username)
@@ -48,11 +49,16 @@ def test_admin_create_grant_revoke_and_delete_user(page: Page, base_url: str):
 
         page.goto(portal_url(base_url, "/admin/grants"), wait_until="domcontentloaded")
         expect(page.get_by_role("heading", name="授权管理")).to_be_visible()
-        expect(page.locator("#grant-share-page")).not_to_have_value("")
-        share_page_id = page.locator("#grant-share-page").input_value()
+        # Issue 88:分享页/授权对象已是 combobox(input),不再是原生 select;
+        # share_page_id 从 admin API 取(选项 value 不落在 DOM 属性上),选启用的页
+        share_pages = api_get_json(page, base_url, "/admin/share-pages").get("share_pages", [])
+        share_page = next((item for item in share_pages if item.get("enabled")), None)
+        assert share_page is not None, "No enabled share pages available for grant test"
+        share_page_id = share_page["id"]
 
+        select_combobox_option(page, page.locator("#grant-share-page"), share_page["name"])
         page.locator("#grant-subject-type").select_option("user")
-        select_option_containing(page.locator("#grant-subject-id"), username)
+        select_combobox_option(page, page.locator("#grant-subject-id"), username)
         page.get_by_role("button", name="授权").click()
 
         grant_row = page.get_by_test_id(f"grant-row-user-{created_user_id}")
@@ -128,12 +134,21 @@ def test_admin_group_form_and_member_add_remove(page: Page, base_url: str):
         expect(page.get_by_label("用户组名称")).to_be_visible()
         expect(page.get_by_role("button", name=re.compile("创建用户组|创建中"))).to_be_visible()
 
-        group_card = page.get_by_test_id(f"group-row-{group_id}")
-        expect(group_card).to_be_visible()
+        # Issue 89:master-detail — 左侧点组行选中,右侧 group-detail 面板操作
+        group_row = page.get_by_test_id(f"group-row-{group_id}")
+        expect(group_row).to_be_visible()
+        group_row.click()
+        detail = page.get_by_test_id("group-detail")
+        expect(detail).to_be_visible()
 
-        select_option_containing(group_card.get_by_label("选择用户"), username)
-        group_card.get_by_role("button", name="添加").click()
-        expect(group_card).to_contain_text(username)
+        # Issue 88:添加成员 = 多选 combobox(click → click option → Esc 关下拉 → 添加);
+        # Esc 必须有 — 下拉展开时点「添加」,mousedown 先触发 input blur 关闭下拉,
+        # 重渲染会吞掉后续 click 事件,表单不提交
+        member_input = page.locator(f"#member-select-{group_id}")
+        select_combobox_option(page, member_input, username)
+        member_input.press("Escape")
+        detail.get_by_role("button", name="添加").click()
+        expect(detail).to_contain_text(username)
 
         _wait_for_group_member_state(
             page,
@@ -143,9 +158,11 @@ def test_admin_group_form_and_member_add_remove(page: Page, base_url: str):
             should_contain=True,
         )
 
-        member_item = group_card.locator(".member-item").filter(has_text=username)
+        # Issue 89:移除成员先弹确认框,再点「确认移除」
+        member_item = detail.locator(".member-item").filter(has_text=username)
         expect(member_item).to_be_visible()
         member_item.get_by_role("button", name="移除").click()
+        page.get_by_role("button", name="确认移除").click()
         expect(member_item).to_have_count(0)
 
         _wait_for_group_member_state(
@@ -181,8 +198,9 @@ def test_admin_create_group_and_share_page_forms_are_available(page: Page, base_
     expect(page.get_by_role("heading", name="分享页管理")).to_be_visible()
     expect(page.get_by_label("分享页名称")).to_be_visible()
     expect(page.get_by_label("RAGFlow 资源 ID")).to_be_visible()
-    expect(page.get_by_label("嵌入类型")).to_be_visible()
-    expect(page.get_by_label("RAGFlow 类型")).to_be_visible()
+    # Issue 87:列表新增「嵌入类型筛选」下拉,label 与表单的「嵌入类型」前缀重叠,用 exact 区分
+    expect(page.get_by_label("嵌入类型", exact=True)).to_be_visible()
+    expect(page.get_by_label("RAGFlow 类型", exact=True)).to_be_visible()
     expect(page.get_by_role("button", name=re.compile("创建分享页|创建中"))).to_be_visible()
     expect_no_portal_errors(page)
 
