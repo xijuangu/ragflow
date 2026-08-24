@@ -570,6 +570,14 @@ tbody tr:hover { background: var(--surface-2); }
   list-style: none;
 }
 
+/* 下拉是绝对定位,不能被 overflow:hidden 的卡片裁切(授权表单卡片很矮,下拉被裁成
+   窄条;组详情卡成员少时同样潜伏)。这两类卡片内只有带 padding 的字段/列表,没有
+   依赖 .card 圆角裁切的全出血子元素,改 visible 让下拉溢出卡片渲染。 */
+.admin-form.card,
+.card.group-detail {
+  overflow: visible;
+}
+
 .combobox-option {
   display: flex;
   align-items: baseline;

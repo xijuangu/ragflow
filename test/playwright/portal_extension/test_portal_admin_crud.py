@@ -49,6 +49,14 @@ def test_admin_create_grant_revoke_and_delete_user(page: Page, base_url: str):
 
         page.goto(portal_url(base_url, "/admin/grants"), wait_until="domcontentloaded")
         expect(page.get_by_role("heading", name="授权管理")).to_be_visible()
+        # 回归锚点(2026-08-24 生产 bug):combobox 下拉为绝对定位,授权表单卡片
+        # (admin-form card)不得用 overflow:hidden 裁切 — 否则下拉只露出窄条
+        card_overflow = page.eval_on_selector(
+            "form.admin-form.card", "el => getComputedStyle(el).overflow"
+        )
+        assert card_overflow == "visible", (
+            f"授权表单卡片 overflow={card_overflow!r},combobox 下拉会被裁切"
+        )
         # Issue 88:分享页/授权对象已是 combobox(input),不再是原生 select;
         # share_page_id 从 admin API 取(选项 value 不落在 DOM 属性上),选启用的页
         share_pages = api_get_json(page, base_url, "/admin/share-pages").get("share_pages", [])
