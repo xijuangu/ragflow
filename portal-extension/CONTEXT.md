@@ -81,7 +81,7 @@ portal-extension/
 │   │   │   ├── LoginPage.tsx
 │   │   │   ├── SharePagesPage.tsx
 │   │   │   ├── SharePageDetailPage.tsx   # 分享页详情(iframe + 会话列表)
-│   │   │   └── admin/         # 管理后台(Users/Groups/SharePages/Grants/Sessions/AuditLogs)
+│   │   │   └── admin/         # 管理后台(Users/Groups/SharePages/Grants/Sessions/AuditLogs/UsageStats)
 │   │   ├── components/        # AdminLayout/AdminRoute/AppHeader/ProtectedRoute
 │   │   ├── hooks/             # useAdminList/useOptimisticToggle
 │   │   └── utils/
@@ -608,5 +608,7 @@ uv run --python 3.13 pytest -q test/playwright/portal_extension -s --junitxml=/t
 - **该 fork 改动触发 §4 硬约束**「RAGFlow 侧改动需 Issue 明确批准」:Issue 90 即批准记录,必须配套测试、构建说明、docker cp 部署/回滚步骤(沿用 §9.2 模式)
 - **门户记账:新 `usage_record` 表**——时间、portal 用户、分享页、session_id、模型名、input/output token、`incomplete` 标记;**不存问答正文**(消息正文唯一事实源仍是 RAGFlow `API4Conversation`)
 - **断流口径**:末帧才有真实 usage;断流时按已收到回答文本计词元作为 output、按请求问题估算 input,记录标记 `incomplete`
+- **估算口径(Issue 91 落地)**:gateway `estimate_tokens` — CJK/全角字符(ord≥0x2E80)每字 1 token,其余每 4 字符 1 token 向上取整;无 tiktoken 依赖、确定性。记账经 `UsageAccountingContext` 注入收敛后的 `_build_sse_streaming_response`(标准链 subject=登录用户,公开链 subject=u_anonymous;透传分支与 greeting 不记账);模型名列预留(末帧不含模型名,暂记空)
 - **边界**:一期只统计 chat 类型分享页(agent 类型搁置未验收);上线前历史用量不追溯;embedding/文档解析消耗门户不可见,不在范围
 - **展示:仅 admin 可见**。sidebar 新增「用量统计」tab:汇总视图(按用户聚合,时间段/分享页筛选,排序,CSV 导出)+ 明细视图(逐条记录);用户自助查自己用量一期不做,接口留扩展点
+- **展示落地(Issue 92)**:`GET /admin/usage-records`(require_org_admin,org_admin 强制本 org)+ 前端 `/admin/usage` 页(全量拉取 + 内存聚合/筛选/排序,遵循 §12.1;「默认本月」经 useAdminListView 的 initialFilterValues;CSV 由前端 buildCsv 生成,与当前筛选结果一致);页面与手册均标注「RAGFlow 本地计词,非厂商账单」

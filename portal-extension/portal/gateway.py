@@ -54,7 +54,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from portal.auth import get_current_user
-from portal.models import ANONYMOUS_USER_ID
+from portal.models import ANONYMOUS_USER_ID, UsageStore
 
 if TYPE_CHECKING:
     from portal.models import SharePage
@@ -1020,6 +1020,13 @@ async def proxy_sse_to_ragflow(request: Request, dialog_id: str, ragflow_type: s
             authorize_reference_documents=partial(token_store.authorize_documents, record.token),
             token_store=token_store,
             t_short=record.token,
+            # Issue 91:公开问答同样记账,subject 为匿名锚点(record.portal_user_id=u_anonymous)
+            usage_context=UsageAccountingContext(
+                request.app.state.usage_store,
+                record.portal_user_id,
+                record.share_page_id,
+                share_page.org_id,
+            ),
         )
     # 标准链后半段:归属隔离(若请求体含 session_id,校验其归属当前 T_short 持有用户)
     if request_session_id:
@@ -1049,6 +1056,13 @@ async def proxy_sse_to_ragflow(request: Request, dialog_id: str, ragflow_type: s
         authorize_reference_documents=partial(token_store.authorize_documents, record.token),
         token_store=token_store,
         t_short=record.token,
+        # Issue 91:标准链问答记账(subject 为当前登录用户)
+        usage_context=UsageAccountingContext(
+            request.app.state.usage_store,
+            record.portal_user_id,
+            record.share_page_id,
+            share_page.org_id,
+        ),
     )
 
 
@@ -1086,6 +1100,8 @@ def _proxy_public_sse_stream(
             record.share_page_id,
         )
     # 公开分享页当前仅 chat 类型,ragflow_type 固定为 'chat'
+    # Issue 91:公开问答记账(subject 为匿名锚点 record.portal_user_id=u_anonymous)
+    share_page = request.app.state.seed.get_share_page(record.share_page_id)
     return _build_sse_streaming_response(
         settings,
         body,
@@ -1097,6 +1113,12 @@ def _proxy_public_sse_stream(
         authorize_reference_documents=partial(token_store.authorize_documents, record.token),
         token_store=token_store,
         t_short=record.token,
+        usage_context=UsageAccountingContext(
+            request.app.state.usage_store,
+            record.portal_user_id,
+            record.share_page_id,
+            share_page.org_id if share_page else "default",
+        ),
     )
 
 
@@ -1129,6 +1151,7 @@ def _build_sse_streaming_response(
     authorize_reference_documents: Callable[[set[str]], None] | None = None,
     token_store: TokenStore | None = None,
     t_short: str = "",
+    usage_context: "UsageAccountingContext | None" = None,
 ) -> StreamingResponse:
     """构造 SSE 流式响应(标准路径与公开路径共用)。
 
@@ -1159,6 +1182,10 @@ def _build_sse_streaming_response(
         success = False
         # Slice 22:累积解析 SSE 响应的 session_id(RAGFlow fetchSessionId 新建的 session)
         parsed_session_id = ""
+        # Issue 91:记账素材 — 末帧结构化 usage(真实值)+ 已收到回答文本(断流估算 output 用)。
+        # RAGFlow 每帧 answer 为累计全文,故保留最后一帧非空 answer 即可。
+        final_usage: tuple[int, int] | None = None
+        last_answer_text = ""
         event_parser = SSEJSONEventParser()
         can_rewrite = token_store is not None and bool(t_short)
         try:
@@ -1166,6 +1193,14 @@ def _build_sse_streaming_response(
                 async with client.stream("POST", upstream_url, content=body, headers=upstream_headers) as upstream:
                     async for chunk in upstream.aiter_bytes():
                         events = event_parser.feed_with_raw(chunk)
+                        if usage_context is not None:
+                            for payload, _ in events:
+                                if payload is None:
+                                    continue
+                                if (usage := extract_usage_from_sse_payload(payload)) is not None:
+                                    final_usage = usage
+                                if (answer := _answer_text_from_sse_payload(payload)):
+                                    last_answer_text = answer
                         if authorize_reference_documents is not None:
                             document_ids: set[str] = set()
                             for payload, _ in events:
@@ -1254,6 +1289,35 @@ def _build_sse_streaming_response(
                             dialog_id,
                             exc,
                         )
+            # Issue 91:用量记账(每次真实问答一条;greeting 空问题不记)。
+            # 口径:末帧带 usage 且流完整 → 真实值 incomplete=False;其余(断流/缺 usage)
+            # 按 §12.2 估算口径兜底并标记 incomplete。记账失败只告警,不破坏流。
+            if usage_context is not None and request_question not in (None, ""):
+                try:
+                    if final_usage is not None:
+                        input_tokens, output_tokens = final_usage
+                        incomplete = not success
+                    else:
+                        input_tokens = estimate_tokens(request_question)
+                        output_tokens = estimate_tokens(last_answer_text)
+                        incomplete = True
+                    usage_context.usage_store.record(
+                        portal_user_id=usage_context.portal_user_id,
+                        share_page_id=usage_context.share_page_id,
+                        session_id=request_session_id or parsed_session_id,
+                        model_name="",
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        incomplete=incomplete,
+                        org_id=usage_context.org_id,
+                    )
+                except Exception as exc:  # noqa: BLE001 - 记账失败不破坏 SSE 流
+                    logger.warning(
+                        "failed to record usage after SSE: session_id=%s dialog_id=%s error=%s",
+                        request_session_id or parsed_session_id,
+                        dialog_id,
+                        exc,
+                    )
 
     return StreamingResponse(stream_generator(), media_type="text/event-stream")
 
@@ -1368,6 +1432,86 @@ def _session_id_from_sse_payload(payload: dict) -> str:
         or ""
     )
     return str(session_id) if session_id else ""
+
+
+# ---------------------------------------------------------------------------
+# Issue 91:SSE 用量记账(usage_record)
+#
+# 口径(CONTEXT.md §12.2):
+#   - 正常完成且末帧带结构化 usage(Issue 90)→ 用真实值,incomplete=False;
+#   - 断流(上游中途出错/客户端断开)→ output = 已收到回答文本计词,
+#     input = 按请求问题估算,incomplete=True;
+#   - 末帧无 usage(旧 RAGFlow / empty_response 捷径)→ 同一估算口径,incomplete=True;
+#   - greeting(question="")不是问答,不记账;原生透传分支(非 portal 会话)不记账;
+#   - 不存问答正文(usage_record 表无正文字段)。
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class UsageAccountingContext:
+    """SSE 记账上下文(身份 + 存储),由代理路径注入。
+
+    None 表示不记账(透传分支 / 测试直调)。公开分享页问答的
+    ``portal_user_id`` 为匿名锚点 ``ANONYMOUS_USER_ID``(§12.2)。
+    """
+
+    usage_store: UsageStore
+    portal_user_id: str
+    share_page_id: str
+    org_id: str = "default"
+
+
+def estimate_tokens(text: str) -> int:
+    """门户本地 token 估算口径(§12.2 兜底,非厂商计费值)。
+
+    规则(确定性,与 RAGFlow tiktoken 口径近似但刻意简化,避免引入 tiktoken 依赖):
+      - CJK/全角字符(ord >= 0x2E80)每字计 1 token;
+      - 其余字符每 4 字符计 1 token(向上取整)。
+    空字符串计 0。估算值仅用于 incomplete=True 的兜底记录。
+    """
+    if not text:
+        return 0
+    wide = sum(1 for ch in text if ord(ch) >= 0x2E80)
+    narrow = len(text) - wide
+    return wide + (narrow + 3) // 4
+
+
+def extract_usage_from_sse_payload(payload) -> tuple[int, int] | None:
+    """从 SSE 事件 payload 摘取结构化 usage(Issue 90 末帧),返回 (input, output)。
+
+    兼容 nested ``{data:{usage:{input,output}}}`` 与 flat ``{usage:{...}}``;
+    缺失或字段非法(非 int 可转换/缺键/负值)返回 None(调用方走估算口径)。
+    """
+    if not isinstance(payload, dict):
+        return None
+    data = payload.get("data")
+    usage = None
+    if isinstance(data, dict) and isinstance(data.get("usage"), dict):
+        usage = data["usage"]
+    elif isinstance(payload.get("usage"), dict):
+        usage = payload["usage"]
+    if usage is None:
+        return None
+    try:
+        input_tokens = int(usage["input"])
+        output_tokens = int(usage["output"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if input_tokens < 0 or output_tokens < 0:
+        return None
+    return input_tokens, output_tokens
+
+
+def _answer_text_from_sse_payload(payload) -> str:
+    """从 SSE 事件 payload 取回答文本(兼容 nested/flat;RAGFlow 每帧 answer 为累计全文)。"""
+    if not isinstance(payload, dict):
+        return ""
+    for container in (payload.get("data"), payload):
+        if isinstance(container, dict):
+            answer = container.get("answer")
+            if isinstance(answer, str) and answer:
+                return answer
+    return ""
 
 
 def _requested_document_ids(request: Request) -> set[str]:

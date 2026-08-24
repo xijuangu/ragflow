@@ -143,7 +143,9 @@ docker exec docker-ragflow-cpu-1 bash -c "cp /ragflow/api/db/services/dialog_ser
 
 ## Issue 91：门户 usage_record 表 + 网关 SSE 记账
 
-> 状态：待实施。阻塞：← Issue 90（真实 usage 数据来源；开发期测试可用 mock SSE 先行）。
+> 状态：✅ 已完成（2026-08-24,分支 impl/91-92,worktree impl-usage)。阻塞：← Issue 90（真实 usage 数据来源；开发期测试可用 mock SSE 先行）。
+>
+> 实施记录：新增 `usage_record` 表(db.py `UsageRecordModel`:id/created_at/portal_user_id/share_page_id/session_id/model_name/input_tokens/output_tokens/incomplete/org_id;新表由 create_all 直接建,无需 ALTER 迁移;与 chat_session_owner 无外键级联,会话删除不影响已落账记录)+ models.py `UsageRecord` dataclass + `UsageStore`(record/list,过滤语义同 AuditStore.list)。记账落在收敛后的 SSE 流编排 `_build_sse_streaming_response`(Issue 93 接缝,不重fork校验链):新增 `UsageAccountingContext`(usage_store+portal_user_id+share_page_id+org_id)由三条代理调用点注入——proxy_sse_to_ragflow 标准链(subject=登录用户)、公开分支与 `_proxy_public_sse_stream`(subject=u_anonymous 匿名锚点);原生透传分支不记账。摘取逻辑:事件循环内用 SSEJSONEventParser payload 摘 `data.usage`(兼容 flat;`extract_usage_from_sse_payload`),同时保留最后一帧非空 answer(RAGFlow 每帧 answer 为累计全文)。finally 中真实问答(question 非空)落一条:末帧带 usage 且流完整 → 真实值 incomplete=False;断流(上游 ReadError/客户端断开)或末帧缺 usage(旧 RAGFlow/empty_response 捷径)→ 估算口径:output=estimate_tokens(已收到回答文本)、input=estimate_tokens(请求问题),incomplete=True;greeting(question="")不记账;记账失败只 warning 不破坏流。估算口径 `estimate_tokens`(无 tiktoken 依赖,确定性):CJK/全角字符(ord≥0x2E80)每字 1 token,其余每 4 字符 1 token 向上取整。模型名:RAGFlow chatbot completions 末帧不含模型名(Issue 90 仅透出 input/output),model_name 列预留暂记 ""。后端 pytest 基线更新为 470 passed + 5 skipped(原 452+5;新增 test_issue91_usage_record.py 17 个用例 + slice13 参数化 org_id 用例随新表 +1),ruff 净。
 
 ## What to build
 
@@ -151,14 +153,16 @@ docker exec docker-ragflow-cpu-1 bash -c "cp /ragflow/api/db/services/dialog_ser
 
 ## Acceptance criteria
 
-- [ ] 每次 chat completions 问答落一条 usage_record，字段完整；正文不落库。
-- [ ] 正常完成、断流、末帧缺 usage 三种路径均有测试覆盖，incomplete 语义符合 CONTEXT.md §12.2。
-- [ ] 会话删除不影响已落账记录；公开分享页（匿名用户）问答同样记账（subject 为匿名标识）。
-- [ ] 后端 pytest 基线更新并记录。
+- [x] 每次 chat completions 问答落一条 usage_record，字段完整；正文不落库。
+- [x] 正常完成、断流、末帧缺 usage 三种路径均有测试覆盖，incomplete 语义符合 CONTEXT.md §12.2。
+- [x] 会话删除不影响已落账记录；公开分享页（匿名用户）问答同样记账（subject 为匿名标识）。
+- [x] 后端 pytest 基线更新并记录。
 
 ## Issue 92：admin「用量统计」tab（汇总 + 明细 + CSV 导出）
 
-> 状态：待实施。阻塞：← Issue 91（数据）+ Issue 86（列表交互约定）。
+> 状态：✅ 已完成（2026-08-24,分支 impl/91-92,worktree impl-usage)。阻塞：← Issue 91（数据）+ Issue 86（列表交互约定）。
+>
+> 实施记录：后端 `GET /admin/usage-records`(routes.py,薄适配;require_org_admin,非 admin/未登录 → 403;参数 user_id/share_page_id/since/until/incomplete/org_id/limit,默认 1000 上限 10000;org_admin 强制本 org 沿用 `_admin_org_filter`)。前端 `UsageStatsAdminPage`(/admin/usage,sidebar 第 7 项「用量统计」):全量拉取(limit=10000)+ 内存筛选/排序/聚合(Issue 86 约定);汇总视图 = `aggregateUsageByUser`(纯函数,独立 `usageAggregation.ts` 满足 react-refresh 约束)在过滤结果上按用户聚合,列=问答次数/input/output token/incomplete 次数,列排序用独立 sort 状态;明细视图逐条记录(时间/用户/分享页/会话/token/incomplete「估算」badge);两视图共用一组筛选(分享页 combobox + 起始/结束日期 + 搜索),「默认本月」经 useAdminListView 新增的可选 `initialFilterValues` 参数实现(since 预填当月 1 号,清空即全部时间);CSV 导出走 `utils/csv.ts`(buildCsv 纯函数 RFC 4180 转义 + downloadCsv 带 BOM),导出内容为当前视图当前筛选/排序结果。口径标注在页头 sub(「RAGFlow 本地计词…非厂商账单;incomplete 为估算兜底」)。匿名公开问答在列表中显示为 anonymous。管理员手册新增「9. 用量统计」章节。测试:后端 test_issue92_admin_usage_api.py 4 个用例(字段完整+过滤+匿名可见、非 admin 403、未登录 403);前端 tests/UsageStatsAdminPage.test.tsx 10 个用例(默认本月聚合、清空日期、分享页筛选、排序、明细、两视图 CSV 一致性、口径标注、聚合与 CSV 纯函数)。后端 474 passed + 5 skipped,前端 136 passed,tsc + eslint 净。
 
 ## What to build
 
@@ -166,10 +170,10 @@ admin sidebar 新增「用量统计」tab，仅 admin 可见。汇总视图：�
 
 ## Acceptance criteria
 
-- [ ] 汇总/明细两视图数据与 usage_record 一致；筛选、排序遵循 Issue 86 全站约定。
-- [ ] CSV 导出内容与当前筛选结果一致。
-- [ ] 非 admin 用户无法访问该 tab 与对应接口（403）。
-- [ ] 前端测试 + 后端接口测试覆盖；管理员手册（docs/manual/admin-manual.md）新增对应章节。
+- [x] 汇总/明细两视图数据与 usage_record 一致；筛选、排序遵循 Issue 86 全站约定。
+- [x] CSV 导出内容与当前筛选结果一致。
+- [x] 非 admin 用户无法访问该 tab 与对应接口（403）。
+- [x] 前端测试 + 后端接口测试覆盖；管理员手册（docs/manual/admin-manual.md）新增对应章节。
 
 
 ---

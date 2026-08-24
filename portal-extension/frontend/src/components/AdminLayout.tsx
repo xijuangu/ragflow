@@ -7,13 +7,14 @@
  *   - 砍掉设计稿的"系统-设置"项(无对应页)
  *   - nav-item active 态:accent 竖条 + surface-2 背景(CSS `.nav-item.active::before`)
  *
- * 六个 admin nav-item 对应 Issue 11 验收点 2-7:
+ * 七个 admin nav-item(Issue 11 验收点 2-7 + Issue 92 用量统计):
  *   - 用户管理(/admin/users,验收点 2)
  *   - 用户组管理(/admin/groups,验收点 3)
  *   - 分享页管理(/admin/share-pages,验收点 4)
  *   - 授权管理(/admin/grants,验收点 5)
  *   - 会话搜索(/admin/sessions,验收点 6)
  *   - 审计日志(/admin/audit,验收点 7)
+ *   - 用量统计(/admin/usage,Issue 92)
  *
  * 子路由由 App.tsx 用嵌套 <Route> 配置,本组件用 <Outlet/> 渲染。
  * Slice 51 布局修复保留:`.admin-main > section { flex:1; min-height:0; overflow-y:auto }`。
@@ -29,7 +30,7 @@ interface NavDef {
   icon: ReactNode;
 }
 
-/** 管理后台 6 项导航(不含"系统-设置",无对应页)。 */
+/** 管理后台 7 项导航(不含"系统-设置",无对应页)。 */
 const ADMIN_NAVS: readonly NavDef[] = [
   {
     to: '/admin/users',
@@ -92,6 +93,18 @@ const ADMIN_NAVS: readonly NavDef[] = [
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
         <path d="M5 4h14v16H5z" />
         <path d="M9 9h6M9 13h6M9 17h3" />
+      </svg>
+    ),
+  },
+  {
+    to: '/admin/usage',
+    label: '用量统计',
+    icon: (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
+        <path d="M4 20V10" />
+        <path d="M10 20V4" />
+        <path d="M16 20v-8" />
+        <path d="M22 20H2" />
       </svg>
     ),
   },

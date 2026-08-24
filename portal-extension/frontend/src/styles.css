@@ -143,6 +143,15 @@ svg { display: block; }
 .page-head .sub { color: var(--muted); font-size: 14px; margin-top: 4px; max-width: 65ch; }
 .head-actions { display: flex; gap: 8px; flex-shrink: 0; }
 
+/* Issue 92:用量统计页 汇总/明细 视图切换(tab 样式,沿用 D1 token) */
+.view-toggle { display: flex; gap: 8px; margin-bottom: 12px; }
+.view-toggle button {
+  padding: 6px 14px; border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface); color: var(--fg); font: inherit; font-size: 13px; cursor: pointer;
+}
+.view-toggle button:hover { background: var(--surface-2); }
+.view-toggle button.active { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+
 /* ============================================================
    BUTTONS(新 D1 — 同时供旧 .btn-* class 复用)
    ============================================================ */

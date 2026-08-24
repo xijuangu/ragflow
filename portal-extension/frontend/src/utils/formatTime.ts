@@ -23,3 +23,22 @@ export function formatTime(epoch: number, mode: FormatTimeMode): string {
   if (mode === 'datetime') return `${datePart} ${timePart}`;
   return `${datePart} ${timePart}:${pad(d.getSeconds())}`;
 }
+
+/** 日期值(YYYY-MM-DD)→ 当日 UTC 起 epoch 秒;非法日期返回 null(调用方不过滤)。 */
+export function parseDayStart(v: string): number | null {
+  const t = Date.parse(`${v}T00:00:00Z`);
+  return Number.isNaN(t) ? null : Math.floor(t / 1000);
+}
+
+/** 日期值(YYYY-MM-DD)→ 当日 UTC 止 epoch 秒;非法日期返回 null(调用方不过滤)。 */
+export function parseDayEnd(v: string): number | null {
+  const t = Date.parse(`${v}T23:59:59Z`);
+  return Number.isNaN(t) ? null : Math.floor(t / 1000);
+}
+
+/** 当月第一天的日期值(YYYY-MM-DD,UTC),供「默认本月」筛选初始值用。 */
+export function firstDayOfCurrentMonth(): string {
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${now.getUTCFullYear()}-${pad(now.getUTCMonth() + 1)}-01`;
+}
