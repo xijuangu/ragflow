@@ -264,7 +264,9 @@ admin sidebar 新增「用量统计」tab，仅 admin 可见。汇总视图：�
 
 ## Issue 98：TokenStore 拆出 ReferenceAccessStore
 
-> 状态：待实施。无阻塞。优先级最低，可在用量统计线稳定后再做。
+> 状态：✅ 已完成（2026-08-24，分支 impl/97-98，worktree impl-cleanup）。
+>
+> 实施记录：gateway.py 新增 `ReferenceAccessStore`（紧邻 TokenStore）— 组合持有 `token_store`，管「已验证历史/SSE 引用的文档 ID 集合」（`_authorized_documents: dict[token, set]`）与 `pit_` 图片票据的签发/校验/prune；令牌有效性经 `token_store.validate()` 实时复核，撤销/过期后授权与票据即时语义失效（与拆分前一致）。TokenStore 回归纯 T_short 生命周期：删 `authorize_documents`/`documents_are_authorized`/`issue_reference_image_ticket`/`get_reference_image_ticket`/prune/remove 六个方法与 `TokenRecord.authorized_document_ids` 字段；revoke 不再同步移除票据（get_reference_image_ticket 校验时实时复核 + 惰性 prune，用户可见行为零变化）。`pending_greeting_session_ids` 评估后**保留在 TokenRecord**：它是 SSE greeting 解析的「待绑定会话」上下文，与令牌同生命周期（随 revoke/过期自然失效），既非引用授权也非独立业务状态，拆出无收益（理由写入 TokenRecord docstring）。main.py 挂载 `app.state.reference_access_store = ReferenceAccessStore(app.state.token_store)`（fail-closed 直接属性访问，同 Issue 93 约定）；`_build_sse_streaming_response` 的 `token_store` 参数更名 `reference_access_store`；`_rewrite_thumbnail_image_urls`/`_rewrite_reference_chunk_image_ids` 签名同步更名；proxy_document_image 票据场景的授权复查改走 `reference_access_store.documents_are_authorized(record.token, {ticket.document_id})`。测试适配 2 处：test_reference_resources 的票据内部状态断言改为 `get_reference_image_ticket` 语义断言（revoke 后 None → 401）；prune 单测改用 `ReferenceAccessStore(TokenStore())` 组合。行为保持型：Issue 82/84/85 引用图片/缩略图/预览用例零回归，基线 474+5 不变，ruff 净。
 
 ## What to build
 
@@ -272,5 +274,5 @@ admin sidebar 新增「用量统计」tab，仅 admin 可见。汇总视图：�
 
 ## Acceptance criteria
 
-- [ ] 「令牌生命周期」与「引用资源授权」两个概念各有模块归属；引用图片链路（签发→改写→校验）涉及的位置从 6 处收敛到 ReferenceAccessStore 内部 + 调用点。
-- [ ] 引用图片/缩略图/预览相关测试（Issue 82/84/85 用例）不回归。
+- [x] 「令牌生命周期」与「引用资源授权」两个概念各有模块归属；引用图片链路（签发→改写→校验）涉及的位置从 6 处收敛到 ReferenceAccessStore 内部 + 调用点。
+- [x] 引用图片/缩略图/预览相关测试（Issue 82/84/85 用例）不回归。

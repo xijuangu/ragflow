@@ -734,9 +734,10 @@ async def test_thumbnail_image_url_gets_scoped_ticket_and_loads_without_authoriz
     assert captured[-1]["authorization"] == f"Bearer {os.environ['RAGFLOW_BETA_TOKEN']}"
 
     ticket_value = parse_qs(urlparse(image_url).query)["portal_ticket"][0]
-    assert ticket_value in app.state.token_store._reference_image_tickets
+    # Issue 98:票据归 ReferenceAccessStore 管(校验时实时复核 T_short 有效性)
+    assert app.state.reference_access_store.get_reference_image_ticket(ticket_value) is not None
     app.state.token_store.revoke(token)
-    assert ticket_value not in app.state.token_store._reference_image_tickets
+    assert app.state.reference_access_store.get_reference_image_ticket(ticket_value) is None
     revoked = await client.get(image_url)
     assert revoked.status_code == 401
 
@@ -762,15 +763,18 @@ async def test_native_ragflow_document_image_request_is_passed_through(client, a
 
 
 def test_issuing_image_ticket_prunes_expired_ticket(monkeypatch):
-    store = TokenStore()
+    from portal.gateway import ReferenceAccessStore
+
+    token_store = TokenStore()
+    store = ReferenceAccessStore(token_store)
     now = 1_000.0
     monkeypatch.setattr("portal.gateway.time.time", lambda: now)
-    expired_token = store.issue("user", "share", ttl_seconds=10)
+    expired_token = token_store.issue("user", "share", ttl_seconds=10)
     store.authorize_documents(expired_token, {"doc-old"})
     expired_ticket = store.issue_reference_image_ticket(expired_token, "doc-old", "image-old")
 
     now = 2_000.0
-    active_token = store.issue("user", "share", ttl_seconds=10)
+    active_token = token_store.issue("user", "share", ttl_seconds=10)
     store.authorize_documents(active_token, {"doc-new"})
     store.issue_reference_image_ticket(active_token, "doc-new", "image-new")
 

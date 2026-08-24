@@ -240,7 +240,16 @@ async def test_proxy_session_history_agent_uses_agents_segment(monkeypatch):
     # 用 _build_passthrough_headers(request) 与 client.get(upstream_url, headers=...)。
     class _FakeRequest:
         def __init__(self):
-            self.app = SimpleNamespace(state=SimpleNamespace(settings=settings, token_store=_FakeTokenStore()))
+            from portal.gateway import ReferenceAccessStore, TokenStore
+
+            self.app = SimpleNamespace(
+                state=SimpleNamespace(
+                    settings=settings,
+                    token_store=_FakeTokenStore(),
+                    # Issue 98:proxy_session_history_to_ragflow 无条件取该属性(透传分支不使用)
+                    reference_access_store=ReferenceAccessStore(TokenStore()),
+                )
+            )
             self.headers = {}
 
     class _FakeTokenStore:
@@ -272,7 +281,16 @@ async def test_proxy_session_history_chat_still_uses_chatbots_segment(monkeypatc
 
     class _FakeRequest:
         def __init__(self):
-            self.app = SimpleNamespace(state=SimpleNamespace(settings=settings, token_store=_FakeTokenStore()))
+            from portal.gateway import ReferenceAccessStore, TokenStore
+
+            self.app = SimpleNamespace(
+                state=SimpleNamespace(
+                    settings=settings,
+                    token_store=_FakeTokenStore(),
+                    # Issue 98:proxy_session_history_to_ragflow 无条件取该属性(透传分支不使用)
+                    reference_access_store=ReferenceAccessStore(TokenStore()),
+                )
+            )
             self.headers = {}
 
     class _FakeTokenStore:

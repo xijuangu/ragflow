@@ -35,7 +35,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from portal.config import load_settings
 from portal.db import create_session_maker, init_db
-from portal.gateway import IPRateLimiter, TokenStore
+from portal.gateway import IPRateLimiter, ReferenceAccessStore, TokenStore
 from portal.models import AuditStore, SessionStore, UsageStore, build_seed_data
 from portal.routes import router
 from portal.tasks import _retry_delete_loop
@@ -163,6 +163,9 @@ def create_app() -> FastAPI:
     app.state.seed = build_seed_data(settings, session_maker)
     # TokenStore 保留内存(T_short 短命 + 可撤销,重启失效可接受)
     app.state.token_store = TokenStore()
+    # Issue 98:引用资源授权(已验证引用文档集合 + pit_ 图片票据)从 TokenStore 拆出,
+    # 通过 t_short 值关联(组合持有 token_store,令牌有效性实时复核)
+    app.state.reference_access_store = ReferenceAccessStore(app.state.token_store)
     # chat_session_owner DB 持久化(进程重启后会话归属不丢)
     app.state.session_store = SessionStore(session_maker)
     # audit_log DB 持久化(永久保留,PR D8b)
