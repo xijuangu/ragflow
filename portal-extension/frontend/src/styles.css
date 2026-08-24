@@ -213,6 +213,18 @@ tbody tr:hover { background: var(--surface-2); }
 .row-act { display: flex; gap: 4px; justify-content: flex-end; }
 .row-act .icon-btn { width: 30px; height: 30px; }
 
+/* ---- Issue 86:可排序表头(三态:升→降→不排;内联 SVG 箭头,不引 icon 库)---- */
+.th-sort {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: none; border: 0; padding: 0; margin: 0;
+  font: inherit; color: inherit; letter-spacing: inherit; text-transform: inherit;
+  cursor: pointer;
+}
+.th-sort svg { opacity: 0.3; }
+.th-sort:hover svg { opacity: 0.6; }
+.th-sort.active { color: var(--fg); }
+.th-sort.active svg { opacity: 1; color: var(--accent); }
+
 /* ---- badge(新 D1 变体 + 旧别名)---- */
 .badge { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px; border-radius: var(--radius-sm); font-size: 11px; font-weight: 550; letter-spacing: 0.01em; }
 .badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }

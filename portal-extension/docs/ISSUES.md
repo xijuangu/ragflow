@@ -28,7 +28,7 @@
 
 ## Issue 86：useAdminList 收编全站搜索/筛选/排序能力 + 用户管理页接入（tracer）
 
-> 状态：待实施。无阻塞。
+> 状态：✅ 已完成（2026-08-24,impl-ux worktree)。`useAdminList` 新增 `options.view` 声明式配置(searchColumns/filters/sortColumns)并返回视图状态;核心逻辑在纯函数 `applyAdminListView`,外加独立 `useAdminListView` 供列表状态在 hook 外的页面使用。新增 `components/AdminListControls.tsx`(AdminListToolbar + SortableTh,内联 SVG 箭头)。UsersAdminPage 作为 tracer 接入:搜索 = 用户名+邮箱,筛选 = 启用/禁用,排序 = 用户名/创建时间,操作列不排。
 
 ## What to build
 
@@ -36,10 +36,10 @@
 
 ## Acceptance criteria
 
-- [ ] `useAdminList` 提供 search/filter/sort 通用能力，页面侧只需声明列配置，不再手写过滤逻辑。
-- [ ] 用户管理页：搜索框模糊匹配用户名与邮箱（不区分大小写）；启用状态可筛选；用户名、创建时间列可三态排序；操作列不参与排序。
-- [ ] 前端 Vitest 覆盖 hook 的搜索/筛选/排序组合逻辑与用户管理页渲染；既有 89 个前端测试不回归。
-- [ ] 视觉沿用 D1 Graphite 设计 token，不引第三方组件库。
+- [x] `useAdminList` 提供 search/filter/sort 通用能力，页面侧只需声明列配置，不再手写过滤逻辑。
+- [x] 用户管理页：搜索框模糊匹配用户名与邮箱（不区分大小写）；启用状态可筛选；用户名、创建时间列可三态排序；操作列不参与排序。
+- [x] 前端 Vitest 覆盖 hook 的搜索/筛选/排序组合逻辑与用户管理页渲染；既有 89 个前端测试不回归。
+- [x] 视觉沿用 D1 Graphite 设计 token，不引第三方组件库。
 
 ## Issue 87：其余 5 个 admin 页面接入统一搜索/筛选/排序
 
