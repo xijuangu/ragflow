@@ -587,3 +587,24 @@ uv run --python 3.13 pytest -q test/playwright/portal_extension -s --junitxml=/t
 - 手册不配截图(UI 改动后截图过期,维护成本高);用文字描述 UI 路径("sidebar 用户管理 → 创建用户按钮")
 - 白皮书与 architecture.md 的边界:白皮书讲"原理"(为什么、怎么工作),architecture.md 讲"技术参考"(容器清单、路由表、代码结构);两者不重复,白皮书链接到 architecture.md
 - 新功能上线后需同步更新对应手册章节
+
+## 12. 当前功能线决策(2026-08-24 grilling 锁定)
+
+两条独立功能线,工单见 `docs/ISSUES.md` Issue 86-92。先做 UX 线,后做用量统计线。
+
+### 12.1 管理后台 UX 优化(Issue 86-89)
+
+- **数据方案:前端内存方案**。全量拉取列表,模糊搜索/筛选/排序全在浏览器内存完成,不新增后端接口。依据:用户/组/分享页量级小(几十级);审计日志若增长到万级再单独给它服务端分页或默认时间窗
+- **全站列表交互约定**:搜索框管文本列(不区分大小写模糊匹配);筛选下拉只管枚举/状态列;表头点击三态排序(升→降→不排),操作列不排。通用能力收进 `useAdminList` hook,各页不再各自手写 filter
+- **用户组管理:主从视图重设计**。左侧可搜索组列表,右侧详情面板(成员列表带移除、该组已获得的分享页授权、添加成员入口)
+- **选择器:自研可搜索 combobox**(沿用 D1 Graphite 设计 token,不引组件库)。多选 chips 模式用于添加成员;单选搜索模式用于授权对象选择;匹配字段含用户名+邮箱。全站长列表选择点统一替换(实施前做一次全站盘点)
+
+### 12.2 使用统计(Issue 90-92)
+
+- **口径:只统计输入/输出 token 量**,不计费、无单价表、不采集缓存命中 token(2026-08-24 用户明确放弃:价格是波动项,缓存命中需改 RAGFlow LLM 调用层且厂商未必返回)
+- **数据来源:RAGFlow fork 在 chatbot completions SSE 末帧加结构化 `usage: {input, output}` 字段**,值为 `dialog_service.chat()` 已计算的 `used_token_count`(输入,`message_fit_in` 本地计词)/`tk_num`(输出,`num_tokens_from_string`)。注意:这两个值本身是 RAGFlow 本地计词,非厂商计费 usage;UI 不标注"精确账单"
+- **该 fork 改动触发 §4 硬约束**「RAGFlow 侧改动需 Issue 明确批准」:Issue 90 即批准记录,必须配套测试、构建说明、docker cp 部署/回滚步骤(沿用 §9.2 模式)
+- **门户记账:新 `usage_record` 表**——时间、portal 用户、分享页、session_id、模型名、input/output token、`incomplete` 标记;**不存问答正文**(消息正文唯一事实源仍是 RAGFlow `API4Conversation`)
+- **断流口径**:末帧才有真实 usage;断流时按已收到回答文本计词元作为 output、按请求问题估算 input,记录标记 `incomplete`
+- **边界**:一期只统计 chat 类型分享页(agent 类型搁置未验收);上线前历史用量不追溯;embedding/文档解析消耗门户不可见,不在范围
+- **展示:仅 admin 可见**。sidebar 新增「用量统计」tab:汇总视图(按用户聚合,时间段/分享页筛选,排序,CSV 导出)+ 明细视图(逐条记录);用户自助查自己用量一期不做,接口留扩展点

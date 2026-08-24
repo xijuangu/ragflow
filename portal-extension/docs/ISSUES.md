@@ -18,3 +18,203 @@
 - [x] nginx 仅把 `/api/v1/documents/{doc_id}/preview` 精确分流到 Portal，其他 RAGFlow 文档接口不扩大代理范围。
 - [x] 后端自动化测试覆盖成功预览、越权文档、撤权及原生 token 透传；生产 Playwright 覆盖“劳动法历史回答 → 点击 `.docx` 文档卡片 → preview 200 且 iframe 不进入登录页”。
 - [x] API、架构、部署与排障文档同步更新。
+
+
+---
+
+# 功能线：管理后台 UX 优化与使用统计（2026-08-24 grilling 锁定）
+
+决策依据见 `CONTEXT.md` §12。实施顺序：UX 线（86→89）先行，用量统计线（90→92）随后。阻塞关系：87←86，89←88，91←90，92←91+86。
+
+## Issue 86：useAdminList 收编全站搜索/筛选/排序能力 + 用户管理页接入（tracer）
+
+> 状态：待实施。无阻塞。
+
+## What to build
+
+把目前各 admin 页面各自手写的 filter 逻辑收进 `useAdminList` hook，形成全站统一能力：搜索框对指定文本列做不区分大小写模糊匹配、枚举/状态列筛选下拉、表头点击三态排序（升→降→不排）。先在用户管理页（UsersAdminPage）接入作为 tracer：搜索列 = 用户名 + 邮箱；筛选 = 启用/禁用；排序列 = 用户名、创建时间。
+
+## Acceptance criteria
+
+- [ ] `useAdminList` 提供 search/filter/sort 通用能力，页面侧只需声明列配置，不再手写过滤逻辑。
+- [ ] 用户管理页：搜索框模糊匹配用户名与邮箱（不区分大小写）；启用状态可筛选；用户名、创建时间列可三态排序；操作列不参与排序。
+- [ ] 前端 Vitest 覆盖 hook 的搜索/筛选/排序组合逻辑与用户管理页渲染；既有 89 个前端测试不回归。
+- [ ] 视觉沿用 D1 Graphite 设计 token，不引第三方组件库。
+
+## Issue 87：其余 5 个 admin 页面接入统一搜索/筛选/排序
+
+> 状态：待实施。阻塞：← Issue 86。
+
+## What to build
+
+把 Issue 86 的 hook 能力推广到用户组、分享页、授权、会话、审计日志 5 个页面。各页搜索列：组页 = 组名；分享页 = 名称 + RAGFlow 资源 ID；授权页 = 分享页名 + 授权对象名；会话页 = 会话标题 + 用户名；审计日志 = 操作者。筛选只给枚举/状态列（公开/私有、授权对象类型、审计操作类型、时间范围等）。
+
+## Acceptance criteria
+
+- [ ] 6 个 admin 页面全部具备搜索框；文本列模糊匹配，枚举列筛选下拉，有意义列三态排序，行为与 Issue 86 约定一致。
+- [ ] 各页面内的手写 filter 逻辑删除，统一走 `useAdminList`。
+- [ ] 前端测试逐页覆盖至少一条搜索 + 一条筛选 + 一次排序路径。
+
+## Issue 88：可搜索 combobox 组件 + 全站长列表选择点替换
+
+> 状态：待实施。无阻塞。
+
+## What to build
+
+自研可搜索 combobox 组件（沿用设计稿 token，不引组件库），两种模式：多选 + chips（添加成员场景）、单选搜索（授权对象场景）；输入即对用户名 + 邮箱做不区分大小写模糊过滤。替换用户管理"给分组添加成员"与授权管理"选择授权对象"两处原生下拉；实施前做一次全站盘点（含审计日志操作者筛选等同类位置），盘点结果列入本 Issue 一并替换。
+
+## Acceptance criteria
+
+- [ ] combobox 组件支持单选/多选两种模式，键盘可操作（上下移动、回车选中、Esc 关闭），多选以 chips 呈现已选项。
+- [ ] "添加成员"与"授权对象"两处下拉完成替换；全站盘点出的其余长列表选择点（盘点清单附在实施记录中）完成替换或明确记录不替换的理由。
+- [ ] 前端测试覆盖过滤、选择、chips 移除、键盘交互。
+
+## Issue 89：用户组管理主从视图重设计
+
+> 状态：待实施。阻塞：← Issue 88（添加成员入口复用 combobox）。
+
+## What to build
+
+用户组管理页改为 master-detail 布局：左侧组列表（顶部搜索框，复用 Issue 86 能力），右侧选中组的详情面板——成员列表（每行带移除按钮）、该组已获得的分享页授权列表、顶部"添加成员"入口（Issue 88 的 combobox 多选模式）。
+
+## Acceptance criteria
+
+- [ ] 选中组即所见：成员与该组的分享页授权在右侧面板直接可见，无需跳页或开下拉。
+- [ ] 添加成员走 combobox 多选 + chips，一次可添加多人；移除成员有确认。
+- [ ] 既有组的创建/删除能力不回归；Playwright admin CRUD 用例适配新布局后通过。
+- [ ] 视觉沿用 D1 Graphite token；桌面优先，小屏不崩（沿用 §6.5 边界）。
+
+## Issue 90：RAGFlow fork——chatbot completions SSE 末帧透出结构化 usage（硬约束批准票）
+
+> 状态：待实施。无阻塞。本票即 §4 硬约束「RAGFlow 侧改动需 Issue 明确批准」的批准记录（2026-08-24 用户决策）。
+
+## What to build
+
+在 RAGFlow fork 中把 `dialog_service.chat()` 已计算的 `used_token_count`（输入）与 `tk_num`（输出）作为结构化字段透出：chatbot completions SSE 流末帧（`data: true` 帧之前或并入既有末帧）的 `data` 增加 `usage: {input, output}`；非流式路径同步在返回字典中加 `usage`。改动范围尽量限于 `dialog_service.py` 返回值与 `bot_api.py`/`conversation_service.py` 的透传，不动 LLM 调用层。
+
+## Acceptance criteria
+
+- [ ] 流式与非流式 chatbot completions 响应均携带结构化 `usage: {input, output}`；agent 路径不动。
+- [ ] 不带该字段的旧客户端/门户版本行为不回归（字段纯增量）。
+- [ ] RAGFlow 侧配套测试（usage 字段存在且数值与 `num_tokens_from_string` 口径一致）。
+- [ ] 文档含构建说明与 docker cp 部署/回滚步骤（沿用 CONTEXT.md §9.2 模式，记录容器重建丢失边界）。
+
+## Issue 91：门户 usage_record 表 + 网关 SSE 记账
+
+> 状态：待实施。阻塞：← Issue 90（真实 usage 数据来源；开发期测试可用 mock SSE 先行）。
+
+## What to build
+
+门户新增 `usage_record` 表：时间、portal 用户、分享页、session_id、模型名、input/output token、`incomplete` 标记。网关在 SSE 代理链路（既有 SSEJSONEventParser 路径）摘取末帧 `usage` 落账；断流时按已收到回答文本计词元作 output、按请求问题估算 input，标记 `incomplete`；末帧无 usage（旧 RAGFlow）时按同一估算口径记账并标记。不存问答正文。
+
+## Acceptance criteria
+
+- [ ] 每次 chat completions 问答落一条 usage_record，字段完整；正文不落库。
+- [ ] 正常完成、断流、末帧缺 usage 三种路径均有测试覆盖，incomplete 语义符合 CONTEXT.md §12.2。
+- [ ] 会话删除不影响已落账记录；公开分享页（匿名用户）问答同样记账（subject 为匿名标识）。
+- [ ] 后端 pytest 基线更新并记录。
+
+## Issue 92：admin「用量统计」tab（汇总 + 明细 + CSV 导出）
+
+> 状态：待实施。阻塞：← Issue 91（数据）+ Issue 86（列表交互约定）。
+
+## What to build
+
+admin sidebar 新增「用量统计」tab，仅 admin 可见。汇总视图：按用户聚合（默认本月），列 = 问答次数、input/output token、incomplete 次数，可按时间段/分享页筛选、按列排序、导出 CSV。明细视图：逐条 usage_record（时间、用户、分享页、会话、token、incomplete 标记）。UI 数字旁标注口径为 RAGFlow 本地计词，非厂商账单。
+
+## Acceptance criteria
+
+- [ ] 汇总/明细两视图数据与 usage_record 一致；筛选、排序遵循 Issue 86 全站约定。
+- [ ] CSV 导出内容与当前筛选结果一致。
+- [ ] 非 admin 用户无法访问该 tab 与对应接口（403）。
+- [ ] 前端测试 + 后端接口测试覆盖；管理员手册（docs/manual/admin-manual.md）新增对应章节。
+
+
+---
+
+# 架构优化线（2026-08-24 架构评审产出）
+
+评审报告与候选详情见当日报告（临时文件，不入库）；决策词汇沿用 codebase-design（module/interface/seam）。实施顺序：93 插在 Issue 91 之前（91 的 SSE 记账逻辑要落在收敛后的接缝上）；94→95 一组；96 零风险可并入任意 slice；97 需独立 slice 迁移测试；98 优先级最低。候选 7（公开/私有端点合并）经评审定为不做，仅在本线提取 `"u_anonymous"` 常量（并入 96）。
+
+## Issue 93：网关校验链收敛为单一 resolve 模块 + app.state 访问 fail-closed
+
+> 状态：待实施。无阻塞。必须在 Issue 91 之前完成。
+
+## What to build
+
+把 `gateway.py` 内 4 份近乎相同的「取令牌记录 → `pt_` 前缀 → 校验/透传」校验链（`proxy_sse_to_ragflow` 标准/公开链、`proxy_bot_json_to_ragflow`、`_validate_reference_access`、`_portal_reference_context`）收敛为一个 `resolve_token_and_share_page(request, resource_id)`，返回 `(record, share_page)` 或抛出 401/403/404。「先查 grant 再 validate（撤权返 403 而非 401）」的顺序不变量只存在一份。同时把 `gateway.py` 中 `getattr(request.app.state, ..., None)` 的服务定位（session_store / rate_limiter / audit_store）改为直接属性访问，缺失即 AttributeError（fail-closed），测试 fixture 补齐 state。
+
+## Acceptance criteria
+
+- [ ] 校验链全仓只剩一份实现；三条代理链与 reference 端点均调用统一入口，公开/私有差异降为参数。
+- [ ] 撤权返 403、无令牌返 401、未引用文档返 403 等既有语义逐条有测试锁定，451+5 后端基线不回归。
+- [ ] `app.state` 关键服务缺失时请求报错而非静默跳过校验；不再有 `getattr(..., None)` 形式的服务定位。
+- [ ] CONTEXT.md 相应段落（§3 代码结构 / §6.4）同步。
+
+## Issue 94：models.py 回归纯持久化（编排上移至 gateway）
+
+> 状态：待实施。无阻塞。
+
+## What to build
+
+把 `SessionStore.cascade_delete_for_user` 与 `SessionStore.sync_message_count_from_history` 两个含 RAGFlow HTTP 调用与业务决策的 async 方法从 `models.py` 上移至 `gateway.py`（或新建 services 模块），消除 models→gateway 的延迟 import 环。`build_seed_data` 中 4 段手写 ORM 映射改走 `create_user`/`create_share_page` 方法，消掉双份映射。
+
+## Acceptance criteria
+
+- [ ] `models.py` 不再 import gateway（无延迟 import、无环），只含持久化与 store 方法。
+- [ ] 级联删除、消息数同步行为不变，相关 slice 测试不回归。
+- [ ] seed 数据构建路径复用 store 方法，启动引导结果与现状一致（有测试锁定）。
+
+## Issue 95：会话归属校验收敛 + 双删编排下沉
+
+> 状态：待实施。阻塞：← Issue 94（双删下沉依赖环已解开）。
+
+## What to build
+
+`routes.py` 中 resume/rename/delete 三处逐行相同的归属校验（owner None→404、user 不符→403、share_page 不符→403）收敛为 `_get_owned_session_or_404()`；admin 变体显式参数化。404/403 语义分叉在该函数内写明。`_dual_delete_session` 从 routes.py 下沉至 gateway.py，routes 恢复"只注册路由 + 薄适配"的硬约束状态。
+
+## Acceptance criteria
+
+- [ ] 三块重复校验删除，admin 变体走显式参数；404 vs 403 语义差异在代码中显式化（注释/命名）。
+- [ ] `_dual_delete_session` 位于 gateway 层；`routes.py` 无双删编排逻辑。
+- [ ] 归属与双删相关测试不回归。
+
+## Issue 96：死代码清理 + admin_update_user 校验修复
+
+> 状态：待实施。无阻塞。零风险，可并入任意 slice。
+
+## What to build
+
+删除无生产调用方的 `SessionStore.increment_message_count`；删除 `_validate_subject_exists` 的不可达 else 分支；修复 `admin_update_user` 未校验「至少传一个字段」导致 `enabled=None` 写入 NOT NULL 列的问题（对齐 share-page 版校验）；评估 `LoginError` 空子类去留；提取 `"u_anonymous"` 为集中常量（4 处散布：routes×2、gateway、models seed）。
+
+## Acceptance criteria
+
+- [ ] 死代码删除后测试基线不回归；`admin_update_user` 只传 `is_public` 时返回 422 而非写库，有回归测试。
+- [ ] `"u_anonymous"` 全仓只剩常量定义一处。
+
+## Issue 97：测试 mock 迁移到 httpx transport 层，删除为 monkeypatch 保留的薄模块
+
+> 状态：待实施。无阻塞。需独立 slice（测试迁移量大，约 30 处 monkeypatch）。
+
+## What to build
+
+把测试对 RAGFlow 调用的 mock 从「按函数名 patch 模块命名空间」迁移到 httpx transport 层（MockTransport）。迁移完成后删除 gateway.py 中 4 个纯 pass-through 的 agent 薄模块（docstring 自认"保留函数名供测试 monkeypatch"）与 routes.py 中 5 个按名 dispatch 函数（改为直接调用统一函数）；conftest 的双重命名空间 patch（`portal.routes.X` + `portal.gateway.X`）随之消除。
+
+## Acceptance criteria
+
+- [ ] 生产代码中不再存在"为测试保留"的函数；dispatch 不依赖运行时模块 globals 解析。
+- [ ] 测试只 patch transport 层，不再穿模块边界 patch `httpx.AsyncClient` 属性或双重命名空间。
+- [ ] 后端测试基线全绿；行为零变化。
+
+## Issue 98：TokenStore 拆出 ReferenceAccessStore
+
+> 状态：待实施。无阻塞。优先级最低，可在用量统计线稳定后再做。
+
+## What to build
+
+把「引用资源授权」从 TokenStore 拆出：新 `ReferenceAccessStore` 管 `authorized_document_ids` 与 `pit_` 图片票据（签发/校验/prune/remove）；TokenStore 回归只管 T_short 生命周期（issue/validate/touch/revoke）。两者通过 t_short 值关联。`pending_greeting_session_ids` 归属一并评估。
+
+## Acceptance criteria
+
+- [ ] 「令牌生命周期」与「引用资源授权」两个概念各有模块归属；引用图片链路（签发→改写→校验）涉及的位置从 6 处收敛到 ReferenceAccessStore 内部 + 调用点。
+- [ ] 引用图片/缩略图/预览相关测试（Issue 82/84/85 用例）不回归。
