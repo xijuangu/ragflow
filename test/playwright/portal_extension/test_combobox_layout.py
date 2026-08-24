@@ -113,6 +113,17 @@ def _assert_dropdown_escapes_clipping(page: Page, input_locator, card_selector: 
     assert fully_below or fully_above, (
         f"{name}: 下拉与 input 重叠/半截(box={box}, input={input_box})"
     )
+    # 方向语义(2026-08-24「上拉条」回归锚点):视口剩余空间充足(≥250px)时
+    # 必须向下弹;仅空间不足才允许向上翻转
+    drop_up = page.evaluate(
+        "() => document.querySelector('.combobox-dropdown').classList.contains('drop-up')"
+    )
+    viewport_h = page.evaluate("() => window.innerHeight")
+    space_below = viewport_h - (input_box["y"] + input_box["height"])
+    if space_below >= 250:
+        assert not drop_up, (
+            f"{name}: 视口剩余 {space_below:.0f}px 充足却向上翻转(上拉条回归)"
+        )
     page.keyboard.press("Escape")
 
 

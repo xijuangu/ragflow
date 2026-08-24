@@ -795,13 +795,16 @@ tbody tr:hover { background: var(--surface-2); }
   padding-top: 16px;
 }
 
-/* Issue 51:admin 内容区作为独立滚动容器,与 Slice 38 detail-shell 同模式。
-   .main overflow:hidden 防页面级滚动,admin 根 <section> 需 flex:1 + min-height:0
-   + overflow-y:auto 才能在内容溢出时自身滚动,而非被 .main 裁切看不到。 */
+/* Issue 51(2026-08-24 修正):原 `.admin-main > section { flex:1; min-height:0;
+   overflow-y:auto }` 意图让 admin 内容区自滚,但 .admin-main 不是 flex 容器、
+   .main 也无 overflow:hidden — flex/min-height 从未生效,页面滚动一直在 body。
+   唯一起作用的是 overflow-y:auto:平时盒子高度=内容高度不裁任何东西,但 combobox
+   下拉打开瞬间(绝对定位 ul 撑起 scrollHeight)它突然变成滚动容器,把下拉超出
+   部分静默裁掉(不出滚动条,因为浏览器不把绝对定位溢出算进可滚视野)。去掉它,
+   admin 回归文档流滚动(body 滚,与用户/会话等长表页一贯行为一致),
+   下拉的可见边界回到视口,方向翻转逻辑回到「视口不够才向上弹」的常规语义。 */
 .admin-main > section {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
+  overflow: visible;
 }
 
 .admin-form {

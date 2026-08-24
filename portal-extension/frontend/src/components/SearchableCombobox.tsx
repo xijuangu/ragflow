@@ -167,23 +167,28 @@ export default function SearchableCombobox(props: SearchableComboboxProps) {
     inputRef.current?.focus();
   };
 
-  // 2026-08-24:向下空间不足时向上翻转。下拉是绝对定位,不参与滚动祖先的
-  // 滚动高度计算 — admin 各页的 section 滚动容器(Slice 51,overflow-y:auto)
-  // 高度只到视口,下拉超出其底边的部分会被静默裁掉(空态/短表场景必然超出;
-  // 即使当前未滚动,overflow 裁切同样生效)。打开时测 input 距最近的
-  // overflow 裁切祖先(含 overflow:hidden,如 .main)底边的剩余空间,不足则向上弹。
+  // 2026-08-24:向下空间不足时向上翻转。下拉是绝对定位,可见上限是最近的
+  // 「真裁切」祖先(overflow≠visible 且确有内容被裁)或视口底边 — 绝对定位
+  // 溢出不参与滚动容器的滚动高度计算,超出即被静默裁掉且不出滚动条。
+  // 注意判据:overflow:auto 的祖先若 scrollHeight == clientHeight(如 admin
+  // 空态/短表页的 section),盒子高度=内容高度,并没有裁任何东西,
+  // 误判成边界会导致空间充足也向上翻转(生产回归过的「上拉条」bug)。
   const [dropUp, setDropUp] = useState(false);
   const decideDirection = () => {
     const input = inputRef.current;
     if (!input) return;
     const inputBox = input.getBoundingClientRect();
-    // 最近的 overflow 裁切祖先:auto/scroll/hidden 都会裁绝对定位溢出
     let ancestor: HTMLElement | null = input.parentElement;
     let bottomEdge = window.innerHeight;
     while (ancestor && ancestor !== document.body) {
-      const { overflow, overflowY } = getComputedStyle(ancestor);
-      const clips = [overflow, overflowY].some(v => v === 'auto' || v === 'scroll' || v === 'hidden');
-      if (clips) {
+      const { overflow, overflowY, height } = getComputedStyle(ancestor);
+      const clipsOverflow = [overflow, overflowY].some(v => v === 'auto' || v === 'scroll' || v === 'hidden');
+      // 真裁切 = overflow 裁切 且(确有内容超出:scrollHeight > clientHeight;
+      // 或 hidden + 高度被约束非 auto — hidden 不会出现滚动条,内容超了就是裁)
+      const hasClippedContent =
+        ancestor.scrollHeight > ancestor.clientHeight + 1 ||
+        (overflow === 'hidden' && height !== 'auto');
+      if (clipsOverflow && hasClippedContent) {
         bottomEdge = ancestor.getBoundingClientRect().bottom;
         break;
       }
