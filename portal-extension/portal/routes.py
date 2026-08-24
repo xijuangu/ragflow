@@ -37,6 +37,7 @@ from portal.gateway import (
     build_iframe_url,
     build_widget_snippet,
     build_widget_url,
+    cascade_delete_for_user,
     delete_agent_session_via_ragflow,
     delete_session_via_ragflow,
     fetch_agent_session_history_via_ragflow,
@@ -52,6 +53,7 @@ from portal.gateway import (
     proxy_sse_to_ragflow,
     rename_agent_session_via_ragflow,
     rename_session_via_ragflow,
+    sync_message_count_from_history,
 )
 from portal.models import (
     EmbedType,
@@ -577,7 +579,7 @@ async def _dual_delete_session(
     """单会话双删协调:RAGFlow DELETE 成功 → 门户硬删除;失败 → 标记 deleted_at 待重试。
 
     用于 delete_session / admin_delete_session 的双删策略(单会话场景)。
-    与 ``SessionStore.cascade_delete_for_user`` 的区别:级联删除用户时 RAGFlow 失败
+    与 ``gateway.cascade_delete_for_user`` 的区别:级联删除用户时 RAGFlow 失败
     也硬删除门户侧(用户已不存在无法重试,避免孤儿);此处单会话删除失败时保留
     门户侧记录标记 deleted_at,供后台重试任务后续清理。
 
@@ -761,8 +763,14 @@ async def resume_session(share_page_id: str, session_id: str, request: Request, 
     )
     # 恢复会话时同步 message_count(TD2 + TD8:聚到 sync_message_count_from_history)
     # history 已 fetch,传入 history= 避免重复请求
-    await request.app.state.session_store.sync_message_count_from_history(
-        settings, share_page.ragflow_resource_id, session_id, share_page.ragflow_type, history=history
+    # Issue 94:编排上移 — sync_message_count_from_history 为 gateway 模块级函数
+    await sync_message_count_from_history(
+        request.app.state.session_store,
+        settings,
+        share_page.ragflow_resource_id,
+        session_id,
+        share_page.ragflow_type,
+        history=history,
     )
     # 补充门户侧标题(chat_session_owner.title 为列表显示主源)
     if isinstance(history, dict):
@@ -1119,7 +1127,7 @@ async def admin_update_user(
 async def admin_delete_user(user_id: str, request: Request, user=Depends(require_org_admin)):
     """管理员硬删除用户(对应 Slice 5 验收点 6:级联删除 chat_session_owner + RAGFlow API4Conversation,无孤儿)。
 
-    级联策略(``SessionStore.cascade_delete_for_user``,与单会话双删不同):
+    级联策略(``gateway.cascade_delete_for_user``,与单会话双删不同):
       - 遍历用户的所有 chat_session_owner(含 deleted_at 标记的,跨分享页)。
       - 每条调 RAGFlow DELETE:**无论成功失败都硬删除门户侧记录**(避免孤儿)。
         理由:用户已不存在,保留 orphan 会话无法后续重试(无用户上下文);
@@ -1139,7 +1147,8 @@ async def admin_delete_user(user_id: str, request: Request, user=Depends(require
     settings = request.app.state.settings
     session_store = request.app.state.session_store
     # 级联删除用户所有会话(RAGFlow 失败也硬删除门户侧,避免孤儿;失败记日志)
-    cascade_results = await session_store.cascade_delete_for_user(user_id, settings)
+    # Issue 94:编排上移 — cascade_delete_for_user 为 gateway 模块级函数
+    cascade_results = await cascade_delete_for_user(session_store, user_id, settings)
     # Slice 6 审计:每个级联删除的会话记 session_delete(门户侧已硬删除)
     for session_id, _success in cascade_results:
         _audit(
@@ -1595,8 +1604,9 @@ async def admin_get_session(
         "取回会话失败",
     )
     # 同步 message_count(TD2 + TD8:聚到 sync_message_count_from_history)
-    await session_store.sync_message_count_from_history(
-        settings, owner.ragflow_resource_id, session_id, ragflow_type, history=history
+    # Issue 94:编排上移 — sync_message_count_from_history 为 gateway 模块级函数
+    await sync_message_count_from_history(
+        session_store, settings, owner.ragflow_resource_id, session_id, ragflow_type, history=history
     )
     # 合并元数据与正文
     return {

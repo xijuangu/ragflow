@@ -809,6 +809,96 @@ async def delete_agent_session_via_ragflow(settings, agent_id: str, session_id: 
     return await delete_session_via_ragflow(settings, agent_id, session_id, ragflow_type="agent")
 
 
+# ---------------------------------------------------------------------------
+# Issue 94:编排函数(原 SessionStore 方法上移至网关层)
+#
+# 这两个函数含 RAGFlow HTTP 调用与业务决策,属于网关编排而非持久化;
+# 上移后 models.py 回归纯持久化(不再延迟 import gateway,无环)。
+# 首参数均为 session_store(原 self);其余签名与原方法一致。
+# 测试 mock 接缝不变:内部调用按名解析本模块 globals
+# (patch ``portal.gateway.delete_session_via_ragflow`` 等仍生效)。
+# ---------------------------------------------------------------------------
+
+
+async def cascade_delete_for_user(session_store, portal_user_id: str, settings) -> list:
+    """级联删除用户的所有会话(含 deleted_at 非空),用于用户硬删除场景。
+
+    与单会话双删策略(``_dual_delete_session``)的关键区别:
+      用户硬删除后无法后续重试(无用户上下文),所以 RAGFlow 失败的会话也
+      **硬删除**门户侧记录(避免 portal_user_id 指向不存在用户的孤儿记录);
+      RAGFlow 侧的 API4Conversation 残留由管理员后续手动清理(脚本/管理界面)。
+      失败记 ``logger.warning`` 供审计(Slice 6 加审计日志端点暴露)。
+
+    实现:
+      - 遍历用户所有会话(``session_store.list_all_for_user``,含 deleted_at 非空,跨分享页)。
+      - 对每个会话调 ``delete_session_via_ragflow``(忽略失败,失败时 logger.warning)。
+      - 全部硬删除门户侧记录(包括 deleted_at 非空的)。
+
+    返回 ``[(session_id, success), ...]`` 供路由层记录审计/日志
+    (success=True 表示 RAGFlow 删除成功,False 表示失败但门户侧仍硬删除)。
+    """
+    results: list = []
+    for owner in session_store.list_all_for_user(portal_user_id):
+        success = True
+        try:
+            await delete_session_via_ragflow(settings, owner.ragflow_resource_id, owner.session_id)
+        except Exception as e:
+            # RAGFlow 失败不阻塞级联删除(用户已不存在,无法后续重试,避免孤儿)
+            # 记 warning 供审计;RAGFlow 侧残留由管理员后续手动清理
+            logger.warning(
+                "用户硬删除级联:RAGFlow 删除会话失败(门户侧仍硬删除以避免孤儿),session_id=%s dialog_id=%s error=%s",
+                owner.session_id,
+                owner.ragflow_resource_id,
+                e,
+            )
+            success = False
+        # 无论 RAGFlow 是否成功,都硬删除门户侧记录(避免孤儿)
+        session_store.delete(owner.session_id)
+        results.append((owner.session_id, success))
+    return results
+
+
+async def sync_message_count_from_history(
+    session_store,
+    settings,
+    dialog_id: str,
+    session_id: str,
+    ragflow_type: str = "chat",
+    history: dict | None = None,
+) -> dict | None:
+    """从 RAGFlow 取回 history 并同步 message_count(TD2 + TD8 合并点)。
+
+    合并三处重复的「fetch history + update_message_count(len(messages))」逻辑:
+      - 本模块 ``_build_sse_streaming_response``(SSE 流成功后同步)
+      - routes.py ``resume_session``(恢复会话时同步,传入已 fetch 的 history)
+      - routes.py ``admin_get_session``(管理员查看会话时同步,传入已 fetch 的 history)
+
+    参数:
+      session_store: SessionStore 实例(Issue 94 上移后显式传入,原为 self)。
+      settings: Settings 实例(含 ragflow_host / ragflow_beta_token)。
+      dialog_id: RAGFlow 资源 ID(chatbot 或 agentbot 的 ID)。
+      session_id: 会话 ID。
+      ragflow_type: 'chat' 走 chatbot 端点,'agent' 走 agentbot 端点。
+      history: 若调用方已 fetch 过 history,直接传入避免重复请求;
+               None 则内部调 fetch。
+
+    返回 history dict(供调用方用于响应体)。异常不吞 — 由调用方决定
+    错误处理(SSE 路径用 try/except + logger.warning;routes 路径用 _invoke_upstream)。
+    """
+    if history is None:
+        if ragflow_type == "agent":
+            history = await fetch_agent_session_history_via_ragflow(settings, dialog_id, session_id)
+        else:
+            history = await fetch_session_history_via_ragflow(settings, dialog_id, session_id)
+    if isinstance(history, dict):
+        messages = history.get("messages", [])
+        # 仅当 count 变化时才写库(恢复原 resume_session 守卫,SSE/admin 路径同享优化)
+        owner = session_store.get(session_id)
+        if owner is not None and owner.message_count != len(messages):
+            session_store.update_message_count(session_id, len(messages))
+    return history
+
+
 async def proxy_sse_to_ragflow(request: Request, dialog_id: str, ragflow_type: str = "chat"):
     """SSE 代理:校验同源 cookie + T_short + grant + session_id 归属 → 用 beta Token 调 RAGFlow bot_api → 流式回传。
 
@@ -1113,7 +1203,9 @@ def _build_sse_streaming_response(
                 # GET history 失败不破坏已成功的 SSE 流,但也不写入错误的 +1 计数。
                 if target_session_id and not is_greeting:
                     try:
-                        await session_store.sync_message_count_from_history(
+                        # Issue 94:编排上移 — sync_message_count_from_history 现为 gateway 模块级函数
+                        await sync_message_count_from_history(
+                            session_store,
                             settings,
                             dialog_id,
                             target_session_id,

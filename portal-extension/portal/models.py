@@ -29,7 +29,6 @@ Slice 8 DB 持久化迁移(内存存储 → SQLAlchemy):
 """
 
 import json
-import logging
 import secrets
 import time
 from dataclasses import dataclass, field
@@ -49,8 +48,6 @@ from portal.db import (
     SharePageModel,
 )
 from portal.password import hash_password
-
-logger = logging.getLogger(__name__)
 
 # 类型别名约束字面量取值(消除 Primitive Obsession)
 Permission = Literal["use", "manage"]
@@ -517,90 +514,9 @@ class SessionStore(_StoreBase):
             rows.sort(key=lambda r: r.created_at, reverse=True)
             return [_session_owner_from_orm(r) for r in rows[:limit]]
 
-    async def cascade_delete_for_user(self, portal_user_id: str, settings) -> list:
-        """级联删除用户的所有会话(含 deleted_at 非空),用于用户硬删除场景。
-
-        与单会话双删策略(``dual_delete_session``)的关键区别:
-          用户硬删除后无法后续重试(无用户上下文),所以 RAGFlow 失败的会话也
-          **硬删除**门户侧记录(避免 portal_user_id 指向不存在用户的孤儿记录);
-          RAGFlow 侧的 API4Conversation 残留由管理员后续手动清理(脚本/管理界面)。
-          失败记 ``logger.warning`` 供审计(Slice 6 加审计日志端点暴露)。
-
-        实现:
-          - 遍历用户所有会话(``list_all_for_user``,含 deleted_at 非空,跨分享页)。
-          - 对每个会话调 gateway ``delete_session_via_ragflow``(忽略失败,失败时 logger.warning)。
-          - 全部硬删除门户侧记录(包括 deleted_at 非空的)。
-
-        返回 ``[(session_id, success), ...]`` 供路由层记录审计/日志
-        (success=True 表示 RAGFlow 删除成功,False 表示失败但门户侧仍硬删除)。
-        """
-        # 延迟导入避免循环依赖(gateway 不导入 models,但保持懒加载以防未来变更)
-        from portal.gateway import delete_session_via_ragflow
-
-        results: list = []
-        for owner in self.list_all_for_user(portal_user_id):
-            success = True
-            try:
-                await delete_session_via_ragflow(settings, owner.ragflow_resource_id, owner.session_id)
-            except Exception as e:
-                # RAGFlow 失败不阻塞级联删除(用户已不存在,无法后续重试,避免孤儿)
-                # 记 warning 供审计;RAGFlow 侧残留由管理员后续手动清理
-                logger.warning(
-                    "用户硬删除级联:RAGFlow 删除会话失败(门户侧仍硬删除以避免孤儿),session_id=%s dialog_id=%s error=%s",
-                    owner.session_id,
-                    owner.ragflow_resource_id,
-                    e,
-                )
-                success = False
-            # 无论 RAGFlow 是否成功,都硬删除门户侧记录(避免孤儿)
-            self.delete(owner.session_id)
-            results.append((owner.session_id, success))
-        return results
-
-    async def sync_message_count_from_history(
-        self,
-        settings,
-        dialog_id: str,
-        session_id: str,
-        ragflow_type: str = "chat",
-        history: dict | None = None,
-    ) -> dict | None:
-        """从 RAGFlow 取回 history 并同步 message_count(TD2 + TD8 合并点)。
-
-        合并三处重复的「fetch history + update_message_count(len(messages))」逻辑:
-          - gateway.py ``_sync_message_count_after_sse``(SSE 流成功后同步)
-          - routes.py ``resume_session``(恢复会话时同步)
-          - routes.py ``admin_get_session``(管理员查看会话时同步)
-
-        参数:
-          settings: Settings 实例(含 ragflow_host / ragflow_beta_token)。
-          dialog_id: RAGFlow 资源 ID(chatbot 或 agentbot 的 ID)。
-          session_id: 会话 ID。
-          ragflow_type: 'chat' 走 chatbot 端点,'agent' 走 agentbot 端点。
-          history: 若调用方已 fetch 过 history,直接传入避免重复请求;
-                   None 则内部调 fetch(延迟导入 portal.gateway)。
-
-        返回 history dict(供调用方用于响应体)。异常不吞 — 由调用方决定
-        错误处理(SSE 路径用 try/except + logger.warning;routes 路径用 _invoke_upstream)。
-        """
-        if history is None:
-            # 延迟导入避免循环依赖(models 不直接依赖 gateway)
-            from portal.gateway import (
-                fetch_agent_session_history_via_ragflow,
-                fetch_session_history_via_ragflow,
-            )
-
-            if ragflow_type == "agent":
-                history = await fetch_agent_session_history_via_ragflow(settings, dialog_id, session_id)
-            else:
-                history = await fetch_session_history_via_ragflow(settings, dialog_id, session_id)
-        if isinstance(history, dict):
-            messages = history.get("messages", [])
-            # 仅当 count 变化时才写库(恢复原 resume_session 守卫,SSE/admin 路径同享优化)
-            owner = self.get(session_id)
-            if owner is not None and owner.message_count != len(messages):
-                self.update_message_count(session_id, len(messages))
-        return history
+    # Issue 94:cascade_delete_for_user / sync_message_count_from_history 两个
+    # 含 RAGFlow HTTP 调用与业务决策的编排方法已上移至 gateway.py(同名模块级函数,
+    # 首参数为 session_store),models.py 回归纯持久化,不再延迟 import gateway。
 
 
 def _gen_id(prefix: str) -> str:
@@ -747,6 +663,7 @@ class SeedData(_StoreBase):
         is_admin: bool = False,
         org_id: str = "default",
         org_admin: bool = False,
+        user_id: str | None = None,
     ) -> PortalUser:
         """创建用户(管理员调用);username 必须唯一(DB 唯一约束保证)。
 
@@ -757,9 +674,12 @@ class SeedData(_StoreBase):
         Slice 13:接受 org_id(默认 'default')与 org_admin(默认 False)。
         org_admin 创建用户时若未指定 org_id,默认归入创建者同 org 由路由层处理;
         本方法只负责写入传入的 org_id(默认 'default')。
+
+        Issue 94:``user_id`` 供 seed 引导传入固定 ID(如 'u_admin');
+        None(默认)时自动生成 ``u_`` 前缀随机 ID,行为与之前一致。
         """
         user = PortalUser(
-            id=_gen_id("u"),
+            id=user_id or _gen_id("u"),
             username=username,
             password_hash=password_hash,
             email=email,
@@ -1031,15 +951,19 @@ class SeedData(_StoreBase):
         embed_type: EmbedType = "fullscreen",
         ragflow_type: RagflowType = "chat",
         org_id: str = "default",
+        page_id: str | None = None,
     ) -> SharePage:
         """创建分享页(管理员调用)。
 
         Slice 13:接受 org_id(默认 'default'),分享页归入指定 org。
         Slice 16:embed_type/ragflow_type 由调用方传入(D9 一期固定值已扩展为可选);
         不传时默认 fullscreen/chat(向后兼容)。
+
+        Issue 94:``page_id`` 供 seed 引导传入固定 ID(如 'sp_default');
+        None(默认)时自动生成 ``sp_`` 前缀随机 ID,行为与之前一致。
         """
         page = SharePage(
-            id=_gen_id("sp"),
+            id=page_id or _gen_id("sp"),
             name=name,
             ragflow_type=ragflow_type,
             ragflow_resource_id=ragflow_resource_id,
@@ -1249,102 +1173,44 @@ def build_seed_data(settings: Settings, session_maker: sessionmaker) -> SeedData
     seed = SeedData(session_maker)
     # admin(平台管理员,D5)— idempotent:已存在则跳过
     # Slice 13:org_id='default'(seed 数据归入默认 org)
+    # Issue 94:4 段手写 ORM 映射改走 create_user/create_share_page(消掉双份映射;
+    # 固定 ID 经 user_id=/page_id= 传入,启动引导结果与之前逐字段一致)。
     if seed.get_user("u_admin") is None:
-        admin = PortalUser(
-            id="u_admin",
+        seed.create_user(
             username=settings.admin_username,
-            password_hash=hash_password(settings.admin_password),
             email="admin@example.com",
+            password_hash=hash_password(settings.admin_password),
             is_admin=True,
-            enabled=True,
-            created_at=time.time(),
-            org_id="default",
+            user_id="u_admin",
         )
-        with session_maker() as session:
-            session.add(
-                PortalUserModel(
-                    id=admin.id,
-                    username=admin.username,
-                    password_hash=admin.password_hash,
-                    email=admin.email,
-                    is_admin=admin.is_admin,
-                    enabled=admin.enabled,
-                    created_at=admin.created_at,
-                    org_id=admin.org_id,
-                )
-            )
-            session.commit()
     # user2(普通用户,Slice 3 隔离测试用)
     # Slice 13:org_id='default'
     if seed.get_user("u_user2") is None:
-        user2 = PortalUser(
-            id="u_user2",
+        seed.create_user(
             username=settings.user2_username,
-            password_hash=hash_password(settings.user2_password),
             email="user2@example.com",
-            is_admin=False,
-            enabled=True,
-            created_at=time.time(),
-            org_id="default",
+            password_hash=hash_password(settings.user2_password),
+            user_id="u_user2",
         )
-        with session_maker() as session:
-            session.add(
-                PortalUserModel(
-                    id=user2.id,
-                    username=user2.username,
-                    password_hash=user2.password_hash,
-                    email=user2.email,
-                    is_admin=user2.is_admin,
-                    enabled=user2.enabled,
-                    created_at=user2.created_at,
-                    org_id=user2.org_id,
-                )
-            )
-            session.commit()
     # Slice 15:匿名用户(公开分享页会话归属)— idempotent:已存在则跳过
     # 用途:公开分享页(is_public=true)预创建 session 时,portal_user_id 绑定到 u_anonymous,
     # 使公开会话不归属任何具体登录用户,且可被管理员通过 user_id=u_anonymous 过滤查询。
     if seed.get_user("u_anonymous") is None:
-        with session_maker() as session:
-            session.add(
-                PortalUserModel(
-                    id="u_anonymous",
-                    username="anonymous",
-                    password_hash="",  # 匿名用户无密码,不可登录
-                    email="anonymous@portal.local",
-                    is_admin=False,
-                    enabled=True,
-                    created_at=time.time(),
-                )
-            )
-            session.commit()
+        # 匿名用户无密码(password_hash 空占位),不可登录
+        seed.create_user(
+            username="anonymous",
+            email="anonymous@portal.local",
+            password_hash="",
+            user_id="u_anonymous",
+        )
     # 默认分享页(Slice 1 硬编码,关联配置的 RAGFLOW_DIALOG_ID)
     # Slice 13:org_id='default'
     if seed.get_share_page("sp_default") is None:
-        share_page = SharePage(
-            id="sp_default",
+        seed.create_share_page(
             name="默认分享页",
-            ragflow_type="chat",
             ragflow_resource_id=settings.ragflow_dialog_id,
-            embed_type="fullscreen",
-            enabled=True,
-            created_at=time.time(),
-            org_id="default",
+            page_id="sp_default",
         )
-        with session_maker() as session:
-            session.add(
-                SharePageModel(
-                    id=share_page.id,
-                    name=share_page.name,
-                    ragflow_type=share_page.ragflow_type,
-                    ragflow_resource_id=share_page.ragflow_resource_id,
-                    embed_type=share_page.embed_type,
-                    enabled=share_page.enabled,
-                    created_at=share_page.created_at,
-                    org_id=share_page.org_id,
-                )
-            )
-            session.commit()
     # admin 与 user2 对默认分享页的 use grant(Slice 3 隔离测试需要 user2 也能访问)
     # create_grant 幂等:已存在则跳过(DB 唯一约束兜底)
     seed.create_grant("sp_default", "user", "u_admin", "use")

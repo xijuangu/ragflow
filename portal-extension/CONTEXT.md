@@ -64,7 +64,7 @@ portal-extension/
 │   ├── main.py               # app = create_app(),中间件装配
 │   ├── routes.py             # 路由(用户/组/分享页/会话/管理/公开)
 │   ├── gateway.py            # 网关:SSE 代理/TokenStore(含 touch 滑动过期)/SessionStore/上游 RAGFlow 调用/reference.chunks image_id 票据改写;令牌/分享页校验链收敛在 resolve_token_and_share_page(Issue 93,全仓唯一实现)
-│   ├── models.py             # ORM 模型(User/Group/SharePage/Grant/SessionOwner/...)
+│   ├── models.py             # ORM 模型(User/Group/SharePage/Grant/SessionOwner/...);纯持久化 — 含 RAGFlow 调用的编排方法(cascade_delete_for_user/sync_message_count_from_history)已上移 gateway.py(Issue 94),models 不 import gateway
 │   ├── auth.py               # 鉴权依赖(get_current_user/require_org_admin)
 │   ├── password.py           # 密码哈希(argon2)
 │   ├── oidc.py               # SSO(Authlib)

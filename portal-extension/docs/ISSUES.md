@@ -153,7 +153,7 @@ admin sidebar 新增「用量统计」tab，仅 admin 可见。汇总视图：�
 
 ## Issue 94：models.py 回归纯持久化（编排上移至 gateway）
 
-> 状态：待实施。无阻塞。
+> 状态：✅ 已完成（2026-08-24,分支 impl/93-96）。`SessionStore.cascade_delete_for_user` 与 `SessionStore.sync_message_count_from_history` 上移为 gateway.py 同名模块级函数(首参数 session_store,其余签名不变),models.py 不再 import gateway(无延迟 import、无环);`build_seed_data` 4 段手写 ORM 映射改走 `create_user`/`create_share_page`(新增 `user_id=`/`page_id=` 固定 ID 参数,不传时仍自动生成,行为不变)。测试 mock 接缝不变(函数内部按名解析 gateway 模块 globals)。基线 451+5 不回归。
 
 ## What to build
 
