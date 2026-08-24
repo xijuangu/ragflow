@@ -42,14 +42,17 @@ export interface AdminListSortState {
 export interface AdminListFilterOption {
   value: string;
   label: string;
+  /** 副文本(如邮箱);control='combobox' 时参与搜索并显示(Issue 88)。 */
+  sublabel?: string;
 }
 
 export interface AdminListFilterDef<T> {
   /** 稳定 key,标识该筛选。 */
   key: string;
   label: string;
-  /** 控件类型:枚举下拉(默认)或日期输入(时间范围筛选,值为 YYYY-MM-DD)。 */
-  control?: 'select' | 'date';
+  /** 控件类型:枚举下拉(默认)、日期输入(时间范围筛选,值为 YYYY-MM-DD)、
+   *  可搜索 combobox(Issue 88,长列表筛选,如会话页用户/分享页筛选)。 */
+  control?: 'select' | 'date' | 'combobox';
   /** control=select 时的选项;空值(全部)由工具栏统一提供,不需在此声明。 */
   options?: AdminListFilterOption[];
   /** 筛选值非空时 item 是否保留;空值视为不筛选。 */

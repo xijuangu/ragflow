@@ -57,7 +57,7 @@
 
 ## Issue 88：可搜索 combobox 组件 + 全站长列表选择点替换
 
-> 状态：待实施。无阻塞。
+> 状态：✅ 已完成（2026-08-24,impl-ux worktree)。新增自研 `components/SearchableCombobox.tsx`(单选/多选 chips 两模式;label+sublabel 不区分大小写包含过滤;ArrowUp/Down 移动高亮、Enter 选中、Esc 关闭、多选空输入 Backspace 删尾 chip;ARIA combobox/listbox/option + aria-activedescendant;样式沿用 D1 Graphite token,未引组件库)。全站 `<select>` 盘点(7 处)与处置:① Groups 添加成员(长用户列表)→ 多选 combobox + chips,一次可添加多人(逐个乐观更新);② Grants 分享页 scope 选择 → 单选 combobox(名称+资源 ID 可搜);③ Grants 授权对象 → 单选 combobox(用户名+邮箱/组名可搜,随主体类型切换);④ Sessions 用户筛选/分享页筛选(长列表)→ `AdminListFilterDef.control:'combobox'`,工具栏渲染单选 combobox,"全部"为清空伪选项;⑤ Grants 主体类型(固定 2 项枚举)→ 保留原生;⑥ SharePages 创建表单 embed_type/ragflow_type(固定 2 项枚举)→ 保留原生;⑦ 其余工具栏筛选(SharePages 状态/嵌入类型/RAGFlow 类型、Grants 主体类型筛选、AuditLogs 操作类型+日期范围,均为小枚举/日期)→ 保留原生。审计日志"操作者"为搜索列而非下拉,无替换对象。前端 124 个 Vitest 全绿(组件 10 个:过滤/选择/chips 移除/键盘;Groups/Grants/Sessions 页级用例适配),tsc + eslint 净。注意:`#grant-share-page`/`#grant-subject-id` 与组内"选择用户"已非原生 select,生产 Playwright CRUD 用例(`test/playwright/portal_extension/test_portal_admin_crud.py`,在本 stream 范围外)需在 Issue 89 一并适配,详见 Issue 89 实施记录。
 
 ## What to build
 
@@ -65,9 +65,9 @@
 
 ## Acceptance criteria
 
-- [ ] combobox 组件支持单选/多选两种模式，键盘可操作（上下移动、回车选中、Esc 关闭），多选以 chips 呈现已选项。
-- [ ] "添加成员"与"授权对象"两处下拉完成替换；全站盘点出的其余长列表选择点（盘点清单附在实施记录中）完成替换或明确记录不替换的理由。
-- [ ] 前端测试覆盖过滤、选择、chips 移除、键盘交互。
+- [x] combobox 组件支持单选/多选两种模式，键盘可操作（上下移动、回车选中、Esc 关闭），多选以 chips 呈现已选项。
+- [x] "添加成员"与"授权对象"两处下拉完成替换；全站盘点出的其余长列表选择点（盘点清单附在实施记录中）完成替换或明确记录不替换的理由。
+- [x] 前端测试覆盖过滤、选择、chips 移除、键盘交互。
 
 ## Issue 89：用户组管理主从视图重设计
 

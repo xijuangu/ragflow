@@ -165,7 +165,7 @@ describe('SessionsAdminPage', () => {
     expect(sessionCalls).toHaveLength(0);
   });
 
-  it('用户/分享页筛选下拉(Issue 87)', async () => {
+  it('用户/分享页筛选 combobox(Issue 87 + Issue 88 长列表筛选换 combobox)', async () => {
     const user = userEvent.setup();
     globalThis.fetch = mockFetch([
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
@@ -177,12 +177,21 @@ describe('SessionsAdminPage', () => {
     renderPage();
     await screen.findByTestId('session-row-sess_a');
 
-    await user.selectOptions(screen.getByLabelText('用户筛选'), 'u_user1');
+    // 用户筛选:combobox 选择 user1
+    const userFilter = screen.getByRole('combobox', { name: '用户筛选' });
+    await user.click(userFilter);
+    await user.click(screen.getByRole('option', { name: /user1/ }));
     expect(screen.queryByTestId('session-row-sess_b')).not.toBeInTheDocument();
     expect(screen.getByTestId('session-row-sess_a')).toBeInTheDocument();
 
-    await user.selectOptions(screen.getByLabelText('用户筛选'), '');
-    await user.selectOptions(screen.getByLabelText('分享页筛选'), 'sp_default');
+    // 选"全部"清空筛选
+    await user.click(userFilter);
+    await user.click(screen.getByRole('option', { name: '全部' }));
+
+    // 分享页筛选:combobox 选择默认分享页
+    const pageFilter = screen.getByRole('combobox', { name: '分享页筛选' });
+    await user.click(pageFilter);
+    await user.click(screen.getByRole('option', { name: '默认分享页' }));
     expect(screen.getByTestId('session-row-sess_a')).toBeInTheDocument();
     expect(screen.getByTestId('session-row-sess_b')).toBeInTheDocument();
   });

@@ -82,12 +82,14 @@ export default function SessionsAdminPage() {
       {
         key: 'user',
         label: '用户筛选',
-        options: users.map((u) => ({ value: u.id, label: u.username })),
+        control: 'combobox',
+        options: users.map((u) => ({ value: u.id, label: u.username, sublabel: u.email })),
         match: (s, v) => s.portal_user_id === v,
       },
       {
         key: 'share_page',
         label: '分享页筛选',
+        control: 'combobox',
         options: sharePages.map((p) => ({ value: p.id, label: p.name })),
         match: (s, v) => s.share_page_id === v,
       },

@@ -29,6 +29,7 @@ import type { AdminListViewConfig } from '../../hooks/useAdminList';
 import { useOptimisticToggle } from '../../hooks/useOptimisticToggle';
 import { MobileCard, MobileCardList } from '../../components/MobileCards';
 import { AdminListToolbar, SortableTh } from '../../components/AdminListControls';
+import SearchableCombobox from '../../components/SearchableCombobox';
 
 export default function GrantsAdminPage() {
   const [sharePages, setSharePages] = useState<AdminSharePage[]>([]);
@@ -189,11 +190,18 @@ export default function GrantsAdminPage() {
     [run, selectedPageId, setGrants],
   );
 
-  // 授权对象下拉选项(随 subjectType 切换)
-  const subjectOptions: { value: string; label: string }[] =
+  // 授权对象 combobox 选项(随 subjectType 切换;用户名 + 邮箱参与搜索,Issue 88)
+  const subjectOptions =
     subjectType === 'user'
-      ? users.map((u) => ({ value: u.id, label: `${u.username}(${u.email})` }))
+      ? users.map((u) => ({ value: u.id, label: u.username, sublabel: u.email }))
       : groups.map((g) => ({ value: g.id, label: g.name }));
+
+  // 分享页 combobox 选项(名称 + RAGFlow 资源 ID 参与搜索,Issue 88)
+  const sharePageOptions = sharePages.map((p) => ({
+    value: p.id,
+    label: p.name,
+    sublabel: p.ragflow_resource_id,
+  }));
 
   const renderRevokeAction = (grant: AdminGrant) => (
     <button
@@ -225,19 +233,16 @@ export default function GrantsAdminPage() {
         <div className="admin-form-row admin-form-row-compact">
           <div className="form-field">
             <label htmlFor="grant-share-page">分享页</label>
-            <select
+            <SearchableCombobox
+              mode="single"
               id="grant-share-page"
+              ariaLabel="分享页"
+              options={sharePageOptions}
               value={selectedPageId}
-              onChange={(e) => setSelectedPageId(e.target.value)}
+              onChange={setSelectedPageId}
+              placeholder={sharePages.length === 0 ? '无可用分享页' : '选择分享页…'}
               disabled={sharePages.length === 0}
-            >
-              {sharePages.length === 0 && <option value="">无可用分享页</option>}
-              {sharePages.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}({p.ragflow_resource_id})
-                </option>
-              ))}
-            </select>
+            />
           </div>
           <div className="form-field">
             <label htmlFor="grant-subject-type">主体类型</label>
@@ -255,19 +260,16 @@ export default function GrantsAdminPage() {
           </div>
           <div className="form-field">
             <label htmlFor="grant-subject-id">授权对象</label>
-            <select
+            <SearchableCombobox
+              mode="single"
               id="grant-subject-id"
+              ariaLabel="授权对象"
+              options={subjectOptions}
               value={subjectId}
-              onChange={(e) => setSubjectId(e.target.value)}
+              onChange={setSubjectId}
+              placeholder={subjectOptions.length === 0 ? '无可选对象' : '搜索用户名/邮箱或组名…'}
               disabled={subjectOptions.length === 0}
-            >
-              <option value="">{subjectOptions.length === 0 ? '无可选对象' : '选择…'}</option>
-              {subjectOptions.map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
+            />
           </div>
           <button type="submit" className="btn btn-primary" disabled={creating || !subjectId || !selectedPageId}>
             {creating ? '授权中…' : '授权'}

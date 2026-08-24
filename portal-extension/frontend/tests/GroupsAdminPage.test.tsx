@@ -9,7 +9,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthProvider } from '../src/auth/AuthContext';
 import GroupsAdminPage from '../src/pages/admin/GroupsAdminPage';
-import { mockFetch } from './setup';
+import { getFetchCalls, mockFetch } from './setup';
 
 const GROUPS_RESPONSE = {
   groups: [
@@ -151,7 +151,7 @@ describe('GroupsAdminPage', () => {
     expect(screen.queryByText(/something went wrong/i)).not.toBeInTheDocument();
   });
 
-  it('添加成员 — 选择用户并提交后调 POST /admin/groups/:id/members', async () => {
+  it('添加成员 — combobox 多选 + chips,提交后调 POST /admin/groups/:id/members(Issue 88)', async () => {
     const user = userEvent.setup();
     globalThis.fetch = mockFetch([
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
@@ -168,13 +168,40 @@ describe('GroupsAdminPage', () => {
     renderPage();
 
     const row = await screen.findByTestId('group-row-g_ops');
-    // 在该组行内选择 user2 并添加
-    await user.selectOptions(within(row).getByLabelText('选择用户'), 'u_user2');
+    // 在该组行内用 combobox 搜索并选中 user2 → chip 呈现
+    const picker = within(row).getByRole('combobox', { name: '选择用户' });
+    await user.click(picker);
+    await user.type(picker, 'user2@');
+    await user.click(screen.getByRole('option', { name: /user2/ }));
+    expect(within(row).getByRole('list', { name: '已选项' })).toHaveTextContent('user2');
+
     await user.click(within(row).getByRole('button', { name: '添加' }));
 
     // 乐观更新:成员数从 0 变 1,且显示 user2(用户名)
     expect(await within(row).findByText('user2')).toBeInTheDocument();
     expect(await within(row).findByText(/1\s*成员/)).toBeInTheDocument();
+  });
+
+  it('添加成员 — chips 移除后不再提交该用户(Issue 88)', async () => {
+    const user = userEvent.setup();
+    globalThis.fetch = mockFetch([
+      { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
+      { url: '/admin/groups', status: 200, body: GROUPS_RESPONSE },
+      { url: '/admin/users', status: 200, body: USERS_RESPONSE },
+    ]);
+
+    renderPage();
+
+    const row = await screen.findByTestId('group-row-g_ops');
+    const picker = within(row).getByRole('combobox', { name: '选择用户' });
+    await user.click(picker);
+    await user.click(screen.getByRole('option', { name: /user2/ }));
+    // 提交前移除 chip → 添加按钮禁用、不产生 POST
+    await user.click(within(row).getByRole('button', { name: '移除 user2' }));
+    expect(within(row).getByRole('button', { name: '添加' })).toBeDisabled();
+
+    const calls = getFetchCalls(globalThis.fetch);
+    expect(calls.filter((c) => c.url.includes('/members'))).toHaveLength(0);
   });
 
   it('移除成员 — 点击"移除"调 DELETE /admin/groups/:id/members/:user_id', async () => {

@@ -18,6 +18,7 @@ import { useAdminList, useAdminListView } from '../../hooks/useAdminList';
 import type { AdminListViewConfig } from '../../hooks/useAdminList';
 import { useOptimisticToggle } from '../../hooks/useOptimisticToggle';
 import { AdminListToolbar } from '../../components/AdminListControls';
+import SearchableCombobox from '../../components/SearchableCombobox';
 
 /** Issue 87:组页搜索列 = 组名(Issue 89 将在此基础上做 master-detail 重设计)。 */
 const GROUP_LIST_VIEW: AdminListViewConfig<AdminGroup> = {
@@ -94,38 +95,40 @@ export default function GroupsAdminPage() {
     [creating, groupName, setGroups, setError],
   );
 
+  // Issue 88:添加成员支持一次多选(combobox chips),逐个乐观更新 + 调后端
   const handleAddMember = useCallback(
-    async (groupId: string, userId: string) => {
-      if (!userId) return;
-      await run({
-        id: `${groupId}:add:${userId}`,
-        optimistic: () =>
-          setGroups((prev) =>
-            prev
-              ? prev.map((g) =>
-                  g.id === groupId && !g.members.includes(userId)
-                    ? { ...g, members: [...g.members, userId], member_count: g.member_count + 1 }
-                    : g,
-                )
-              : prev,
-          ),
-        rollback: () =>
-          setGroups((prev) =>
-            prev
-              ? prev.map((g) =>
-                  g.id === groupId
-                    ? {
-                        ...g,
-                        members: g.members.filter((id) => id !== userId),
-                        member_count: Math.max(0, g.member_count - 1),
-                      }
-                    : g,
-                )
-              : prev,
-          ),
-        action: () => api.addAdminGroupMember(groupId, userId),
-        errorMessage: '添加成员失败',
-      });
+    async (groupId: string, userIds: string[]) => {
+      for (const userId of userIds) {
+        await run({
+          id: `${groupId}:add:${userId}`,
+          optimistic: () =>
+            setGroups((prev) =>
+              prev
+                ? prev.map((g) =>
+                    g.id === groupId && !g.members.includes(userId)
+                      ? { ...g, members: [...g.members, userId], member_count: g.member_count + 1 }
+                      : g,
+                  )
+                : prev,
+            ),
+          rollback: () =>
+            setGroups((prev) =>
+              prev
+                ? prev.map((g) =>
+                    g.id === groupId
+                      ? {
+                          ...g,
+                          members: g.members.filter((id) => id !== userId),
+                          member_count: Math.max(0, g.member_count - 1),
+                        }
+                      : g,
+                  )
+                : prev,
+            ),
+          action: () => api.addAdminGroupMember(groupId, userId),
+          errorMessage: '添加成员失败',
+        });
+      }
     },
     [run, setGroups],
   );
@@ -263,7 +266,7 @@ export default function GroupsAdminPage() {
   );
 }
 
-/** 添加成员下拉 + 按钮(排除已在组内的用户)。 */
+/** 添加成员 combobox(多选 + chips)+ 按钮(排除已在组内的用户)。Issue 88。 */
 function MemberSelect({
   groupId,
   users,
@@ -274,42 +277,40 @@ function MemberSelect({
   groupId: string;
   users: AdminUser[];
   existingMembers: string[];
-  onAdd: (groupId: string, userId: string) => void;
+  onAdd: (groupId: string, userIds: string[]) => Promise<void>;
   disabled: boolean;
 }) {
-  const [selected, setSelected] = useState('');
+  const [selected, setSelected] = useState<string[]>([]);
 
-  const candidates = users.filter((u) => !existingMembers.includes(u.id) && u.enabled);
+  const candidates = users
+    .filter((u) => !existingMembers.includes(u.id) && u.enabled)
+    .map((u) => ({ value: u.id, label: u.username, sublabel: u.email }));
 
   return (
     <form
       className="admin-add-member-form"
-      onSubmit={(e) => {
+      onSubmit={async (e) => {
         e.preventDefault();
-        if (selected) {
-          onAdd(groupId, selected);
-          setSelected('');
+        if (selected.length > 0) {
+          await onAdd(groupId, selected);
+          setSelected([]);
         }
       }}
     >
       <label htmlFor={`member-select-${groupId}`} className="sr-only">
         选择用户
       </label>
-      <select
+      <SearchableCombobox
+        mode="multiple"
         id={`member-select-${groupId}`}
-        aria-label="选择用户"
-        value={selected}
-        onChange={(e) => setSelected(e.target.value)}
+        ariaLabel="选择用户"
+        options={candidates}
+        values={selected}
+        onChange={setSelected}
+        placeholder={candidates.length === 0 ? '无可添加用户' : '搜索用户名或邮箱…'}
         disabled={disabled || candidates.length === 0}
-      >
-        <option value="">{candidates.length === 0 ? '无可添加用户' : '选择用户…'}</option>
-        {candidates.map((u) => (
-          <option key={u.id} value={u.id}>
-            {u.username}({u.email})
-          </option>
-        ))}
-      </select>
-      <button type="submit" className="btn btn-outline btn-sm" disabled={disabled || !selected}>
+      />
+      <button type="submit" className="btn btn-outline btn-sm" disabled={disabled || selected.length === 0}>
         添加
       </button>
     </form>

@@ -11,6 +11,7 @@ import type {
   AdminListFilterDef,
   AdminListSortState,
 } from '../hooks/useAdminList';
+import SearchableCombobox from './SearchableCombobox';
 
 export interface AdminListToolbarProps<T> {
   search: string;
@@ -54,6 +55,18 @@ export function AdminListToolbar<T>({
               type="date"
               value={filterValues[f.key] ?? ''}
               onChange={(e) => onFilterChange?.(f.key, e.target.value)}
+            />
+          ) : f.control === 'combobox' ? (
+            /* Issue 88:长列表筛选(如会话页用户/分享页)用可搜索 combobox,"全部"为清空伪选项 */
+            <SearchableCombobox
+              mode="single"
+              id={`${baseId}-filter-${f.key}`}
+              ariaLabel={f.label}
+              options={f.options ?? []}
+              value={filterValues[f.key] ?? ''}
+              onChange={(v) => onFilterChange?.(f.key, v)}
+              clearLabel="全部"
+              placeholder="全部"
             />
           ) : (
             <select

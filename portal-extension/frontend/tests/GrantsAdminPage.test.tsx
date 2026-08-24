@@ -144,8 +144,10 @@ describe('GrantsAdminPage', () => {
 
     await screen.findByTestId('grant-row-user-u_admin');
 
-    // 切换到"其他分享页"
-    await user.selectOptions(screen.getByLabelText('分享页'), 'sp_other');
+    // 切换到"其他分享页"(Issue 88:分享页选择换 combobox)
+    const pagePicker = screen.getByRole('combobox', { name: '分享页' });
+    await user.click(pagePicker);
+    await user.click(screen.getByRole('option', { name: /其他分享页/ }));
 
     // 空状态出现
     expect(await screen.findByText('暂无授权')).toBeInTheDocument();
@@ -176,10 +178,13 @@ describe('GrantsAdminPage', () => {
 
     await screen.findByText('暂无授权');
 
-    // 选择授权主体类型 = 用户
+    // 选择授权主体类型 = 用户(2 项枚举,保留原生下拉)
     await user.selectOptions(screen.getByLabelText('主体类型'), 'user');
-    // 选择 user1
-    await user.selectOptions(screen.getByLabelText('授权对象'), 'u_user1');
+    // 选择 user1(Issue 88:授权对象换 combobox,支持按用户名/邮箱搜索)
+    const subjectPicker = screen.getByRole('combobox', { name: '授权对象' });
+    await user.click(subjectPicker);
+    await user.type(subjectPicker, 'user1@');
+    await user.click(screen.getByRole('option', { name: /user1/ }));
     await user.click(screen.getByRole('button', { name: '授权' }));
 
     // 乐观更新:授权行出现,行内含用户名 user1
@@ -213,7 +218,9 @@ describe('GrantsAdminPage', () => {
     await screen.findByText('暂无授权');
 
     await user.selectOptions(screen.getByLabelText('主体类型'), 'group');
-    await user.selectOptions(screen.getByLabelText('授权对象'), 'g_dev');
+    const subjectPicker = screen.getByRole('combobox', { name: '授权对象' });
+    await user.click(subjectPicker);
+    await user.click(screen.getByRole('option', { name: '开发组' }));
     await user.click(screen.getByRole('button', { name: '授权' }));
 
     // 乐观更新:授权行出现,行内含组名 开发组
