@@ -183,6 +183,8 @@ svg { display: block; }
    FILTER BAR / FIELDS / PILLS(新 — Issue 56/58 迁移使用)
    ============================================================ */
 .filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+/* Issue 87:工具栏独占一张卡片时(如用户组搜索)去掉底部边线,避免与卡片边框双线。 */
+.admin-list-toolbar:last-child { border-bottom: 0; }
 /* Issue 73 修正:form-field 基类有 margin-bottom:16px,在 .filters 内会令按钮(无 margin)按 margin-box
    flex-end 对齐时可视下沉 16px。清零后 form-field border-box 底边与按钮底边对齐。 */
 .filters .form-field { margin-bottom: 0; }

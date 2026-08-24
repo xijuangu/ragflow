@@ -7,7 +7,7 @@
  *   - 查正文需统一 warning 弹窗二次确认,确认后调 elevated 端点(写审计)
  *   - 弹窗显示消息正文
  */
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -136,68 +136,81 @@ describe('SessionsAdminPage', () => {
     expect(screen.getByTestId('session-row-sess_b')).toBeInTheDocument();
   });
 
-  it('按关键词搜索 — 触发带 keyword 的 GET /admin/sessions', async () => {
+  it('搜索框按会话标题 + 用户名模糊匹配,纯客户端不再带参请求(Issue 87)', async () => {
     const user = userEvent.setup();
     globalThis.fetch = mockFetch([
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
       { url: '/admin/users', status: 200, body: USERS_RESPONSE },
       { url: '/admin/share-pages', status: 200, body: SHARE_PAGES_RESPONSE },
-      // 初始加载(无 keyword)
       { url: '/admin/sessions', status: 200, body: SESSIONS_RESPONSE },
-      // 搜索后(带 keyword=RAGFlow)
-      { url: '/admin/sessions?keyword=RAGFlow', status: 200, body: { sessions: [SESSIONS_RESPONSE.sessions[0]] } },
     ]);
 
     renderPage();
-
     await screen.findByTestId('session-row-sess_a');
 
-    await user.type(screen.getByLabelText('关键词'), 'RAGFlow');
-    await user.click(screen.getByRole('button', { name: '搜索' }));
-
-    // 等待搜索完成 — sess_b 消失
-    await waitFor(() => {
-      expect(screen.queryByTestId('session-row-sess_b')).not.toBeInTheDocument();
-    });
-    // 搜索结果仍含 sess_a
+    // 按标题关键词过滤
+    await user.type(screen.getByLabelText('搜索会话'), 'RAGFlow');
+    expect(screen.queryByTestId('session-row-sess_b')).not.toBeInTheDocument();
     expect(screen.getByTestId('session-row-sess_a')).toBeInTheDocument();
 
-    // 校验最后一次请求带上了 keyword
+    // 按用户名过滤(sess_a 属于 user1)
+    await user.clear(screen.getByLabelText('搜索会话'));
+    await user.type(screen.getByLabelText('搜索会话'), 'USER1');
+    expect(screen.queryByTestId('session-row-sess_b')).not.toBeInTheDocument();
+    expect(screen.getByTestId('session-row-sess_a')).toBeInTheDocument();
+
+    // 全量加载后不再发起带查询参数的 sessions 请求
     const calls = getFetchCalls(globalThis.fetch);
-    const lastCall = calls[calls.length - 1];
-    expect(lastCall.url).toContain('keyword=RAGFlow');
+    const sessionCalls = calls.filter((c) => c.url.startsWith('/admin/sessions?'));
+    expect(sessionCalls).toHaveLength(0);
   });
 
-  it('按用户筛选 — 触发带 user_id 的 GET /admin/sessions', async () => {
+  it('用户/分享页筛选下拉(Issue 87)', async () => {
     const user = userEvent.setup();
     globalThis.fetch = mockFetch([
       { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
       { url: '/admin/users', status: 200, body: USERS_RESPONSE },
       { url: '/admin/share-pages', status: 200, body: SHARE_PAGES_RESPONSE },
       { url: '/admin/sessions', status: 200, body: SESSIONS_RESPONSE },
-      {
-        url: '/admin/sessions?user_id=u_user1',
-        status: 200,
-        body: { sessions: [SESSIONS_RESPONSE.sessions[0]] },
-      },
     ]);
 
     renderPage();
-
     await screen.findByTestId('session-row-sess_a');
 
-    await user.selectOptions(screen.getByLabelText('用户'), 'u_user1');
-    await user.click(screen.getByRole('button', { name: '搜索' }));
-
-    // 只剩 sess_a,user1 的会话(管理员自己的"退款"会话消失)
-    await waitFor(() => {
-      expect(screen.queryByTestId('session-row-sess_b')).not.toBeInTheDocument();
-    });
+    await user.selectOptions(screen.getByLabelText('用户筛选'), 'u_user1');
+    expect(screen.queryByTestId('session-row-sess_b')).not.toBeInTheDocument();
     expect(screen.getByTestId('session-row-sess_a')).toBeInTheDocument();
 
-    const calls = getFetchCalls(globalThis.fetch);
-    const lastCall = calls[calls.length - 1];
-    expect(lastCall.url).toContain('user_id=u_user1');
+    await user.selectOptions(screen.getByLabelText('用户筛选'), '');
+    await user.selectOptions(screen.getByLabelText('分享页筛选'), 'sp_default');
+    expect(screen.getByTestId('session-row-sess_a')).toBeInTheDocument();
+    expect(screen.getByTestId('session-row-sess_b')).toBeInTheDocument();
+  });
+
+  it('消息数列三态排序(Issue 87)', async () => {
+    const user = userEvent.setup();
+    globalThis.fetch = mockFetch([
+      { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
+      { url: '/admin/users', status: 200, body: USERS_RESPONSE },
+      { url: '/admin/share-pages', status: 200, body: SHARE_PAGES_RESPONSE },
+      { url: '/admin/sessions', status: 200, body: SESSIONS_RESPONSE },
+    ]);
+
+    renderPage();
+    await screen.findByTestId('session-row-sess_a');
+
+    const order = () =>
+      screen
+        .getAllByTestId(/^session-row-/)
+        .map((el) => el.getAttribute('data-testid')!.replace('session-row-', ''));
+
+    expect(order()).toEqual(['sess_a', 'sess_b']);
+    await user.click(screen.getByRole('button', { name: '按消息数排序' }));
+    expect(order()).toEqual(['sess_b', 'sess_a']); // 1 < 3 升序
+    await user.click(screen.getByRole('button', { name: '按消息数排序' }));
+    expect(order()).toEqual(['sess_a', 'sess_b']);
+    await user.click(screen.getByRole('button', { name: '按消息数排序' }));
+    expect(order()).toEqual(['sess_a', 'sess_b']); // 不排:恢复原始顺序
   });
 
   it('点击"查看正文" → 统一确认弹窗取消 → 不调 elevated 端点', async () => {

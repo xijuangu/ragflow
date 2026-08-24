@@ -14,8 +14,15 @@
 import { useCallback, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
 import { ApiError, api, type AdminGroup, type AdminUser } from '../../api/client';
-import { useAdminList } from '../../hooks/useAdminList';
+import { useAdminList, useAdminListView } from '../../hooks/useAdminList';
+import type { AdminListViewConfig } from '../../hooks/useAdminList';
 import { useOptimisticToggle } from '../../hooks/useOptimisticToggle';
+import { AdminListToolbar } from '../../components/AdminListControls';
+
+/** Issue 87:组页搜索列 = 组名(Issue 89 将在此基础上做 master-detail 重设计)。 */
+const GROUP_LIST_VIEW: AdminListViewConfig<AdminGroup> = {
+  searchColumns: [(g) => g.name],
+};
 
 export default function GroupsAdminPage() {
   const [groups, setGroups] = useState<AdminGroup[] | null>(null);
@@ -37,6 +44,13 @@ export default function GroupsAdminPage() {
     },
   );
   const { busyId, run } = useOptimisticToggle({ onError: setError });
+
+  // Issue 87:组卡片网格接入统一搜索(组名模糊匹配)
+  const {
+    view: visibleGroups,
+    search,
+    setSearch,
+  } = useAdminListView(groups, GROUP_LIST_VIEW);
 
   const [groupName, setGroupName] = useState('');
   const [creating, setCreating] = useState(false);
@@ -184,14 +198,25 @@ export default function GroupsAdminPage() {
       </form>
 
       {/* 用户组列表(卡片网格,每卡含内联成员管理) */}
+      <div className="card">
+        <AdminListToolbar
+          search={search}
+          onSearchChange={setSearch}
+          searchLabel="搜索用户组"
+          searchPlaceholder="按组名搜索"
+        />
+      </div>
       <div className="admin-groups mobile-cards" aria-label="用户组列表">
         {groups === null && !error && <div className="loading">加载中…</div>}
         {groups !== null && groups.length === 0 && (
           <div className="empty-state card">暂无用户组</div>
         )}
-        {groups !== null &&
-          groups.length > 0 &&
-          groups.map((g) => (
+        {groups !== null && groups.length > 0 && visibleGroups !== null && visibleGroups.length === 0 && (
+          <div className="empty-state card">无匹配结果</div>
+        )}
+        {visibleGroups !== null &&
+          visibleGroups.length > 0 &&
+          visibleGroups.map((g) => (
             <div key={g.id} className="card admin-group-card" data-testid={`group-row-${g.id}`}>
               <div className="admin-group-header">
                 <h3 className="admin-group-name">{g.name}</h3>

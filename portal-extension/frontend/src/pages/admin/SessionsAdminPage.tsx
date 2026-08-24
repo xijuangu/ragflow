@@ -1,33 +1,32 @@
 /**
- * 会话搜索页(Slice 11,验收点 6)— 按用户/分享页/关键词搜索 + elevated 二次确认查正文。
+ * 会话搜索页(Slice 11,验收点 6;Issue 87 改为前端内存检索)— 全量加载 + 搜索/筛选/排序 + elevated 二次确认查正文。
  *
  * 对应后端:
- *   - GET /admin/sessions?user_id=&share_page_id=&since=&until=&keyword=&limit=
- *     返回 { sessions: [元数据,不含正文] }
+ *   - GET /admin/sessions(全量元数据,不含正文;Issue 87 起筛选/排序全在浏览器内存完成,§12.1)
  *   - GET /admin/sessions/:sid?elevated=true(写 session_view_elevated 审计 + 调 RAGFlow 取正文)
  *     返回 { ...元数据, messages: [...], reference: {...} }
  *
  * UI 流程:
- *   1. 默认加载全部会话元数据(分页/过滤在搜索表单)
- *   2. 每行带「查看正文」按钮 → 统一 warning 弹窗展示审计后果
+ *   1. 一次性加载全部会话元数据 + 用户/分享页(用于名称解析与筛选选项)
+ *   2. 工具栏:搜索框(标题 + 用户名)、用户/分享页筛选下拉、表头三态排序
+ *   3. 每行带「查看正文」按钮 → 统一 warning 弹窗展示审计后果
  *      → 确认 → 调 elevated 端点 → 弹窗显示 messages
  *
  * 对应 PRD D7a:管理员默认只看元数据,查正文需二次确认 + 写审计(后端在 elevated=true 时写)。
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { FormEvent } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import {
   ApiError,
   api,
   type AdminSessionElevated,
   type AdminSessionMetadata,
-  type AdminSharePage,
-  type AdminUser,
 } from '../../api/client';
 import { formatTime } from '../../utils/formatTime';
-import { useAdminList } from '../../hooks/useAdminList';
+import { useAdminList, useAdminListView } from '../../hooks/useAdminList';
+import type { AdminListViewConfig } from '../../hooks/useAdminList';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import { MobileCard, MobileCardList } from '../../components/MobileCards';
+import { AdminListToolbar, SortableTh } from '../../components/AdminListControls';
 
 interface SessionMessage {
   role: string;
@@ -35,30 +34,25 @@ interface SessionMessage {
 }
 
 export default function SessionsAdminPage() {
-  const [users, setUsers] = useState<AdminUser[]>([]);
-  const [sharePages, setSharePages] = useState<AdminSharePage[]>([]);
-  const [sessions, setSessions] = useState<AdminSessionMetadata[] | null>(null);
-  const { error, setError } = useAdminList(
+  // Issue 87:全量加载(用户/分享页/会话一次性并行),搜索/筛选/排序在内存完成
+  const { data, error } = useAdminList(
     async () => {
-      const [usersRes, pagesRes] = await Promise.all([
+      const [usersRes, pagesRes, sessionsRes] = await Promise.all([
         api.listAdminUsers(),
         api.listAdminSharePages(),
+        api.listAdminSessions(),
       ]);
-      return { users: usersRes.users, sharePages: pagesRes.share_pages };
+      return {
+        users: usersRes.users,
+        sharePages: pagesRes.share_pages,
+        sessions: sessionsRes.sessions,
+      };
     },
-    {
-      errorMessage: '加载用户/分享页失败',
-      onSuccess: (d) => {
-        setUsers(d.users);
-        setSharePages(d.sharePages);
-      },
-    },
+    { errorMessage: '加载会话列表失败' },
   );
-
-  // 筛选表单
-  const [filterUserId, setFilterUserId] = useState('');
-  const [filterSharePageId, setFilterSharePageId] = useState('');
-  const [filterKeyword, setFilterKeyword] = useState('');
+  const users = useMemo(() => data?.users ?? [], [data]);
+  const sharePages = useMemo(() => data?.sharePages ?? [], [data]);
+  const sessions = data?.sessions ?? null;
 
   // elevated 弹窗
   const [elevatedLoading, setElevatedLoading] = useState(false);
@@ -67,52 +61,53 @@ export default function SessionsAdminPage() {
   const [viewTarget, setViewTarget] = useState<AdminSessionMetadata | null>(null);
 
   const userMap = useMemo(() => {
-    const m = new Map<string, AdminUser>();
+    const m = new Map<string, (typeof users)[number]>();
     for (const u of users) m.set(u.id, u);
     return m;
   }, [users]);
 
   const sharePageMap = useMemo(() => {
-    const m = new Map<string, AdminSharePage>();
+    const m = new Map<string, (typeof sharePages)[number]>();
     for (const p of sharePages) m.set(p.id, p);
     return m;
   }, [sharePages]);
 
-  // 初始加载用户/分享页下拉数据由 useAdminList 完成(上方);此处仅保留会话加载
-  const loadSessions = useCallback(
-    async (opts: { userId?: string; sharePageId?: string; keyword?: string } = {}) => {
-      setSessions(null);
-      setError(null);
-      try {
-        const res = await api.listAdminSessions({
-          user_id: opts.userId || undefined,
-          share_page_id: opts.sharePageId || undefined,
-          keyword: opts.keyword || undefined,
-        });
-        setSessions(res.sessions);
-      } catch (e) {
-        setError(e instanceof ApiError ? e.message : '加载会话列表失败');
-      }
-    },
-    [setError],
-  );
-
-  // 首次加载会话
-  useEffect(() => {
-    void loadSessions();
-  }, [loadSessions]);
-
-  const handleSearch = useCallback(
-    async (e: FormEvent) => {
-      e.preventDefault();
-      await loadSessions({
-        userId: filterUserId,
-        sharePageId: filterSharePageId,
-        keyword: filterKeyword.trim(),
-      });
-    },
-    [filterUserId, filterSharePageId, filterKeyword, loadSessions],
-  );
+  // Issue 87:搜索列 = 会话标题 + 用户名;筛选 = 用户/分享页;排序 = 标题/创建时间/最近活跃/消息数
+  const sessionsViewConfig: AdminListViewConfig<AdminSessionMetadata> = {
+    searchColumns: [
+      (s) => s.title,
+      (s) => userMap.get(s.portal_user_id)?.username ?? s.portal_user_id,
+    ],
+    filters: [
+      {
+        key: 'user',
+        label: '用户筛选',
+        options: users.map((u) => ({ value: u.id, label: u.username })),
+        match: (s, v) => s.portal_user_id === v,
+      },
+      {
+        key: 'share_page',
+        label: '分享页筛选',
+        options: sharePages.map((p) => ({ value: p.id, label: p.name })),
+        match: (s, v) => s.share_page_id === v,
+      },
+    ],
+    sortColumns: [
+      { key: 'title', label: '标题', compare: (a, b) => (a.title || '').localeCompare(b.title || '') },
+      { key: 'created_at', label: '创建时间', compare: (a, b) => a.created_at - b.created_at },
+      { key: 'last_active_at', label: '最近活跃', compare: (a, b) => a.last_active_at - b.last_active_at },
+      { key: 'message_count', label: '消息数', compare: (a, b) => a.message_count - b.message_count },
+    ],
+  };
+  const {
+    view: visibleSessions,
+    search,
+    setSearch,
+    filterValues,
+    setFilterValue,
+    sort,
+    toggleSort,
+  } = useAdminListView(sessions, sessionsViewConfig);
 
   const confirmViewElevated = useCallback(
     async () => {
@@ -161,74 +156,41 @@ export default function SessionsAdminPage() {
 
       {error && <div className="alert-error">{error}</div>}
 
-      {/* 会话列表(含筛选) */}
+      {/* 会话列表(搜索/筛选/排序全在内存完成,Issue 87) */}
       <div className="card card-table">
-        <form className="filters" onSubmit={handleSearch} aria-label="会话搜索表单">
-          <div className="form-field">
-            <label htmlFor="filter-user">用户</label>
-            <select
-              id="filter-user"
-              value={filterUserId}
-              onChange={(e) => setFilterUserId(e.target.value)}
-            >
-              <option value="">全部用户</option>
-              {users.map((u) => (
-                <option key={u.id} value={u.id}>
-                  {u.username}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="form-field">
-            <label htmlFor="filter-share-page">分享页</label>
-            <select
-              id="filter-share-page"
-              value={filterSharePageId}
-              onChange={(e) => setFilterSharePageId(e.target.value)}
-            >
-              <option value="">全部分享页</option>
-              {sharePages.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="form-field">
-            <label htmlFor="filter-keyword">关键词</label>
-            <input
-              id="filter-keyword"
-              type="text"
-              value={filterKeyword}
-              onChange={(e) => setFilterKeyword(e.target.value)}
-              placeholder="按会话标题模糊匹配"
-            />
-          </div>
-          <button type="submit" className="btn btn-primary">
-            搜索
-          </button>
-        </form>
+        <AdminListToolbar
+          search={search}
+          onSearchChange={setSearch}
+          searchLabel="搜索会话"
+          searchPlaceholder="按会话标题或用户名搜索"
+          filters={sessionsViewConfig.filters}
+          filterValues={filterValues}
+          onFilterChange={setFilterValue}
+        />
         <div className="card-body">
           {sessions === null && !error && <div className="loading">加载中…</div>}
           {sessions !== null && sessions.length === 0 && (
             <div className="empty-state">暂无会话</div>
           )}
+          {sessions !== null && sessions.length > 0 && visibleSessions !== null && visibleSessions.length === 0 && (
+            <div className="empty-state">无匹配结果</div>
+          )}
           <div className="table-wrap">
-            {sessions !== null && sessions.length > 0 && (
+            {visibleSessions !== null && visibleSessions.length > 0 && (
               <table>
                 <thead>
                   <tr>
-                    <th>标题</th>
+                    <SortableTh columnKey="title" label="标题" sort={sort} onToggle={toggleSort} />
                     <th>用户</th>
                     <th>分享页</th>
-                    <th>创建时间</th>
-                    <th>最近活跃</th>
-                    <th>消息数</th>
+                    <SortableTh columnKey="created_at" label="创建时间" sort={sort} onToggle={toggleSort} />
+                    <SortableTh columnKey="last_active_at" label="最近活跃" sort={sort} onToggle={toggleSort} />
+                    <SortableTh columnKey="message_count" label="消息数" sort={sort} onToggle={toggleSort} />
                     <th>操作</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {sessions.map((s) => (
+                  {visibleSessions.map((s) => (
                     <tr key={s.session_id} data-testid={`session-row-${s.session_id}`}>
                       <td>{s.title || '(无标题)'}</td>
                       <td>{userMap.get(s.portal_user_id)?.username ?? s.portal_user_id}</td>
@@ -245,9 +207,9 @@ export default function SessionsAdminPage() {
               </table>
             )}
           </div>
-          {sessions !== null && sessions.length > 0 && (
+          {visibleSessions !== null && visibleSessions.length > 0 && (
             <MobileCardList label="会话列表">
-              {sessions.map((s) => (
+              {visibleSessions.map((s) => (
                 <MobileCard
                   key={s.session_id}
                   title={s.title || '(无标题)'}

@@ -265,4 +265,76 @@ describe('GrantsAdminPage', () => {
 
     expect(await screen.findByText('服务器错误')).toBeInTheDocument();
   });
+
+  // ---- Issue 87:统一搜索/筛选/排序 ----
+
+  function grantRowOrder(): string[] {
+    return screen
+      .getAllByTestId(/^grant-row-/)
+      .map((el) => el.getAttribute('data-testid')!.replace('grant-row-', ''));
+  }
+
+  it('搜索框按授权对象名 + 分享页名模糊匹配(Issue 87)', async () => {
+    const user = userEvent.setup();
+    globalThis.fetch = mockFetch([
+      { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
+      { url: '/admin/share-pages', status: 200, body: SHARE_PAGES_RESPONSE },
+      { url: '/admin/users', status: 200, body: USERS_RESPONSE },
+      { url: '/admin/groups', status: 200, body: GROUPS_RESPONSE },
+      { url: '/admin/share-pages/sp_default/grants', status: 200, body: GRANTS_RESPONSE },
+    ]);
+
+    renderPage();
+    await screen.findByTestId('grant-row-user-u_admin');
+
+    // 命中授权对象名(解析后的组名)
+    await user.type(screen.getByLabelText('搜索授权'), '开发');
+    expect(grantRowOrder()).toEqual(['group-g_dev']);
+
+    // 命中当前分享页名(该列对选中页为常量 → 全部行保留)
+    await user.clear(screen.getByLabelText('搜索授权'));
+    await user.type(screen.getByLabelText('搜索授权'), '默认分享页');
+    expect(grantRowOrder()).toEqual(['user-u_admin', 'group-g_dev']);
+  });
+
+  it('主体类型筛选(Issue 87)', async () => {
+    const user = userEvent.setup();
+    globalThis.fetch = mockFetch([
+      { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
+      { url: '/admin/share-pages', status: 200, body: SHARE_PAGES_RESPONSE },
+      { url: '/admin/users', status: 200, body: USERS_RESPONSE },
+      { url: '/admin/groups', status: 200, body: GROUPS_RESPONSE },
+      { url: '/admin/share-pages/sp_default/grants', status: 200, body: GRANTS_RESPONSE },
+    ]);
+
+    renderPage();
+    await screen.findByTestId('grant-row-user-u_admin');
+
+    await user.selectOptions(screen.getByLabelText('主体类型筛选'), 'user');
+    expect(grantRowOrder()).toEqual(['user-u_admin']);
+    await user.selectOptions(screen.getByLabelText('主体类型筛选'), 'group');
+    expect(grantRowOrder()).toEqual(['group-g_dev']);
+    await user.selectOptions(screen.getByLabelText('主体类型筛选'), '');
+    expect(grantRowOrder()).toEqual(['user-u_admin', 'group-g_dev']);
+  });
+
+  it('主体类型列三态排序(Issue 87)', async () => {
+    const user = userEvent.setup();
+    globalThis.fetch = mockFetch([
+      { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
+      { url: '/admin/share-pages', status: 200, body: SHARE_PAGES_RESPONSE },
+      { url: '/admin/users', status: 200, body: USERS_RESPONSE },
+      { url: '/admin/groups', status: 200, body: GROUPS_RESPONSE },
+      { url: '/admin/share-pages/sp_default/grants', status: 200, body: GRANTS_RESPONSE },
+    ]);
+
+    renderPage();
+    await screen.findByTestId('grant-row-user-u_admin');
+    expect(grantRowOrder()).toEqual(['user-u_admin', 'group-g_dev']);
+
+    await user.click(screen.getByRole('button', { name: '按主体类型排序' }));
+    expect(grantRowOrder()).toEqual(['group-g_dev', 'user-u_admin']);
+    await user.click(screen.getByRole('button', { name: '按主体类型排序' }));
+    expect(grantRowOrder()).toEqual(['user-u_admin', 'group-g_dev']);
+  });
 });

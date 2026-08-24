@@ -215,4 +215,25 @@ describe('GroupsAdminPage', () => {
 
     expect(await screen.findByText('服务器错误')).toBeInTheDocument();
   });
+
+  it('搜索框按组名不区分大小写模糊匹配(Issue 87)', async () => {
+    const user = userEvent.setup();
+    globalThis.fetch = mockFetch([
+      { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
+      { url: '/admin/groups', status: 200, body: GROUPS_RESPONSE },
+      { url: '/admin/users', status: 200, body: USERS_RESPONSE },
+    ]);
+
+    renderPage();
+    await screen.findByTestId('group-row-g_dev');
+
+    await user.type(screen.getByLabelText('搜索用户组'), '运维');
+    expect(screen.queryByTestId('group-row-g_dev')).not.toBeInTheDocument();
+    expect(screen.getByTestId('group-row-g_ops')).toBeInTheDocument();
+
+    await user.clear(screen.getByLabelText('搜索用户组'));
+    await user.type(screen.getByLabelText('搜索用户组'), '不存在的组');
+    expect(screen.queryByTestId(/^group-row-/)).not.toBeInTheDocument();
+    expect(screen.getByText('无匹配结果')).toBeInTheDocument();
+  });
 });

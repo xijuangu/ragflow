@@ -175,4 +175,70 @@ describe('SharePagesAdminPage', () => {
 
     expect(await screen.findByText('服务器错误')).toBeInTheDocument();
   });
+
+  // ---- Issue 87:统一搜索/筛选/排序 ----
+
+  function sharePageRowOrder(): string[] {
+    return screen
+      .getAllByTestId(/^share-page-row-/)
+      .map((el) => el.getAttribute('data-testid')!.replace('share-page-row-', ''));
+  }
+
+  it('搜索框按名称 + RAGFlow 资源 ID 模糊匹配', async () => {
+    const user = userEvent.setup();
+    globalThis.fetch = mockFetch([
+      { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
+      { url: '/admin/share-pages', status: 200, body: SHARE_PAGES_RESPONSE },
+    ]);
+
+    renderPage();
+    await screen.findByTestId('share-page-row-sp_default');
+
+    await user.type(screen.getByLabelText('搜索分享页'), '禁用');
+    expect(sharePageRowOrder()).toEqual(['sp_disabled']);
+
+    await user.clear(screen.getByLabelText('搜索分享页'));
+    await user.type(screen.getByLabelText('搜索分享页'), 'dialog-123');
+    expect(sharePageRowOrder()).toEqual(['sp_default']);
+  });
+
+  it('状态/嵌入类型/RAGFlow 类型枚举筛选', async () => {
+    const user = userEvent.setup();
+    globalThis.fetch = mockFetch([
+      { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
+      { url: '/admin/share-pages', status: 200, body: SHARE_PAGES_RESPONSE },
+    ]);
+
+    renderPage();
+    await screen.findByTestId('share-page-row-sp_default');
+
+    await user.selectOptions(screen.getByLabelText('状态筛选'), 'disabled');
+    expect(sharePageRowOrder()).toEqual(['sp_disabled']);
+    await user.selectOptions(screen.getByLabelText('状态筛选'), '');
+
+    await user.selectOptions(screen.getByLabelText('嵌入类型筛选'), 'fullscreen');
+    expect(sharePageRowOrder()).toEqual(['sp_default', 'sp_disabled']);
+    await user.selectOptions(screen.getByLabelText('RAGFlow 类型筛选'), 'agent');
+    expect(screen.queryByTestId(/^share-page-row-/)).not.toBeInTheDocument();
+    expect(screen.getByText('无匹配结果')).toBeInTheDocument();
+  });
+
+  it('创建时间列三态排序', async () => {
+    const user = userEvent.setup();
+    globalThis.fetch = mockFetch([
+      { url: '/me', status: 200, body: { username: 'admin', is_admin: true } },
+      { url: '/admin/share-pages', status: 200, body: SHARE_PAGES_RESPONSE },
+    ]);
+
+    renderPage();
+    await screen.findByTestId('share-page-row-sp_default');
+    expect(sharePageRowOrder()).toEqual(['sp_default', 'sp_disabled']);
+
+    await user.click(screen.getByRole('button', { name: '按创建时间排序' }));
+    expect(sharePageRowOrder()).toEqual(['sp_default', 'sp_disabled']);
+    await user.click(screen.getByRole('button', { name: '按创建时间排序' }));
+    expect(sharePageRowOrder()).toEqual(['sp_disabled', 'sp_default']);
+    await user.click(screen.getByRole('button', { name: '按创建时间排序' }));
+    expect(sharePageRowOrder()).toEqual(['sp_default', 'sp_disabled']);
+  });
 });
