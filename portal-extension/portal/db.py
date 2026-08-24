@@ -2,7 +2,7 @@
 
 设计原则(deep module):
   - 外部接口极简:`init_db(engine)` + `create_session_maker(engine)` 两个函数,
-    + 7 张表的 ORM 模型类(供测试/迁移脚本直接操作)。
+    + 8 张表的 ORM 模型类(供测试/迁移脚本直接操作)。
   - DB 细节(引擎方言、连接池、事务、表结构)全部封在内部。
   - 生产用 MySQL(pymysql 驱动,sync engine);单元测试用 SQLite in-memory。
     通过 `PORTAL_DB_URL` 环境变量切换,本模块不读环境变量(由 config.py 负责)。
@@ -24,6 +24,8 @@
                      org_id DEFAULT 'default')  — Slice 13
   audit_log(id PK, actor_user_id, action, target_type, target_id, at, meta_json,
             org_id DEFAULT 'default')  — Slice 13
+  usage_record(id PK, created_at, portal_user_id, share_page_id, session_id, model_name,
+               input_tokens, output_tokens, incomplete, org_id DEFAULT 'default')  — Issue 91
 
 `init_db(engine)` 用 `Base.metadata.create_all(engine)`,天然 idempotent:
   - 表已存在 → skip(IF NOT EXISTS 语义)
@@ -48,7 +50,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-# 7 张表名集合(供测试与迁移脚本检查 schema 完整性)
+# 8 张表名集合(供测试与迁移脚本检查 schema 完整性)
 PORTAL_TABLES: set[str] = {
     "portal_user",
     "portal_group",
@@ -57,6 +59,7 @@ PORTAL_TABLES: set[str] = {
     "share_page_grant",
     "chat_session_owner",
     "audit_log",
+    "usage_record",
 }
 
 
@@ -214,6 +217,34 @@ class ChatSessionOwnerModel(Base):
     org_id: Mapped[str] = mapped_column(String(64), default="default", nullable=False)
 
 
+class UsageRecordModel(Base):
+    """usage_record 表 ORM 模型(Issue 91:门户用量记账)。
+
+    每次 chat completions 问答落一条记录:时间、portal 用户(公开分享页为匿名锚点
+    u_anonymous)、分享页、session_id、模型名、input/output token、incomplete 标记。
+    不存问答正文(§12.2:正文唯一事实源仍是 RAGFlow API4Conversation)。
+
+    incomplete=True 表示按估算口径记账(断流或末帧缺 usage):output = 已收到回答文本
+    计词,input = 按请求问题估算(见 gateway.estimate_tokens)。
+
+    新表由 create_all 直接创建,无需 ALTER 迁移;会话删除不影响本表(无外键级联)。
+    """
+
+    __tablename__ = "usage_record"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    created_at: Mapped[float] = mapped_column(Float, nullable=False)
+    portal_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    share_page_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    session_id: Mapped[str] = mapped_column(String(128), default="", nullable=False)
+    model_name: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    incomplete: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # 多租户 org_id(与 share_page/user 的 org_id 一致,便于按 org 筛选)
+    org_id: Mapped[str] = mapped_column(String(64), default="default", nullable=False)
+
+
 class AuditLogModel(Base):
     """audit_log 表 ORM 模型(Slice 6,敏感操作,永久保留 PR D8b)。
 
@@ -314,7 +345,7 @@ def _migrate_add_is_public_column(engine) -> None:
 
 
 def init_db(engine) -> None:
-    """创建所有 7 张表(idempotent)。
+    """创建所有 8 张表(idempotent)。
 
     `Base.metadata.create_all` 内部用 `IF NOT EXISTS`(SQLAlchemy 各方言自动处理),
     表已存在则跳过,不报错。可重复执行,对应验收点 1。

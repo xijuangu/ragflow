@@ -36,7 +36,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from portal.config import load_settings
 from portal.db import create_session_maker, init_db
 from portal.gateway import IPRateLimiter, TokenStore
-from portal.models import AuditStore, SessionStore, build_seed_data
+from portal.models import AuditStore, SessionStore, UsageStore, build_seed_data
 from portal.routes import router
 from portal.tasks import _retry_delete_loop
 
@@ -167,6 +167,8 @@ def create_app() -> FastAPI:
     app.state.session_store = SessionStore(session_maker)
     # audit_log DB 持久化(永久保留,PR D8b)
     app.state.audit_store = AuditStore(session_maker)
+    # Issue 91:usage_record DB 持久化(网关 SSE 记账;会话删除不影响已落账记录)
+    app.state.usage_store = UsageStore(session_maker)
     # Slice 15:公开分享页 IP 限流器(内存滑动窗口,每 IP 每分钟 N 次)
     app.state.rate_limiter = IPRateLimiter(settings.public_rate_limit_per_min)
     app.include_router(router)

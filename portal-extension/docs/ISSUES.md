@@ -143,7 +143,9 @@ docker exec docker-ragflow-cpu-1 bash -c "cp /ragflow/api/db/services/dialog_ser
 
 ## Issue 91：门户 usage_record 表 + 网关 SSE 记账
 
-> 状态：待实施。阻塞：← Issue 90（真实 usage 数据来源；开发期测试可用 mock SSE 先行）。
+> 状态：✅ 已完成（2026-08-24,分支 impl/91-92,worktree impl-usage)。阻塞：← Issue 90（真实 usage 数据来源；开发期测试可用 mock SSE 先行）。
+>
+> 实施记录：新增 `usage_record` 表(db.py `UsageRecordModel`:id/created_at/portal_user_id/share_page_id/session_id/model_name/input_tokens/output_tokens/incomplete/org_id;新表由 create_all 直接建,无需 ALTER 迁移;与 chat_session_owner 无外键级联,会话删除不影响已落账记录)+ models.py `UsageRecord` dataclass + `UsageStore`(record/list,过滤语义同 AuditStore.list)。记账落在收敛后的 SSE 流编排 `_build_sse_streaming_response`(Issue 93 接缝,不重fork校验链):新增 `UsageAccountingContext`(usage_store+portal_user_id+share_page_id+org_id)由三条代理调用点注入——proxy_sse_to_ragflow 标准链(subject=登录用户)、公开分支与 `_proxy_public_sse_stream`(subject=u_anonymous 匿名锚点);原生透传分支不记账。摘取逻辑:事件循环内用 SSEJSONEventParser payload 摘 `data.usage`(兼容 flat;`extract_usage_from_sse_payload`),同时保留最后一帧非空 answer(RAGFlow 每帧 answer 为累计全文)。finally 中真实问答(question 非空)落一条:末帧带 usage 且流完整 → 真实值 incomplete=False;断流(上游 ReadError/客户端断开)或末帧缺 usage(旧 RAGFlow/empty_response 捷径)→ 估算口径:output=estimate_tokens(已收到回答文本)、input=estimate_tokens(请求问题),incomplete=True;greeting(question="")不记账;记账失败只 warning 不破坏流。估算口径 `estimate_tokens`(无 tiktoken 依赖,确定性):CJK/全角字符(ord≥0x2E80)每字 1 token,其余每 4 字符 1 token 向上取整。模型名:RAGFlow chatbot completions 末帧不含模型名(Issue 90 仅透出 input/output),model_name 列预留暂记 ""。后端 pytest 基线更新为 470 passed + 5 skipped(原 452+5;新增 test_issue91_usage_record.py 17 个用例 + slice13 参数化 org_id 用例随新表 +1),ruff 净。
 
 ## What to build
 
@@ -151,10 +153,10 @@ docker exec docker-ragflow-cpu-1 bash -c "cp /ragflow/api/db/services/dialog_ser
 
 ## Acceptance criteria
 
-- [ ] 每次 chat completions 问答落一条 usage_record，字段完整；正文不落库。
-- [ ] 正常完成、断流、末帧缺 usage 三种路径均有测试覆盖，incomplete 语义符合 CONTEXT.md §12.2。
-- [ ] 会话删除不影响已落账记录；公开分享页（匿名用户）问答同样记账（subject 为匿名标识）。
-- [ ] 后端 pytest 基线更新并记录。
+- [x] 每次 chat completions 问答落一条 usage_record，字段完整；正文不落库。
+- [x] 正常完成、断流、末帧缺 usage 三种路径均有测试覆盖，incomplete 语义符合 CONTEXT.md §12.2。
+- [x] 会话删除不影响已落账记录；公开分享页（匿名用户）问答同样记账（subject 为匿名标识）。
+- [x] 后端 pytest 基线更新并记录。
 
 ## Issue 92：admin「用量统计」tab（汇总 + 明细 + CSV 导出）
 

@@ -46,6 +46,7 @@ from portal.db import (
     PortalUserModel,
     SharePageGrantModel,
     SharePageModel,
+    UsageRecordModel,
 )
 from portal.password import hash_password
 
@@ -508,6 +509,130 @@ class SessionStore(_StoreBase):
 def _gen_id(prefix: str) -> str:
     """生成带前缀的随机 ID(降低碰撞,便于调试可读)。"""
     return f"{prefix}_{secrets.token_hex(8)}"
+
+
+@dataclass
+class UsageRecord:
+    """用量记账记录(对应 usage_record 表,Issue 91)。
+
+    每次 chat completions 问答落一条:时间、portal 用户(公开分享页为匿名锚点
+    ANONYMOUS_USER_ID)、分享页、session_id、模型名、input/output token、incomplete 标记。
+    不存问答正文(§12.2)。
+
+    incomplete=False:token 值来自 RAGFlow SSE 末帧结构化 usage(真实本地计词)。
+    incomplete=True:断流或末帧缺 usage,按 §12.2 估算口径兜底(output = 已收到回答
+    文本计词,input = 按请求问题估算)。
+    """
+
+    id: str
+    created_at: float  # unix 时间戳
+    portal_user_id: str
+    share_page_id: str
+    session_id: str = ""
+    model_name: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    incomplete: bool = False
+    org_id: str = "default"
+
+
+def _usage_record_from_orm(row: UsageRecordModel) -> UsageRecord:
+    return UsageRecord(
+        id=row.id,
+        created_at=row.created_at,
+        portal_user_id=row.portal_user_id,
+        share_page_id=row.share_page_id,
+        session_id=row.session_id,
+        model_name=row.model_name,
+        input_tokens=row.input_tokens,
+        output_tokens=row.output_tokens,
+        incomplete=row.incomplete,
+        org_id=row.org_id,
+    )
+
+
+class UsageStore(_StoreBase):
+    """用量记账存储(Issue 91)— SQLAlchemy 持久化。
+
+    与 chat_session_owner 无级联关系:会话删除不影响已落账记录(验收点 3)。
+    """
+
+    def record(
+        self,
+        portal_user_id: str,
+        share_page_id: str,
+        session_id: str,
+        model_name: str,
+        input_tokens: int,
+        output_tokens: int,
+        incomplete: bool,
+        org_id: str = "default",
+        created_at: float | None = None,
+    ) -> UsageRecord:
+        """落一条用量记录,返回已写入的 UsageRecord。
+
+        ``created_at`` 仅供测试传入固定值;None(默认)取当前时间。
+        """
+        rec = UsageRecord(
+            id=_gen_id("ur"),
+            created_at=created_at if created_at is not None else time.time(),
+            portal_user_id=portal_user_id,
+            share_page_id=share_page_id,
+            session_id=session_id,
+            model_name=model_name,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            incomplete=incomplete,
+            org_id=org_id,
+        )
+        self._transact(
+            lambda session: session.add(
+                UsageRecordModel(
+                    id=rec.id,
+                    created_at=rec.created_at,
+                    portal_user_id=rec.portal_user_id,
+                    share_page_id=rec.share_page_id,
+                    session_id=rec.session_id,
+                    model_name=rec.model_name,
+                    input_tokens=rec.input_tokens,
+                    output_tokens=rec.output_tokens,
+                    incomplete=rec.incomplete,
+                    org_id=rec.org_id,
+                )
+            )
+        )
+        return rec
+
+    def list(
+        self,
+        portal_user_id: str | None = None,
+        share_page_id: str | None = None,
+        since: float | None = None,
+        until: float | None = None,
+        incomplete: bool | None = None,
+        org_id: str | None = None,
+        limit: int = 1000,
+    ) -> list:
+        """查询用量记录(按用户/分享页/时间/incomplete/org 过滤,默认 created_at 倒序)。
+
+        与 AuditStore.list 一致的过滤语义:None 表示不过滤该维度。
+        """
+        with self._session_maker() as session:
+            stmt = select(UsageRecordModel)
+            if portal_user_id is not None:
+                stmt = stmt.where(UsageRecordModel.portal_user_id == portal_user_id)
+            if share_page_id is not None:
+                stmt = stmt.where(UsageRecordModel.share_page_id == share_page_id)
+            if since is not None:
+                stmt = stmt.where(UsageRecordModel.created_at >= since)
+            if until is not None:
+                stmt = stmt.where(UsageRecordModel.created_at <= until)
+            if incomplete is not None:
+                stmt = stmt.where(UsageRecordModel.incomplete == incomplete)
+            if org_id is not None:
+                stmt = stmt.where(UsageRecordModel.org_id == org_id)
+            stmt = stmt.order_by(UsageRecordModel.created_at.desc()).limit(limit)
+            return [_usage_record_from_orm(r) for r in session.scalars(stmt)]
 
 
 @dataclass
