@@ -862,7 +862,10 @@ async def async_chat(dialog, messages, stream=True, **kwargs):
             )
             langfuse_generation.end()
 
-        return {"answer": think + answer, "reference": refs, "prompt": re.sub(r"\n", "  \n", prompt), "created_at": time.time()}
+        # Issue 90: expose local token counts as structured usage (additive field;
+        # input = used_token_count from message_fit_in, output = tk_num from
+        # num_tokens_from_string). Clients ignoring it behave exactly as before.
+        return {"answer": think + answer, "reference": refs, "prompt": re.sub(r"\n", "  \n", prompt), "created_at": time.time(), "usage": {"input": used_token_count, "output": tk_num}}
 
     if langfuse_tracer:
         try:
