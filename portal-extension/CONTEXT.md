@@ -91,6 +91,7 @@ portal-extension/
 ├── tests/                    # 后端 pytest(474 passed + 5 skipped,2026-08-24)
 │   ├── conftest.py           # FakeRagflow transport 层假实现(Issue 97)+ 统一 mock fixture
 │   └── test_slice*.py        # 按 slice 组织的 E2E + 单测
+├── project-materials/        # 原始需求与设计素材(PRD.md、portal-ui-redesign 设计稿)
 └── docs/
     ├── README.md             # 文档目录
     ├── architecture.md       # 当前架构
@@ -99,6 +100,9 @@ portal-extension/
     ├── data-model.md         # 数据模型
     ├── development-and-testing.md
     ├── deployment-and-operations.md
+    ├── knowledge-base-auto-update-research.md  # 知识库文档自动化更新可行性调研(2026-09-15,决策不立项)
+    ├── knowledge-base-maintenance-manual.md    # 知识库维护手册:人工定期更新规程(2026-09-15 起执行)
+    ├── manual/               # 白皮书 + 管理员手册 + 用户指南(md + pdf)
     └── archive/              # 历史 PRD / ISSUES / NOTES / handoff / 早期决策
 ```
 
@@ -190,6 +194,14 @@ Issue 93 起,所有「取令牌记录 → `pt_` 前缀判定 → cookie/grant �
 7. **设计方向:D1 Graphite**(`css/styles.css` 已实现)。D2 Midnight / D3 Coral 为对比稿,不采用。
 
 细节决策:图标用内联 SVG(设计稿已是,不引 icon 库);topbar 砍全局搜索/通知,保留 brand + avatar + 登出;sidebar 保留"分享页"入口(回用户侧)+ 6 项 admin,砍"系统-设置"(无页);表格操作保留文字按钮,不改 icon-btn。
+
+### 6.6 RAGFlow 文档管理 API 边界(2026-09-15 调研)
+
+调研全文见 `docs/knowledge-base-auto-update-research.md`。三条长期有效的事实:
+
+- **RAGFlow 没有"替换文档内容"的 API**(截至上游 v0.27.2;社区 issue #17815 仍 open):`PATCH /documents/<id>` 只改名称/元数据/解析配置/上下架。更新一篇文档 = 删旧 → 重传 → 显式触发解析 → 轮询状态,且 document_id 会变,依赖旧 id 的引用(如 ReferenceAccessStore 授权集合)会失效,需重建或放宽。
+- **dataset/document 管理接口只接受 `AUTH_JWT` + `AUTH_API`**(`api/apps/__init__.py` 的 `DEFAULT_AUTH_TYPES`):portal 现有的 beta token(`api_token.beta`,AUTH_BETA)调不动这些接口。portal 若要做知识库文档管理,需在 RAGFlow 另配 API key(`api_token.token` 字段)并新增 portal 配置项。
+- **上游 Data Source 连接器框架在本 fork 是活的**(`/connectors` 路由由蓝图 glob 自动注册,`docker/entrypoint.sh` 会启动 `rag/svr/sync_data_source.py`),但现有连接器不覆盖"爬法规网站"场景(Sitemap 连接器为上游 v0.27.2 新增,不在本 fork)。
 
 ## 7. 已知限制(待后续 issue 修复)
 
@@ -597,6 +609,8 @@ uv run --python 3.13 pytest -q test/playwright/portal_extension -s --junitxml=/t
 - 新功能上线后需同步更新对应手册章节
 
 ## 12. 当前功能线决策(2026-08-24 grilling 锁定)
+
+> 注:本功能线(Issue 86-92)及随后的重构线(Issue 93-98)已全部完成,本节保留为历史决策记录。**知识库文档更新已于 2026-09-15 定案:不建自动化模块,采用人工定期维护**——可行性调研见 `docs/knowledge-base-auto-update-research.md`(其 API 结论与 §6.6 仍然有效,未来重启立项时可复用),操作规程见 `docs/knowledge-base-maintenance-manual.md`。下一条候选功能线待定。
 
 两条独立功能线,工单见 `docs/ISSUES.md` Issue 86-92。先做 UX 线,后做用量统计线。
 

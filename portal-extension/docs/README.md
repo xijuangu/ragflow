@@ -15,6 +15,8 @@
 - [开发与测试](development-and-testing.md)：本地运行、后端/前端/Playwright 测试。
 - [部署运维](deployment-and-operations.md)：生产拓扑、部署脚本、健康检查、回滚和常见问题。
 - [../project-materials/](../project-materials/)：原始 PRD、原型、UI 设计稿和 RAG 验证材料。
+- [知识库维护手册](knowledge-base-maintenance-manual.md)：法规语料抓取 → RAGFlow 知识库的人工定期更新规程（2026-09-15 起执行；决策：不建自动化模块）。
+- [知识库文档自动化更新调研](knowledge-base-auto-update-research.md)：自动化路线的可行性调研存档（2026-09-15；结论是不建模块、改人工维护，手册见上条；API 事实摘要见 ../CONTEXT.md §6.6）。
 
 ## 历史追溯材料
 
